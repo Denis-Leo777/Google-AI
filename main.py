@@ -30,7 +30,7 @@ if not GOOGLE_API_KEY:
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
     # Используем твою модель, но убедись, что она доступна тебе
-    MODEL_NAME = 'gemini-1.5-pro-latest' # ИЛИ 'gemini-1.5-flash-latest' ИЛИ 'gemini-pro'
+    MODEL_NAME = 'gemini-2.5-pro-preview-03-25'
     # MODEL_NAME = 'gemini-2.5-pro-preview-03-25' # Оставил твою, но она может быть preview
     
     # ИСПРАВЛЕНО ЗДЕСЬ: system_instruction перенесен внутрь скобок, добавлены запятые
