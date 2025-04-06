@@ -4,7 +4,6 @@ import logging
 import os
 import asyncio
 import google.generativeai as genai
-from google.generativeai.types import Tool, FunctionDeclaration, Schema # Убедись, что эти типы используются или удали, если нет
 from telegram import Update
 from telegram.constants import ParseMode # Импортируем ParseMode для форматирования
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
