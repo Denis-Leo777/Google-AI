@@ -38,8 +38,8 @@ MAX_BACKOFF_SECONDS = 60 # Максимальная задержка между 
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
     # ВНИМАНИЕ: 'gemini-2.5-pro-preview-03-25' - может быть превью-моделью с ограничениями или недоступна.
-    # Рассмотрите использование 'gemini-1.5-pro-latest' или 'gemini-1.5-flash-latest' (у flash выше бесплатные лимиты RPM)
-    MODEL_NAME = 'gemini-2.5-pro-preview-03-25'
+    # Рассмотрите использование 'gemini-2.0-flash-001' (у flash выше бесплатные лимиты RPM)
+    MODEL_NAME = 'gemini-2.0-flash-001'
 
     model = genai.GenerativeModel(
         MODEL_NAME,
