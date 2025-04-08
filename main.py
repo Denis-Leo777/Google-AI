@@ -207,15 +207,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"Сообщение от {user.id}: '{user_message[:50]}...'")
     if not primary_model or not secondary_model: await update.message.reply_text("Ошибка: Модели не готовы."); return
     final_text: Optional[str] = None; used_fallback: bool = False; error_message: Optional[str] = None
-    try: # Основная модель
-        if chat_id not in primary_chat_histories: primary_chat_histories[chat_id] = primary_model.start_chat(history=[]); logger.info(f"Начат основной чат {chat_id}")
-        primary_chat = primary_chat_histories[chat_id]; logger.info(f"Попытка с {PRIMARY_MODEL_NAME}")
-        final_text = await process_gemini_chat_turn(primary_chat, PRIMARY_MODEL_NAME, user_message, context, chat_id)
-    except ResourceExhausted as e_primary: logger.warning(f"{PRIMARY_MODEL_NAME} квота исчерпана: {e_primary}"); used_fallback = True
-    except FailedPrecondition as e_precondition: logger.error(f"{PRIMARY_MODEL_NAME} FailedPrecondition: {e_precondition}. Сброс истории."); error_message = "⚠️ История чата слишком длинная. Сброшена. Повторите."; if chat_id in primary_chat_histories: del primary_chat_histories[chat_id]; if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
-    except ValueError as e_blocked: logger.warning(f"{PRIMARY_MODEL_NAME} блокировка: {e_blocked}"); error_message = f"⚠️ {e_blocked}"
-    except (GoogleAPIError, Exception) as e_primary_other: logger.exception(f"Ошибка {PRIMARY_MODEL_NAME}: {e_primary_other}"); error_message = f"Ошибка основной модели: {e_primary_other}"
-    if used_fallback: # Запасная модель
+# --- Попытка с основной моделью ---
+    try:
+        if chat_id not in primary_chat_histories:
+            primary_chat_histories[chat_id] = primary_model.start_chat(history=[])
+            logger.info(f"Начат новый основной чат для chat_id {chat_id}")
+        primary_chat = primary_chat_histories[chat_id]
+
+        logger.info(f"Попытка обработки с основной моделью: {PRIMARY_MODEL_NAME}")
+        final_text = await process_gemini_chat_turn(
+            primary_chat, PRIMARY_MODEL_NAME, user_message, context, chat_id
+        )
+
+    except ResourceExhausted as e_primary:
+        logger.warning(f"Основная модель {PRIMARY_MODEL_NAME} исчерпала квоту: {e_primary}")
+        used_fallback = True
+
+    except FailedPrecondition as e_precondition:
+        # ИСПРАВЛЕНИЕ: Разделяем инструкции на строки
+        logger.error(f"Основная модель {PRIMARY_MODEL_NAME} столкнулась с FailedPrecondition: {e_precondition}. Сброс истории.")
+        error_message = "⚠️ История чата стала слишком длинной. Я ее сбросил. Повторите запрос."
+        if chat_id in primary_chat_histories:
+            del primary_chat_histories[chat_id] # Отступ для блока if
+        if chat_id in secondary_chat_histories:
+            del secondary_chat_histories[chat_id] # Отступ для блока if
+
+    except ValueError as e_blocked: # Ошибка блокировки ответа
+        logger.warning(f"Ошибка значения у основной модели (блокировка): {e_blocked}")
+        error_message = f"⚠️ {e_blocked}" # Сообщение уже содержит причину
+
+    except (GoogleAPIError, Exception) as e_primary_other:
+        logger.exception(f"Ошибка при обработке основной моделью {PRIMARY_MODEL_NAME}: {e_primary_other}")
+        error_message = f"Произошла ошибка при обработке запроса основной моделью: {e_primary_other}"
+
+    # --- Попытка с запасной моделью ---
+    # (Остальная часть функции handle_message остается такой же)
+    if used_fallback:
         logger.info(f"Переключение на {SECONDARY_MODEL_NAME}")
         try:
             if chat_id not in secondary_chat_histories: secondary_chat_histories[chat_id] = secondary_model.start_chat(history=[]); logger.info(f"Начат запасной чат {chat_id}")
