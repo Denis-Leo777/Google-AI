@@ -1,11 +1,10 @@
-# --- START OF FULL CORRECTED main.py (Targeting google-generativeai==0.7.1) ---
+# --- START OF FULL CORRECTED main.py (Using genai.protos.Part and genai.ChatSession for v0.7.1) ---
 
 import logging
 import os
 import asyncio
 import google.generativeai as genai
-# ИМПОРТИРУЕМ types как псевдоним для v0.7.1
-from google.generativeai import types as genai_types
+# НЕ ИМПОРТИРУЕМ types или что-то специфичное для Part/ChatSession
 import time
 import random
 from typing import Optional, Tuple, Union
@@ -13,11 +12,6 @@ from typing import Optional, Tuple, Union
 # --- Конфигурация логов ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Можно убрать или закомментировать печать версии, т.к. видим ее в логах сборки
-# try:
-#     logger.info(f"!!!!!!!!!! Используемая версия google-generativeai: {genai.__version__} !!!!!!!!!!")
-# except Exception: pass
 
 # Исключения
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError, FailedPrecondition
@@ -36,7 +30,7 @@ else:
         print("Проблема с импортом googlesearch...")
         google_search_sync = None
 
-# Gemini Function Calling типы - берем из google.protobuf
+# Gemini Function Calling типы
 from google.protobuf.struct_pb2 import Struct
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -47,14 +41,12 @@ if not TELEGRAM_BOT_TOKEN: exit("Telegram токен не найден")
 if not GOOGLE_API_KEY: exit("Google API ключ не найден")
 
 # --- Имена моделей ---
-# Используем ваши последние работающие имена
-PRIMARY_MODEL_NAME = 'gemini-2.5-pro-exp-03-25'
+PRIMARY_MODEL_NAME = 'gemini-2.5-pro-exp-03-25' # Или ваши актуальные имена
 SECONDARY_MODEL_NAME = 'gemini-2.0-flash-001'
 
 # --- Определение инструмента Google Search для Gemini ---
 google_search_tool = None
 if google_search_sync:
-    # Используем genai.protos для определения инструмента
     google_search_func = genai.protos.FunctionDeclaration(
         name="google_search",
         description="Получает актуальную информацию из поиска Google...",
@@ -117,33 +109,33 @@ async def perform_google_search(query: str, num_results: int = 5) -> str:
 
 # --- Вспомогательная функция для обработки хода Gemini ---
 async def process_gemini_chat_turn(
-    # ИСПОЛЬЗУЕМ genai_types.ChatSession В TYPE HINT (для v0.7.1)
-    chat_session: genai_types.ChatSession,
+    chat_session, # УБРАН TYPE HINT :genai.ChatSession
     model_name: str,
-    # ИСПОЛЬЗУЕМ genai_types.Part В TYPE HINT (для v0.7.1)
-    initial_content: Union[str, genai_types.Part],
+    initial_content, # УБРАН TYPE HINT :Union[str, genai.protos.Part]
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int
 ) -> str:
     """Обрабатывает один ход диалога с Gemini, включая Function Calling."""
     current_content = initial_content
-    # ИСПОЛЬЗУЕМ genai_types.Part ДЛЯ ПРОВЕРКИ ТИПА (для v0.7.1)
-    # УБИРАЕМ ЛОГ С ОШИБКОЙ ОТСЮДА
-    is_function_response = isinstance(initial_content, genai_types.Part)
+    # ПЫТАЕМСЯ ИСПОЛЬЗОВАТЬ genai.protos.Part ДЛЯ ПРОВЕРКИ ТИПА
+    is_function_response = isinstance(initial_content, genai.protos.Part)
 
     for attempt in range(5):
         logger.info(f"[{model_name}] Отправка {'ответа на функцию' if is_function_response else 'сообщения'}...")
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         try:
+            # model.start_chat() должен возвращать объект с методом send_message_async
             response = await chat_session.send_message_async(content=current_content)
+
             if response.candidates and response.candidates[0].content.parts:
+                # part здесь будет типа protos.Part
                 part = response.candidates[0].content.parts[0]
                 if part.function_call and part.function_call.name == "google_search":
                     function_call = part.function_call
                     if not google_search_tool:
                          s_err = Struct(); s_err.update({"content": "Ошибка: Функция поиска не настроена."})
-                         # ИСПОЛЬЗУЕМ genai_types.Part (для v0.7.1)
-                         current_content = genai_types.Part.from_function_response(name="google_search", response=s_err)
+                         # ПЫТАЕМСЯ ИСПОЛЬЗОВАТЬ genai.protos.Part
+                         current_content = genai.protos.Part(function_response=genai.protos.FunctionResponse(name="google_search", response=s_err))
                          is_function_response = True
                          continue
                     args = {key: value for key, value in function_call.args.items()}
@@ -152,18 +144,19 @@ async def process_gemini_chat_turn(
                     if query:
                         search_result = await perform_google_search(query)
                         s_res = Struct(); s_res.update({"content": search_result})
-                         # ИСПОЛЬЗУЕМ genai_types.Part (для v0.7.1)
-                        current_content = genai_types.Part.from_function_response(name="google_search", response=s_res)
+                         # ПЫТАЕМСЯ ИСПОЛЬЗОВАТЬ genai.protos.Part
+                        current_content = genai.protos.Part(function_response=genai.protos.FunctionResponse(name="google_search", response=s_res))
                         is_function_response = True
                         continue
                     else: # Нет query
                          s_err = Struct(); s_err.update({"content": "Ошибка: Параметр 'query' не предоставлен."})
-                         # ИСПОЛЬЗУЕМ genai_types.Part (для v0.7.1)
-                         current_content = genai_types.Part.from_function_response(name="google_search", response=s_err)
+                         # ПЫТАЕМСЯ ИСПОЛЬЗОВАТЬ genai.protos.Part
+                         current_content = genai.protos.Part(function_response=genai.protos.FunctionResponse(name="google_search", response=s_err))
                          is_function_response = True
                          continue
                 else: # Не function call
                     try:
+                        # Доступ к response.text должен работать и для protos.Part
                         final_text = response.text
                         logger.info(f"[{model_name}] Получен финальный ответ.")
                         return final_text
@@ -182,6 +175,10 @@ async def process_gemini_chat_turn(
              logger.error(f"Перехвачена ошибка блокировки от {model_name}: {ve}")
              raise ve
         except Exception as e:
+             # Ловим AttributeError здесь, если protos.Part не имеет from_function_response
+             if isinstance(e, AttributeError) and 'Part' in str(e) and 'from_function_response' in str(e):
+                  logger.error(f"!!!!! [{model_name}] КРИТИЧЕСКАЯ ОШИБКА: genai.protos.Part не имеет метода from_function_response в этой версии! !!!!!")
+                  raise RuntimeError("Несовместимая версия google-generativeai для Function Calling.") from e
              logger.exception(f"[{model_name}] Непредвиденная ошибка: {e}")
              raise e
     raise Exception(f"Превышен лимит ({attempt+1}) обработки функций для {model_name}.")
@@ -212,7 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try: # --- Попытка с основной моделью ---
         if chat_id not in primary_chat_histories:
-            # Используем genai_types.ChatSession (для v0.7.1)
+            # Используем genai.ChatSession, т.к. его нет в types v0.7.1
             primary_chat_histories[chat_id] = primary_model.start_chat(history=[])
             logger.info(f"Начат основной чат {chat_id}")
         primary_chat = primary_chat_histories[chat_id]
@@ -240,7 +237,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Переключение на {SECONDARY_MODEL_NAME}")
         try:
             if chat_id not in secondary_chat_histories:
-                 # Используем genai_types.ChatSession (для v0.7.1)
+                 # Используем genai.ChatSession
                 secondary_chat_histories[chat_id] = secondary_model.start_chat(history=[])
                 logger.info(f"Начат запасной чат {chat_id}")
             secondary_chat = secondary_chat_histories[chat_id]
@@ -285,7 +282,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if "История чата стала слишком длинной" not in (error_message or "") and "Ответ модели" not in (error_message or "") :
              try: await update.message.reply_text("Не удалось обработать запрос.", reply_to_message_id=update.message.message_id)
              except Exception: pass
-
 
 # --- main ---
 def main() -> None:
