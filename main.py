@@ -221,58 +221,114 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код handle_message) ...
     user_message = update.message.text
     user = update.effective_user
     chat_id = update.effective_chat.id
     logger.info(f"Сообщение от {user.id} ({user.username}) в чате {chat_id}: '{user_message[:50]}...'")
-    if not primary_model or not secondary_model: #...
+
+    if not primary_model or not secondary_model:
+        logger.error("Одна или обе модели Gemini не инициализированы!")
+        await update.message.reply_text("Ошибка: Модели AI не готовы.", reply_to_message_id=update.message.message_id)
         return
+
     final_text: Optional[str] = None
     used_fallback: bool = False
     error_message: Optional[str] = None
-    try: # Основная модель
-        if chat_id not in primary_chat_histories: #...
+
+    # --- Попытка с основной моделью ---
+    try:
+        if chat_id not in primary_chat_histories:
             primary_chat_histories[chat_id] = primary_model.start_chat(history=[])
             logger.info(f"Начат новый основной чат для chat_id {chat_id}")
         primary_chat = primary_chat_histories[chat_id]
-        logger.info(f"Попытка обработки с основной моделью: {PRIMARY_MODEL_NAME}")
-        final_text = await process_gemini_chat_turn(primary_chat, PRIMARY_MODEL_NAME, user_message, context, chat_id)
-    except ResourceExhausted as e_primary: #...
-        used_fallback = True
-    except FailedPrecondition as e_precondition: #...
-        error_message = "..."
-    except ValueError as e_blocked: #...
-        error_message = f"..."
-    except (GoogleAPIError, Exception) as e_primary_other: #...
-        error_message = f"..."
 
-    if used_fallback: # Запасная модель
+        logger.info(f"Попытка обработки с основной моделью: {PRIMARY_MODEL_NAME}")
+        final_text = await process_gemini_chat_turn(
+            primary_chat, PRIMARY_MODEL_NAME, user_message, context, chat_id
+        )
+
+    except ResourceExhausted as e_primary:
+        logger.warning(f"Основная модель {PRIMARY_MODEL_NAME} исчерпала квоту: {e_primary}")
+        used_fallback = True
+
+    except FailedPrecondition as e_precondition:
+        logger.error(f"Основная модель {PRIMARY_MODEL_NAME} столкнулась с FailedPrecondition: {e_precondition}. Сброс истории.")
+        if chat_id in primary_chat_histories: del primary_chat_histories[chat_id]
+        if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
+        error_message = "⚠️ История чата стала слишком длинной. Я ее сбросил. Повторите запрос."
+    except ValueError as e_blocked: # Ошибка блокировки ответа
+        logger.warning(f"Ошибка значения у основной модели (блокировка): {e_blocked}")
+        error_message = f"⚠️ {e_blocked}" # Сообщение уже содержит причину
+    except (GoogleAPIError, Exception) as e_primary_other:
+        logger.exception(f"Ошибка при обработке основной моделью {PRIMARY_MODEL_NAME}: {e_primary_other}")
+        error_message = f"Произошла ошибка при обработке запроса основной моделью: {e_primary_other}"
+
+    # --- Попытка с запасной моделью ---
+    if used_fallback:
         logger.info(f"Переключение на запасную модель: {SECONDARY_MODEL_NAME}")
         try:
-            if chat_id not in secondary_chat_histories: #...
+            if chat_id not in secondary_chat_histories:
                 secondary_chat_histories[chat_id] = secondary_model.start_chat(history=[])
                 logger.info(f"Начат новый запасной чат для chat_id {chat_id}")
             secondary_chat = secondary_chat_histories[chat_id]
-            final_text = await process_gemini_chat_turn(secondary_chat, SECONDARY_MODEL_NAME, user_message, context, chat_id)
-            error_message = None # Успех
-        except ResourceExhausted as e_secondary: #...
-            error_message = f"..."
-        except FailedPrecondition as e_precondition_fallback: #...
-             error_message = "..."
-        except ValueError as e_blocked_fallback: #...
-             error_message = f"..."
-        except (GoogleAPIError, Exception) as e_fallback_other: #...
-             error_message = f"..."
 
-    # Отправка ответа
-    if final_text: #...
+            final_text = await process_gemini_chat_turn(
+                secondary_chat, SECONDARY_MODEL_NAME, user_message, context, chat_id
+            )
+            error_message = None # Успешно, сбрасываем ошибку
+
+        except ResourceExhausted as e_secondary:
+            logger.error(f"Запасная модель {SECONDARY_MODEL_NAME} ТОЖЕ исчерпала квоту: {e_secondary}")
+            error_message = f"😔 Обе AI модели ({PRIMARY_MODEL_NAME} и {SECONDARY_MODEL_NAME}) сейчас перегружены. Попробуйте позже."
+        except FailedPrecondition as e_precondition_fallback:
+             logger.error(f"Запасная модель {SECONDARY_MODEL_NAME} столкнулась с FailedPrecondition: {e_precondition_fallback}. Сброс истории.")
+             if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
+             error_message = "⚠️ История чата с запасной моделью стала слишком длинной и была сброшена. Попробуйте еще раз."
+        except ValueError as e_blocked_fallback:
+             logger.warning(f"Ошибка значения у запасной модели (блокировка): {e_blocked_fallback}")
+             error_message = f"⚠️ {e_blocked_fallback}" # Сообщение уже содержит причину
+        except (GoogleAPIError, Exception) as e_fallback_other:
+             logger.exception(f"Ошибка при обработке запасной моделью {SECONDARY_MODEL_NAME}: {e_fallback_other}")
+             error_message = f"Произошла ошибка при обработке запроса запасной моделью: {e_fallback_other}"
+
+    # --- Отправка ответа или сообщения об ошибке ---
+    # ВОССТАНОВЛЕННЫЕ БЛОКИ С ОТСТУПАМИ:
+    if final_text:
+        bot_response = final_text[:4090]
         prefix = f"⚡️ [{SECONDARY_MODEL_NAME}]:\n" if used_fallback else ""
-        # ...
-    elif error_message: #...
-        # ...
-    else: #...
-        # ...
+        try:
+            # Этот блок теперь имеет отступ
+            await update.message.reply_text(f"{prefix}{bot_response}", reply_to_message_id=update.message.message_id)
+            logger.info(f"Ответ{' (fallback)' if used_fallback else ''} успешно отправлен для {user.id} в чате {chat_id}")
+        except Exception as e:
+            # Этот блок теперь имеет отступ
+            logger.exception(f"Ошибка при отправке финального ответа в Telegram чат {chat_id}: {e}")
+            try:
+                # Этот блок теперь имеет отступ
+                await update.message.reply_text("Не смог отправить ответ AI (ошибка форматирования/длины).", reply_to_message_id=update.message.message_id)
+            except:
+                # Этот блок теперь имеет отступ
+                pass # Игнорируем ошибку отправки ошибки
+    elif error_message:
+        try:
+            # Этот блок теперь имеет отступ
+            await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id)
+            logger.info(f"Сообщение об ошибке отправлено пользователю в чат {chat_id}: {error_message[:100]}...")
+        except Exception as e:
+            # Этот блок теперь имеет отступ
+            logger.error(f"Не удалось отправить сообщение об ошибке '{error_message[:100]}...' в чат {chat_id}: {e}")
+    else:
+        # Этот блок теперь имеет отступ
+        # Ситуация, когда final_text пуст, но error_message тоже
+        logger.warning(f"Обработка завершена без финального текста и без явного сообщения об ошибке API для чата {chat_id}.")
+        # Проверим, не было ли только что сброса истории из-за FailedPrecondition
+        if "История чата стала слишком длинной" not in (error_message or "") and "Ответ модели" not in (error_message or "") : # Добавим проверку на сообщение о блокировке
+             try:
+                 # Этот блок теперь имеет отступ
+                 await update.message.reply_text("Извините, не удалось обработать ваш запрос (внутренняя ошибка обработки).", reply_to_message_id=update.message.message_id)
+             except:
+                 # Этот блок теперь имеет отступ
+                 pass
 
 
 # Функция main без изменений
