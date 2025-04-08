@@ -1,4 +1,4 @@
 python-telegram-bot[ext]  # Указываем [ext] для установки с расширениями
 google-generativeai
 googlesearch-python
-upgrade pip
+upgrade-pip
