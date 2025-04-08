@@ -1,4 +1,4 @@
-# --- START OF FULL CORRECTED main.py (Final Syntax Fix) ---
+# --- START OF FINAL main.py (Using genai.Part with v0.7.1) ---
 
 import logging
 import os
@@ -12,22 +12,6 @@ from typing import Optional, Tuple, Union
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Интроспекция ---
-logger.info("--- Inspecting 'genai' module ---")
-try:
-    logger.info(f"genai.__version__: {getattr(genai, '__version__', 'N/A')}")
-    logger.info(f"dir(genai): {dir(genai)}")
-    if hasattr(genai, 'types'):
-        logger.info("genai.types exists.")
-        logger.info(f"dir(genai.types): {dir(genai.types)}")
-        if hasattr(genai.types, 'Part'): logger.info("!!!! genai.types.Part IS FOUND via hasattr !!!!")
-        else: logger.warning("!!!! genai.types.Part NOT FOUND via hasattr !!!!")
-    else: logger.info("'genai' has no attribute 'types'")
-    if hasattr(genai, 'Part'): logger.info("!!!! genai.Part IS FOUND via hasattr !!!!")
-    else: logger.warning("!!!! genai.Part NOT FOUND via hasattr !!!!")
-except Exception as inspect_e: logger.error(f"Error inspecting 'genai': {inspect_e}")
-logger.info("--- End Inspecting 'genai' module ---")
-
 # Исключения
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError, FailedPrecondition
 # Библиотека Telegram
@@ -37,9 +21,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # Библиотека для поиска Google
 try:
     from googlesearch import search as google_search_sync
-except ImportError: print("Библиотека googlesearch-python не найдена..."); google_search_sync = None
+except ImportError:
+    print("Библиотека googlesearch-python не найдена...")
+    google_search_sync = None
 else:
-    if not callable(google_search_sync): print("Проблема с импортом googlesearch..."); google_search_sync = None
+    if not callable(google_search_sync):
+        print("Проблема с импортом googlesearch...")
+        google_search_sync = None
 
 # Gemini Function Calling типы
 from google.protobuf.struct_pb2 import Struct
@@ -64,18 +52,21 @@ if google_search_sync:
     )
     google_search_tool = genai.protos.Tool(function_declarations=[google_search_func])
     logger.info("Инструмент Google Search определен.")
-else: logger.warning("Инструмент Google Search не доступен.")
+else:
+    logger.warning("Инструмент Google Search не доступен.")
 
 # --- Настройка Gemini ---
 primary_model = None; secondary_model = None
 gemini_tools = [google_search_tool] if google_search_tool else None
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    primary_model = genai.GenerativeModel(PRIMARY_MODEL_NAME, generation_config={"temperature": 1}, system_instruction="Ваша системная инструкция...", tools=gemini_tools)
+    primary_model = genai.GenerativeModel(PRIMARY_MODEL_NAME, generation_config={"temperature": 1}, system_instruction="Отвечай в пределах 2000 знаков, если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа. Ты - лучший эксперт в любых вопросах. Используй поиск в интернете для проверки актуальной информации. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку. Подкрепляй аргументами и доказательствами, без самоповтора. Если не знаешь ответ, - всегда предупреждай, если это предположение. Активно применяй юмор: культурные и бытовые отсылки, жизненный абсурд, шутки об актуальных в интернете темах, ирония и самоирония, тонкие и интимные намёки, пост-модерн и интернет-юмор, несоответствие ожиданиям, абсурдные решения проблем, псевдомудрость, разрушение идиом, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, редукционизм. При создании уникальной работы: избегай копирования или близкого пересказа существующих текстов; включай гипотетические ситуации для иллюстрации понятий; применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи; не допускай признаков ИИ; варьируй структуру предложений, используя сочетание простых и сложных конструкций; естественно включай разговорные выражения, идиомы и фигуры речи; используй живые стилистические решения, свойственные людям; вставляй региональные выражения или культурно специфичные ссылки, где это уместно; добавляй остроумие.", tools=gemini_tools)
     logger.info(f"Основная модель {PRIMARY_MODEL_NAME} ... сконфигурирована.")
-    secondary_model = genai.GenerativeModel(SECONDARY_MODEL_NAME, generation_config={"temperature": 1}, system_instruction="Ваша системная инструкция...", tools=gemini_tools)
+    secondary_model = genai.GenerativeModel(SECONDARY_MODEL_NAME, generation_config={"temperature": 1}, system_instruction="Отвечай в пределах 2000 знаков, если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа. Ты - лучший эксперт в любых вопросах. Используй поиск в интернете для проверки актуальной информации. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку. Подкрепляй аргументами и доказательствами, без самоповтора. Если не знаешь ответ, - всегда предупреждай, если это предположение. Активно применяй юмор: культурные и бытовые отсылки, жизненный абсурд, шутки об актуальных в интернете темах, ирония и самоирония, тонкие и интимные намёки, пост-модерн и интернет-юмор, несоответствие ожиданиям, абсурдные решения проблем, псевдомудрость, разрушение идиом, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, редукционизм. При создании уникальной работы: избегай копирования или близкого пересказа существующих текстов; включай гипотетические ситуации для иллюстрации понятий; применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи; не допускай признаков ИИ; варьируй структуру предложений, используя сочетание простых и сложных конструкций; естественно включай разговорные выражения, идиомы и фигуры речи; используй живые стилистические решения, свойственные людям; вставляй региональные выражения или культурно специфичные ссылки, где это уместно; добавляй остроумие.", tools=gemini_tools)
     logger.info(f"Запасная модель {SECONDARY_MODEL_NAME} ... сконфигурирована.")
-except (GoogleAPIError, Exception) as e: logger.exception(f"Критическая ошибка конфигурации Gemini: {e}"); exit("Ошибка настройки Gemini")
+except (GoogleAPIError, Exception) as e:
+    logger.exception(f"Критическая ошибка конфигурации Gemini: {e}")
+    exit("Ошибка настройки Gemini")
 
 # --- Инициализация ИСТОРИЙ ЧАТА ---
 primary_chat_histories = {}; secondary_chat_histories = {}
@@ -97,27 +88,61 @@ async def perform_google_search(query: str, num_results: int = 5) -> str:
 
 # --- Вспомогательная функция для обработки хода Gemini ---
 async def process_gemini_chat_turn(
-    chat_session, model_name: str, initial_content, context: ContextTypes.DEFAULT_TYPE, chat_id: int
+    # Убираем type hints, чтобы избежать ошибок при запуске, если атрибуты недоступны
+    chat_session,
+    model_name: str,
+    initial_content,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int
 ) -> str:
     """Обрабатывает один ход диалога с Gemini, включая Function Calling."""
     current_content = initial_content
-    # --- ВРЕМЕННО ЗАКОММЕНТИРОВАНО ИСПОЛЬЗОВАНИЕ genai.Part ---
-    is_function_response = False # Временно
-    logger.warning("!!!! ВРЕМЕННО ОТКЛЮЧЕНА ПРОВЕРКА isinstance(..., genai.Part) !!!!")
-    # --- КОНЕЦ ВРЕМЕННОГО ИЗМЕНЕНИЯ ---
+    is_function_response = False # Инициализируем
+
+    try: # Оборачиваем доступ к genai.Part в try...except на всякий случай
+        is_function_response = isinstance(initial_content, genai.Part) # Пытаемся использовать genai.Part
+    except AttributeError as part_check_ae:
+        logger.error(f"!!!! AttributeError при проверке isinstance(..., genai.Part): {part_check_ae} !!!!")
+        # Не можем продолжить обработку ответа функции, если Part недоступен
+        if isinstance(initial_content, str): # Если это обычное сообщение, продолжим
+             is_function_response = False
+        else: # Если это что-то другое (предположительно, ответ функции), обработать не можем
+             raise AttributeError("genai.Part недоступен для проверки типа ответа функции.") from part_check_ae
 
     for attempt in range(5):
-        logger.info(f"[{model_name}] Отправка {'ответа на функцию (предположительно)' if is_function_response else 'сообщения'}...")
+        logger.info(f"[{model_name}] Отправка {'ответа на функцию' if is_function_response else 'сообщения'}...")
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         try:
             response = await chat_session.send_message_async(content=current_content)
             if response.candidates and response.candidates[0].content.parts:
                 part = response.candidates[0].content.parts[0]
                 if part.function_call and part.function_call.name == "google_search":
-                    # --- ВРЕМЕННО ЗАКОММЕНТИРОВАНО ИСПОЛЬЗОВАНИЕ genai.Part ---
-                    logger.error(f"[{model_name}] Запрошен вызов функции, НО ОБРАБОТКА genai.Part ВРЕМЕННО ОТКЛЮЧЕНА!")
-                    return "Ошибка: Обработка внутренних функций временно отключена (genai.Part)."
-                    # --- КОНЕЦ ВРЕМЕННОГО ИЗМЕНЕНИЯ ---
+                    # --- ВОССТАНОВЛЕН КОД FUNCTION CALLING ---
+                    try: # Оборачиваем использование genai.Part
+                        function_call = part.function_call
+                        if not google_search_tool:
+                            s_err = Struct(); s_err.update({"content": "Ошибка: Функция поиска не настроена."})
+                            current_content = genai.Part.from_function_response(name="google_search", response=s_err)
+                            is_function_response = True
+                            continue
+                        args = {key: value for key, value in function_call.args.items()}
+                        query = args.get("query")
+                        logger.info(f"[{model_name}] Запрос функции: google_search(query='{query}')")
+                        if query:
+                            search_result = await perform_google_search(query)
+                            s_res = Struct(); s_res.update({"content": search_result})
+                            current_content = genai.Part.from_function_response(name="google_search", response=s_res)
+                            is_function_response = True
+                            continue
+                        else: # Нет query
+                            s_err = Struct(); s_err.update({"content": "Ошибка: Параметр 'query' не предоставлен."})
+                            current_content = genai.Part.from_function_response(name="google_search", response=s_err)
+                            is_function_response = True
+                            continue
+                    except AttributeError as part_use_ae:
+                         logger.error(f"!!!! AttributeError при использовании genai.Part.from_function_response: {part_use_ae} !!!!")
+                         raise AttributeError("genai.Part недоступен для создания ответа функции.") from part_use_ae
+                    # --- КОНЕЦ ВОССТАНОВЛЕННОГО КОДА ---
                 else: # Не function call
                     try:
                         final_text = response.text
@@ -137,10 +162,9 @@ async def process_gemini_chat_turn(
         except ValueError as ve: # Уже ошибка блокировки
              logger.error(f"Перехвачена ошибка блокировки от {model_name}: {ve}")
              raise ve
-        except AttributeError as ae: # Ловим AttributeError здесь
-            logger.error(f"!!!! AttributeError ВНУТРИ process_gemini_chat_turn: {ae} !!!!")
-            logger.error("!!!! Скорее всего, проблема с доступом к genai.Part сохраняется !!!!")
-            raise ae
+        except AttributeError as ae: # Ловим AttributeError здесь, если он пробросится из блока try выше
+            logger.error(f"!!!! AttributeError ВНУТРИ process_gemini_chat_turn ПОСЛЕ ЗАПУСКА: {ae} !!!!")
+            raise ae # Передаем дальше
         except Exception as e:
              logger.exception(f"[{model_name}] Непредвиденная ошибка: {e}")
              raise e
@@ -182,14 +206,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except ResourceExhausted as e_primary:
         logger.warning(f"{PRIMARY_MODEL_NAME} квота: {e_primary}"); used_fallback = True
     except FailedPrecondition as e_precondition:
-        logger.error(f"{PRIMARY_MODEL_NAME} FailedPrecondition: {e_precondition}. Сброс.");
+        logger.error(f"{PRIMARY_MODEL_NAME} FailedPrecondition: {e_precondition}. Сброс.")
         error_message = "⚠️ История чата стала слишком длинной. Я ее сбросил. Повторите запрос."
-        if chat_id in primary_chat_histories: del primary_chat_histories[chat_id]
-        if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
+        if chat_id in primary_chat_histories:
+            del primary_chat_histories[chat_id]
+        if chat_id in secondary_chat_histories:
+            del secondary_chat_histories[chat_id]
     except ValueError as e_blocked:
         logger.warning(f"{PRIMARY_MODEL_NAME} блок: {e_blocked}"); error_message = f"⚠️ {e_blocked}"
-    except AttributeError as ae_outer:
-        logger.error(f"!!!! AttributeError ВНЕШНИЙ (осн. модель): {ae_outer} !!!!"); error_message = f"Ошибка атрибута (осн. модель): {ae_outer}"
+    except AttributeError as ae_outer: # Ловим AttributeError, если он вылетит из process_gemini_chat_turn
+        logger.error(f"!!!! AttributeError ВНЕШНИЙ (осн. модель): {ae_outer} !!!!")
+        error_message = f"Ошибка атрибута (осн. модель): {ae_outer}"
     except (GoogleAPIError, Exception) as e_primary_other:
         logger.exception(f"Ошибка {PRIMARY_MODEL_NAME}: {e_primary_other}"); error_message = f"Ошибка осн. модели: {e_primary_other}"
 
@@ -209,11 +236,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except FailedPrecondition as e_precondition_fallback:
              logger.error(f"{SECONDARY_MODEL_NAME} FailedPrecondition: {e_precondition_fallback}. Сброс.")
              error_message = "⚠️ История чата с запасной моделью стала слишком длинной и была сброшена. Попробуйте еще раз."
-             if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
+             if chat_id in secondary_chat_histories:
+                 del secondary_chat_histories[chat_id]
         except ValueError as e_blocked_fallback:
              logger.warning(f"{SECONDARY_MODEL_NAME} блок: {e_blocked_fallback}"); error_message = f"⚠️ {e_blocked_fallback}"
-        except AttributeError as ae_fallback:
-             logger.error(f"!!!! AttributeError FALLBACK: {ae_fallback} !!!!"); error_message = f"Ошибка атрибута зап. модели: {ae_fallback}"
+        except AttributeError as ae_fallback: # Ловим AttributeError и здесь
+             logger.error(f"!!!! AttributeError FALLBACK: {ae_fallback} !!!!")
+             error_message = f"Ошибка атрибута зап. модели: {ae_fallback}"
         except (GoogleAPIError, Exception) as e_fallback_other:
              logger.exception(f"Ошибка {SECONDARY_MODEL_NAME}: {e_fallback_other}"); error_message = f"Ошибка зап. модели: {e_fallback_other}"
 
@@ -222,17 +251,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         bot_response = final_text[:4090]
         prefix = f"⚡️ [{SECONDARY_MODEL_NAME}]:\n" if used_fallback else ""
         try:
-            # Основная попытка отправить ответ
             await update.message.reply_text(f"{prefix}{bot_response}", reply_to_message_id=update.message.message_id)
             logger.info(f"Ответ{' (fallback)' if used_fallback else ''} отправлен {user.id}")
         except Exception as e:
-            # ИСПРАВЛЕНИЕ ЗДЕСЬ
             logger.exception(f"Ошибка отправки ответа: {e}")
-            # Теперь try...except на новой строке
             try:
                 await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id)
             except Exception:
-                pass # Игнорируем ошибку отправки сообщения об ошибке
+                pass
     elif error_message:
         try:
             await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id)
