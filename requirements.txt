@@ -1,3 +1,3 @@
-pip install python-telegram-bot
-pip install google-generativeai
-pip install googlesearch-python
+python-telegram-bot[ext]  # Указываем [ext] для установки с расширениями
+google-generativeai
+googlesearch-python
