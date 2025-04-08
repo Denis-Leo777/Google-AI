@@ -1,4 +1,4 @@
-# --- START OF FULL CORRECTED main.py (Introspection, Part commented out, SyntaxError fixed) ---
+# --- START OF FULL CORRECTED main.py (Final Syntax Fix) ---
 
 import logging
 import os
@@ -12,7 +12,7 @@ from typing import Optional, Tuple, Union
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- ДОБАВЛЕНА ИНТРОСПЕКЦИЯ ---
+# --- Интроспекция ---
 logger.info("--- Inspecting 'genai' module ---")
 try:
     logger.info(f"genai.__version__: {getattr(genai, '__version__', 'N/A')}")
@@ -20,20 +20,13 @@ try:
     if hasattr(genai, 'types'):
         logger.info("genai.types exists.")
         logger.info(f"dir(genai.types): {dir(genai.types)}")
-        if hasattr(genai.types, 'Part'):
-             logger.info("!!!! genai.types.Part IS FOUND via hasattr !!!!")
-        else:
-             logger.warning("!!!! genai.types.Part NOT FOUND via hasattr !!!!")
-    else:
-        logger.info("'genai' has no attribute 'types'")
-    if hasattr(genai, 'Part'):
-        logger.info("!!!! genai.Part IS FOUND via hasattr !!!!")
-    else:
-        logger.warning("!!!! genai.Part NOT FOUND via hasattr !!!!")
-except Exception as inspect_e:
-    logger.error(f"Error inspecting 'genai': {inspect_e}")
+        if hasattr(genai.types, 'Part'): logger.info("!!!! genai.types.Part IS FOUND via hasattr !!!!")
+        else: logger.warning("!!!! genai.types.Part NOT FOUND via hasattr !!!!")
+    else: logger.info("'genai' has no attribute 'types'")
+    if hasattr(genai, 'Part'): logger.info("!!!! genai.Part IS FOUND via hasattr !!!!")
+    else: logger.warning("!!!! genai.Part NOT FOUND via hasattr !!!!")
+except Exception as inspect_e: logger.error(f"Error inspecting 'genai': {inspect_e}")
 logger.info("--- End Inspecting 'genai' module ---")
-# --- КОНЕЦ ИНТРОСПЕКЦИИ ---
 
 # Исключения
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError, FailedPrecondition
@@ -44,13 +37,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # Библиотека для поиска Google
 try:
     from googlesearch import search as google_search_sync
-except ImportError:
-    print("Библиотека googlesearch-python не найдена...")
-    google_search_sync = None
+except ImportError: print("Библиотека googlesearch-python не найдена..."); google_search_sync = None
 else:
-    if not callable(google_search_sync):
-        print("Проблема с импортом googlesearch...")
-        google_search_sync = None
+    if not callable(google_search_sync): print("Проблема с импортом googlesearch..."); google_search_sync = None
 
 # Gemini Function Calling типы
 from google.protobuf.struct_pb2 import Struct
@@ -75,8 +64,7 @@ if google_search_sync:
     )
     google_search_tool = genai.protos.Tool(function_declarations=[google_search_func])
     logger.info("Инструмент Google Search определен.")
-else:
-    logger.warning("Инструмент Google Search не доступен.")
+else: logger.warning("Инструмент Google Search не доступен.")
 
 # --- Настройка Gemini ---
 primary_model = None; secondary_model = None
@@ -87,9 +75,7 @@ try:
     logger.info(f"Основная модель {PRIMARY_MODEL_NAME} ... сконфигурирована.")
     secondary_model = genai.GenerativeModel(SECONDARY_MODEL_NAME, generation_config={"temperature": 1}, system_instruction="Ваша системная инструкция...", tools=gemini_tools)
     logger.info(f"Запасная модель {SECONDARY_MODEL_NAME} ... сконфигурирована.")
-except (GoogleAPIError, Exception) as e:
-    logger.exception(f"Критическая ошибка конфигурации Gemini: {e}")
-    exit("Ошибка настройки Gemini")
+except (GoogleAPIError, Exception) as e: logger.exception(f"Критическая ошибка конфигурации Gemini: {e}"); exit("Ошибка настройки Gemini")
 
 # --- Инициализация ИСТОРИЙ ЧАТА ---
 primary_chat_histories = {}; secondary_chat_histories = {}
@@ -130,8 +116,6 @@ async def process_gemini_chat_turn(
                 if part.function_call and part.function_call.name == "google_search":
                     # --- ВРЕМЕННО ЗАКОММЕНТИРОВАНО ИСПОЛЬЗОВАНИЕ genai.Part ---
                     logger.error(f"[{model_name}] Запрошен вызов функции, НО ОБРАБОТКА genai.Part ВРЕМЕННО ОТКЛЮЧЕНА!")
-                    # Этот код ниже УПАДЕТ с AttributeError, если genai.Part недоступен
-                    # ПРИМЕР: current_content = genai.Part.from_function_response(...)
                     return "Ошибка: Обработка внутренних функций временно отключена (genai.Part)."
                     # --- КОНЕЦ ВРЕМЕННОГО ИЗМЕНЕНИЯ ---
                 else: # Не function call
@@ -198,13 +182,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except ResourceExhausted as e_primary:
         logger.warning(f"{PRIMARY_MODEL_NAME} квота: {e_primary}"); used_fallback = True
     except FailedPrecondition as e_precondition:
-        # ИСПРАВЛЕНО
-        logger.error(f"{PRIMARY_MODEL_NAME} FailedPrecondition: {e_precondition}. Сброс.")
-        error_message = "⚠️ История чата слишком длинная. Я ее сбросил. Повторите запрос."
-        if chat_id in primary_chat_histories:
-            del primary_chat_histories[chat_id]
-        if chat_id in secondary_chat_histories:
-            del secondary_chat_histories[chat_id]
+        logger.error(f"{PRIMARY_MODEL_NAME} FailedPrecondition: {e_precondition}. Сброс.");
+        error_message = "⚠️ История чата стала слишком длинной. Я ее сбросил. Повторите запрос."
+        if chat_id in primary_chat_histories: del primary_chat_histories[chat_id]
+        if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
     except ValueError as e_blocked:
         logger.warning(f"{PRIMARY_MODEL_NAME} блок: {e_blocked}"); error_message = f"⚠️ {e_blocked}"
     except AttributeError as ae_outer:
@@ -224,13 +205,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             error_message = None # Успех
 
         except ResourceExhausted as e_secondary:
-            logger.error(f"{SECONDARY_MODEL_NAME} ТОЖЕ квота: {e_secondary}"); error_message = f"😔 Обе модели ({PRIMARY_MODEL_NAME}, {SECONDARY_MODEL_NAME}) перегружены."
+            logger.error(f"{SECONDARY_MODEL_NAME} ТОЖЕ квота: {e_secondary}"); error_message = f"😔 Обе AI модели ({PRIMARY_MODEL_NAME}, {SECONDARY_MODEL_NAME}) перегружены."
         except FailedPrecondition as e_precondition_fallback:
-             # ИСПРАВЛЕНО
              logger.error(f"{SECONDARY_MODEL_NAME} FailedPrecondition: {e_precondition_fallback}. Сброс.")
              error_message = "⚠️ История чата с запасной моделью стала слишком длинной и была сброшена. Попробуйте еще раз."
-             if chat_id in secondary_chat_histories:
-                 del secondary_chat_histories[chat_id]
+             if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
         except ValueError as e_blocked_fallback:
              logger.warning(f"{SECONDARY_MODEL_NAME} блок: {e_blocked_fallback}"); error_message = f"⚠️ {e_blocked_fallback}"
         except AttributeError as ae_fallback:
@@ -240,17 +219,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # --- Отправка ответа или сообщения об ошибке ---
     if final_text:
-        bot_response = final_text[:4090]; prefix = f"⚡️ [{SECONDARY_MODEL_NAME}]:\n" if used_fallback else ""
-        try: await update.message.reply_text(f"{prefix}{bot_response}", reply_to_message_id=update.message.message_id); logger.info(f"Ответ{' (fallback)' if used_fallback else ''} отправлен {user.id}")
-        except Exception as e: logger.exception(f"Ошибка отправки: {e}"); try: await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id) except Exception: pass
+        bot_response = final_text[:4090]
+        prefix = f"⚡️ [{SECONDARY_MODEL_NAME}]:\n" if used_fallback else ""
+        try:
+            # Основная попытка отправить ответ
+            await update.message.reply_text(f"{prefix}{bot_response}", reply_to_message_id=update.message.message_id)
+            logger.info(f"Ответ{' (fallback)' if used_fallback else ''} отправлен {user.id}")
+        except Exception as e:
+            # ИСПРАВЛЕНИЕ ЗДЕСЬ
+            logger.exception(f"Ошибка отправки ответа: {e}")
+            # Теперь try...except на новой строке
+            try:
+                await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id)
+            except Exception:
+                pass # Игнорируем ошибку отправки сообщения об ошибке
     elif error_message:
-        try: await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id); logger.info(f"Сообщение об ошибке: {error_message[:100]}...")
-        except Exception as e: logger.error(f"Не удалось отправить ошибку '{error_message[:100]}...': {e}")
+        try:
+            await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id)
+            logger.info(f"Сообщение об ошибке отправлено: {error_message[:100]}...")
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение об ошибке '{error_message[:100]}...': {e}")
     else:
-        logger.warning(f"Нет текста и ошибки для {chat_id}.");
-        if error_message is None: # Строгая проверка перед отправкой стандартной ошибки
-            try: await update.message.reply_text("Не удалось обработать запрос (неизвестная причина).", reply_to_message_id=update.message.message_id)
-            except Exception: pass
+        logger.warning(f"Нет финального текста и сообщения об ошибке для {chat_id}.")
+        if error_message is None:
+             try:
+                 await update.message.reply_text("Не удалось обработать запрос (неизвестная причина).", reply_to_message_id=update.message.message_id)
+             except Exception:
+                 pass
 
 
 # --- main ---
