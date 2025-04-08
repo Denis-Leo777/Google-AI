@@ -1,4 +1,4 @@
-# --- START OF FULL CORRECTED main.py (Using genai.Part) ---
+# --- START OF FULL CORRECTED main.py (Using genai.ChatSession) ---
 
 import logging
 import os
@@ -6,8 +6,7 @@ import asyncio
 import google.generativeai as genai # Основной импорт
 import time
 import random
-# Импортируем только ChatSession из types, если он там есть
-from google.generativeai.types import ChatSession
+# НЕ ИМПОРТИРУЕМ ChatSession или Part из types
 from typing import Optional, Tuple, Union
 
 # Исключения
@@ -48,7 +47,6 @@ SECONDARY_MODEL_NAME = 'gemini-2.0-flash-thinking-exp-01-21' # Проверьт�
 # --- Определение инструмента Google Search для Gemini ---
 google_search_tool = None
 if google_search_sync:
-    # Используем genai.protos для FunctionDeclaration, Schema, Tool
     google_search_func = genai.protos.FunctionDeclaration(
         name="google_search",
         description="Получает актуальную информацию из поиска Google...",
@@ -95,7 +93,6 @@ primary_chat_histories = {}
 secondary_chat_histories = {}
 
 # --- Функция выполнения поиска Google ---
-# Без изменений
 async def perform_google_search(query: str, num_results: int = 5) -> str:
     if not google_search_sync: return "Ошибка: Функция поиска недоступна."
     logger.info(f"Выполнение Google поиска по запросу: '{query}'")
@@ -112,16 +109,17 @@ async def perform_google_search(query: str, num_results: int = 5) -> str:
 
 # --- Вспомогательная функция для обработки хода Gemini ---
 async def process_gemini_chat_turn(
-    chat_session: ChatSession, # Используем импортированный тип (если получится) или genai.ChatSession
+    # ИСПОЛЬЗУЕМ genai.ChatSession В TYPE HINT
+    chat_session: genai.ChatSession,
     model_name: str,
-    # ИСПОЛЬЗУЕМ genai.Part В TYPE HINT
+    # Используем genai.Part здесь
     initial_content: Union[str, genai.Part],
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int
 ) -> str:
     """Обрабатывает один ход диалога с Gemini, включая Function Calling."""
     current_content = initial_content
-    # ИСПОЛЬЗУЕМ genai.Part ДЛЯ ПРОВЕРКИ ТИПА
+    # Используем genai.Part для проверки
     is_function_response = isinstance(initial_content, genai.Part)
 
     for attempt in range(5):
@@ -136,8 +134,7 @@ async def process_gemini_chat_turn(
                     if not google_search_tool:
                          s_err = Struct()
                          s_err.update({"content": "Ошибка: Функция поиска не настроена."})
-                         # ИСПОЛЬЗУЕМ genai.Part
-                         current_content = genai.Part.from_function_response(name="google_search", response=s_err)
+                         current_content = genai.Part.from_function_response(name="google_search", response=s_err) # Используем genai.Part
                          is_function_response = True
                          continue
                     args = {key: value for key, value in function_call.args.items()}
@@ -147,15 +144,13 @@ async def process_gemini_chat_turn(
                         search_result = await perform_google_search(query)
                         s_res = Struct()
                         s_res.update({"content": search_result})
-                        # ИСПОЛЬЗУЕМ genai.Part
-                        current_content = genai.Part.from_function_response(name="google_search", response=s_res)
+                        current_content = genai.Part.from_function_response(name="google_search", response=s_res) # Используем genai.Part
                         is_function_response = True
                         continue
                     else: # Нет query
                          s_err = Struct()
                          s_err.update({"content": "Ошибка: Параметр 'query' не предоставлен."})
-                         # ИСПОЛЬЗУЕМ genai.Part
-                         current_content = genai.Part.from_function_response(name="google_search", response=s_err)
+                         current_content = genai.Part.from_function_response(name="google_search", response=s_err) # Используем genai.Part
                          is_function_response = True
                          continue
                 else: # Не function call
@@ -182,9 +177,7 @@ async def process_gemini_chat_turn(
              raise e
     raise Exception(f"Превышен лимит ({attempt+1}) обработки функций для {model_name}.")
 
-
 # --- Обработчики Telegram ---
-# start и handle_message с правильными отступами
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in primary_chat_histories: del primary_chat_histories[chat_id]
@@ -210,6 +203,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try: # --- Попытка с основной моделью ---
         if chat_id not in primary_chat_histories:
+            # Используем genai.ChatSession если он доступен через genai
             primary_chat_histories[chat_id] = primary_model.start_chat(history=[])
             logger.info(f"Начат основной чат {chat_id}")
         primary_chat = primary_chat_histories[chat_id]
@@ -223,9 +217,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"{PRIMARY_MODEL_NAME} FailedPrecondition: {e_precondition}. Сброс истории.")
         error_message = "⚠️ История чата стала слишком длинной. Я ее сбросил. Повторите запрос."
         if chat_id in primary_chat_histories:
-            del primary_chat_histories[chat_id] # Отступ
+            del primary_chat_histories[chat_id]
         if chat_id in secondary_chat_histories:
-            del secondary_chat_histories[chat_id] # Отступ
+            del secondary_chat_histories[chat_id]
     except ValueError as e_blocked:
         logger.warning(f"{PRIMARY_MODEL_NAME} блокировка: {e_blocked}")
         error_message = f"⚠️ {e_blocked}"
@@ -237,6 +231,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Переключение на {SECONDARY_MODEL_NAME}")
         try:
             if chat_id not in secondary_chat_histories:
+                 # Используем genai.ChatSession если он доступен через genai
                 secondary_chat_histories[chat_id] = secondary_model.start_chat(history=[])
                 logger.info(f"Начат запасной чат {chat_id}")
             secondary_chat = secondary_chat_histories[chat_id]
@@ -251,7 +246,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              logger.error(f"{SECONDARY_MODEL_NAME} FailedPrecondition: {e_precondition_fallback}. Сброс истории.")
              error_message = "⚠️ История чата с запасной моделью стала слишком длинной и была сброшена. Попробуйте еще раз."
              if chat_id in secondary_chat_histories:
-                 del secondary_chat_histories[chat_id] # Отступ
+                 del secondary_chat_histories[chat_id]
         except ValueError as e_blocked_fallback:
              logger.warning(f"{SECONDARY_MODEL_NAME} блокировка: {e_blocked_fallback}")
              error_message = f"⚠️ {e_blocked_fallback}"
@@ -268,10 +263,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.info(f"Ответ{' (fallback)' if used_fallback else ''} отправлен {user.id}")
         except Exception as e:
             logger.exception(f"Ошибка отправки ответа: {e}")
-            try:
-                await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id)
-            except Exception:
-                pass # Игнорируем двойную ошибку
+            try: await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id)
+            except Exception: pass
     elif error_message:
         try:
             await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id)
@@ -281,11 +274,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         logger.warning(f"Нет финального текста и сообщения об ошибке для {chat_id}.")
         if "История чата стала слишком длинной" not in (error_message or "") and "Ответ модели" not in (error_message or "") :
-             try:
-                 await update.message.reply_text("Не удалось обработать запрос.", reply_to_message_id=update.message.message_id)
-             except Exception:
-                 pass
-
+             try: await update.message.reply_text("Не удалось обработать запрос.", reply_to_message_id=update.message.message_id)
+             except Exception: pass
 
 # --- main ---
 def main() -> None:
