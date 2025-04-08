@@ -40,8 +40,8 @@ if not TELEGRAM_BOT_TOKEN: exit("Telegram токен не найден")
 if not GOOGLE_API_KEY: exit("Google API ключ не найден")
 
 # --- Имена моделей ---
-PRIMARY_MODEL_NAME = 'gemini-2.5-pro-preview-03-25'
-SECONDARY_MODEL_NAME = 'gemini-2.0-flash-thinking-exp-01-21' # Проверьте!
+PRIMARY_MODEL_NAME = 'gemini-2.5-pro-exp-03-25'
+SECONDARY_MODEL_NAME = 'gemini-2.0-flash-001' # Проверьте!
 
 # --- Определение инструмента Google Search ---
 google_search_tool = None
