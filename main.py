@@ -1,6 +1,6 @@
-# --- START OF FULL CORRECTED main.py (Print version, Remove type hints) ---
+# --- START OF FULL CORRECTED main.py (Logger defined before use) ---
 
-import logging
+import logging # Переносим импорт logging наверх, если его там нет
 import os
 import asyncio
 import google.generativeai as genai # Основной импорт
@@ -9,11 +9,21 @@ import random
 # НЕ ИМПОРТИРУЕМ ChatSession или Part из types
 from typing import Optional, Tuple, Union
 
+# --- Конфигурация логов ---
+# ПЕРЕМЕЩАЕМ ЭТОТ БЛОК ВЫШЕ
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__) # Теперь logger определен
+
 # ПЕЧАТАЕМ ВЕРСИЮ БИБЛИОТЕКИ ДЛЯ ДИАГНОСТИКИ
 try:
+    # Теперь logger доступен
     logger.info(f"!!!!!!!!!! Используемая версия google-generativeai: {genai.__version__} !!!!!!!!!!")
 except AttributeError:
+    # И здесь logger доступен
     logger.warning("!!!!!!!!!! Не удалось определить версию google-generativeai !!!!!!!!!!")
+except Exception as e:
+    # На всякий случай ловим другие ошибки при доступе к версии
+    logger.error(f"!!!!!!!!!! Ошибка при попытке получить версию google-generativeai: {e} !!!!!!!!!!")
 
 
 # Исключения
@@ -36,9 +46,6 @@ else:
 # Gemini Function Calling типы - берем из google.protobuf
 from google.protobuf.struct_pb2 import Struct
 
-# --- Конфигурация логов ---
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
