@@ -1,4 +1,4 @@
-python-telegram-bot[ext]  # Указываем [ext] для установки с расширениями
-google-generativeai
+python-telegram-bot[ext]
+google-generativeai>=0.5.0 # Указываем минимальную свежую версию или конкретную ==0.5.2
 googlesearch-python
-upgrade-pip
+pip
