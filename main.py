@@ -1,4 +1,4 @@
-# --- START OF REALLY FULL CORRECTED main.py (Search with Snippets, All Functions Included) ---
+# --- START OF REALLY TRULY FULL CORRECTED main.py (Fixed Indentation in handle_message) ---
 
 import logging
 import os
@@ -146,7 +146,7 @@ async def perform_google_search(query: str, num_results: int = 3) -> str:
     formatted_results = f"Результаты поиска Google по запросу '{query}':\n\n"
     urls_to_fetch = []
     try:
-        search_results = await asyncio.to_thread(google_search_sync, query, num_results=num_results, lang="ru") # num_results - правильный аргумент
+        search_results = await asyncio.to_thread(google_search_sync, query, num_results=num_results, lang="ru")
         urls_to_fetch = list(search_results)
         if not urls_to_fetch: logger.warning(f"!!!! Google поиск по '{query}' не дал URL."); return formatted_results + "Поиск Google не дал результатов."
         logger.info(f"!!!! Google поиск нашел {len(urls_to_fetch)} URL.")
@@ -239,7 +239,6 @@ async def process_gemini_chat_turn(
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 
-# ВОССТАНОВЛЕННАЯ ФУНКЦИЯ start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
@@ -256,7 +255,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     logger.info(f"/start от {user.id}")
 
-# ВОССТАНОВЛЕННАЯ ФУНКЦИЯ select_model_command
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
@@ -274,7 +272,6 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode=ParseMode.MARKDOWN
     )
 
-# ВОССТАНОВЛЕННАЯ ФУНКЦИЯ select_model_callback
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -310,7 +307,6 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
         try: await query.edit_message_reply_markup(reply_markup=query.message.reply_markup)
         except: await context.bot.send_message(chat_id=chat_id, text=f"Модель *{selected_alias}* уже выбрана.", parse_mode=ParseMode.MARKDOWN)
 
-# ВОССТАНОВЛЕННАЯ ФУНКЦИЯ test_search
 async def test_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = " ".join(context.args)
     chat_id = update.effective_chat.id
@@ -325,7 +321,6 @@ async def test_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.exception(f"Ошибка тестового поиска для {chat_id}: {e}")
         await update.message.reply_text(f"Ошибка тестового поиска: {e}")
 
-# ВОССТАНОВЛЕННАЯ ФУНКЦИЯ handle_message
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id
     logger.info(f"Сообщение от {user.id}: '{user_message[:50]}...'")
@@ -342,7 +337,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         current_chat_session = chat_histories[chat_id]; logger.info(f"Попытка с моделью: {selected_alias}")
         final_text = await process_gemini_chat_turn(current_chat_session, selected_alias, user_message, context, chat_id)
     except ResourceExhausted as e_limit: logger.warning(f"Модель '{selected_alias}' квота: {e_limit}"); error_message = f"😔 Модель '{selected_alias}' перегружена. /model"
-    except FailedPrecondition as e_precondition: logger.error(f"Модель '{selected_alias}' FailedPrecondition: {e_precondition}. Сброс."); error_message = f"⚠️ История с '{selected_alias}' сброшена. Повторите."; if chat_id in chat_histories: del chat_histories[chat_id]
+    except FailedPrecondition as e_precondition:
+        # ИСПРАВЛЕННЫЙ БЛОК
+        logger.error(f"Модель '{selected_alias}' FailedPrecondition: {e_precondition}. Сброс истории.")
+        error_message = f"⚠️ История чата с моделью '{selected_alias}' стала слишком длинной. Я ее сбросил. Повторите запрос."
+        if chat_id in chat_histories:
+            del chat_histories[chat_id] # Отступ
     except ValueError as e_blocked: logger.warning(f"Модель '{selected_alias}' блокировка: {e_blocked}"); error_message = f"⚠️ {e_blocked}"
     except (GoogleAPIError, Exception) as e_other: logger.exception(f"Ошибка '{selected_alias}': {e_other}"); error_message = f"Ошибка модели '{selected_alias}': {e_other}"
     if final_text:
@@ -375,4 +375,4 @@ def main() -> None:
 if __name__ == '__main__':
     main()
 
-# --- END OF FULL CORRECTED main.py ---
+# --- END OF REALLY TRULY FULL CORRECTED main.py ---
