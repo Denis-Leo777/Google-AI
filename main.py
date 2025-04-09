@@ -122,20 +122,27 @@ user_selected_model: Dict[int, str] = {}
 # УБРАН TYPE HINT для ChatSession
 chat_histories: Dict[int, Any] = {}
 
-# --- Функция выполнения поиска Google ---
-# (Без изменений)
 async def perform_google_search(query: str, num_results: int = 5) -> str:
-    if not google_search_sync: return "Ошибка: Функция поиска недоступна."
-    logger.info(f"Выполнение Google поиска по запросу: '{query}'")
+    if not google_search_sync:
+        logger.warning("!!!! Попытка поиска Google, но библиотека не установлена.")
+        return "Ошибка: Функция поиска недоступна."
+    logger.info(f"!!!! Начало выполнения Google поиска по запросу: '{query}'")
     try:
-        search_results = await asyncio.to_thread(google_search_sync, query, num_results=num_results, stop=num_results, lang="ru")
+        # УБИРАЕМ АРГУМЕНТ 'stop=num_results'
+        search_results = await asyncio.to_thread(
+            google_search_sync, query, num_results=num_results, lang="ru" # <-- Убрали stop=
+        )
         results_list = list(search_results)
-        if not results_list: return "Поиск Google не дал результатов."
+        if not results_list:
+            logger.warning(f"!!!! Google поиск по '{query}' не дал результатов.")
+            return "Поиск Google не дал результатов по данному запросу."
+
         formatted_results = f"Результаты поиска Google по запросу '{query}':\n" + "".join(f"{i}. {r}\n" for i, r in enumerate(results_list, 1))
-        logger.info(f"Поиск Google по '{query}' вернул {len(results_list)} ссылок.")
+        logger.info(f"!!!! Поиск Google по '{query}' успешно вернул {len(results_list)} ссылок.")
         return formatted_results[:1500]
+
     except Exception as e:
-        logger.exception(f"Ошибка во время поиска Google '{query}': {e}")
+        logger.exception(f"!!!! ОШИБКА во время выполнения Google поиска по запросу '{query}': {e}")
         return f"Ошибка при выполнении поиска Google: {e}"
 
 # --- Вспомогательная функция для обработки хода Gemini ---
