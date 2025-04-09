@@ -45,7 +45,7 @@ if not GOOGLE_API_KEY: exit("Google API ключ не найден")
 AVAILABLE_MODELS = {
     '⚡ Flash': 'gemini-2.0-flash-001',
     '🧠 Pro Exp': 'gemini-2.5-pro-exp-03-25',
-    '🖼️ Imagen 3 (Картинки!)': 'imagen-3.0-generate-002',
+    '🖼️ Image': 'gemini-2.0-flash-exp-image-generation',
 }
 DEFAULT_MODEL_ALIAS = '⚡ Flash'
 
