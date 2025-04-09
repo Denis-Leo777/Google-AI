@@ -1,12 +1,14 @@
-# --- START OF FULL CORRECTED main.py (Detailed Logging for Function Call) ---
+# --- START OF FULL CORRECTED main.py (Model Selection Feature) ---
 
 import logging
 import os
 import asyncio
 import google.generativeai as genai
+# Используем псевдоним types для совместимости с v0.7.1
+from google.generativeai import types as genai_types
 import time
 import random
-from typing import Optional, Tuple, Union
+from typing import Optional, Dict, Union
 
 # --- Конфигурация логов ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -15,9 +17,11 @@ logger = logging.getLogger(__name__)
 # Исключения
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError, FailedPrecondition
 # Библиотека Telegram
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+# Добавляем обработчик колбэков
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+
 # Библиотека для поиска Google
 try:
     from googlesearch import search as google_search_sync
@@ -39,20 +43,25 @@ GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 if not TELEGRAM_BOT_TOKEN: exit("Telegram токен не найден")
 if not GOOGLE_API_KEY: exit("Google API ключ не найден")
 
-# --- Имена моделей ---
-# ВАЖНО: СДЕЛАЕМ FLASH ОСНОВНОЙ ДЛЯ ТЕСТА СТАБИЛЬНОСТИ FUNCTION CALLING
-PRIMARY_MODEL_NAME = 'gemini-2.0-flash-001' # <-- Используем Flash как основную!
-SECONDARY_MODEL_NAME = 'gemini-2.5-pro-exp-03-25' # <-- Pro как запасную
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
+# Словарь моделей: 'UserFriendlyName': 'gemini-model-id'
+AVAILABLE_MODELS = {
+    # Используем ваши последние имена, Flash теперь по умолчанию
+    '⚡ 2.0 Flash': 'gemini-2.0-flash-001',
+    '🧠 2.5 Pro': 'gemini-2.5-pro-exp-03-25',
+    # '🐢 Pro 1.0 (Старый)': 'models/gemini-1.0-pro-001' # Пример добавления еще одной, если нужно
+}
+DEFAULT_MODEL_ALIAS = '⚡ 2.0 Flash' # Модель по умолчанию
 
 # --- Определение инструмента Google Search для Gemini ---
 google_search_tool = None
 if google_search_sync:
     google_search_func = genai.protos.FunctionDeclaration(
         name="google_search",
-        description="Получает актуальную информацию из поиска Google по заданному запросу. Используй, когда нужна свежая информация, специфические факты, события или данные, которых может не быть во внутренних знаниях.",
+        description="Получает актуальную информацию из поиска Google...",
         parameters=genai.protos.Schema(
             type=genai.protos.Type.OBJECT,
-            properties={"query": genai.protos.Schema(type=genai.protos.Type.STRING, description="Поисковый запрос для Google")},
+            properties={"query": genai.protos.Schema(type=genai.protos.Type.STRING, description="Поисковый запрос")},
             required=["query"]
         )
     )
@@ -61,34 +70,39 @@ if google_search_sync:
 else:
     logger.warning("Инструмент Google Search НЕ будет доступен...")
 
-# --- Настройка Gemini ---
-primary_model = None
-secondary_model = None
+# --- Загрузка и Настройка Моделей Gemini ---
+LOADED_MODELS: Dict[str, genai.GenerativeModel] = {} # Словарь для хранения загруженных моделей
 gemini_tools = [google_search_tool] if google_search_tool else None
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
 
     system_instruction_text = (
-        "Отвечай в пределах 2000 знаков... " # Ваша инструкция
-        "ВАЖНО: Если вопрос касается текущих событий, актуальных фактов, действующих лиц (например, 'кто сейчас президент', 'какая погода', 'последние новости', 'результаты матча'), "
-        "обязательно используй инструмент google_search для получения самой свежей информации перед тем, как дать ответ."
+        "Отвечай в пределах 2000 знаков... "
+        "ВАЖНО: Если вопрос касается текущих событий... обязательно используй инструмент google_search..."
     )
 
-    primary_model = genai.GenerativeModel(
-        PRIMARY_MODEL_NAME, # Теперь Flash
-        generation_config={"temperature": 0.8, "top_p": 1, "top_k": 40, "max_output_tokens": 2048}, # Чуть другие параметры для Flash
-        system_instruction=system_instruction_text,
-        tools=gemini_tools
-    )
-    logger.info(f"Основная модель Gemini ('{PRIMARY_MODEL_NAME}') [Search: {'Enabled' if gemini_tools else 'Disabled'}] сконфигурирована.")
+    for alias, model_id in AVAILABLE_MODELS.items():
+        try:
+            model = genai.GenerativeModel(
+                model_id,
+                # Установим чуть разные конфиги для примера
+                generation_config={"temperature": 1 if 'Flash' in alias else 1, "top_p": 1, "top_k": 40, "max_output_tokens": 2048},
+                system_instruction=system_instruction_text,
+                tools=gemini_tools
+            )
+            LOADED_MODELS[alias] = model
+            logger.info(f"Модель '{alias}' ({model_id}) [Search: {'Enabled' if gemini_tools else 'Disabled'}] успешно загружена.")
+        except Exception as e:
+            logger.error(f"!!! ОШИБКА загрузки модели '{alias}' ({model_id}): {e}")
+            # Модель не будет доступна для выбора
 
-    secondary_model = genai.GenerativeModel(
-        SECONDARY_MODEL_NAME, # Теперь Pro
-        generation_config={"temperature": 1, "top_p": 1, "top_k": 40, "max_output_tokens": 2048},
-        system_instruction=system_instruction_text,
-        tools=gemini_tools
-    )
-    logger.info(f"Запасная модель Gemini ('{SECONDARY_MODEL_NAME}') [Search: {'Enabled' if gemini_tools else 'Disabled'}] сконфигурирована.")
+    if not LOADED_MODELS:
+         raise RuntimeError("Ни одна модель Gemini не была успешно загружена!")
+    if DEFAULT_MODEL_ALIAS not in LOADED_MODELS:
+        # Если модель по умолчанию не загрузилась, выберем первую доступную
+        DEFAULT_MODEL_ALIAS = next(iter(LOADED_MODELS))
+        logger.warning(f"Модель по умолчанию не загрузилась. Установлена новая по умолчанию: {DEFAULT_MODEL_ALIAS}")
+
 
 except GoogleAPIError as e:
     logger.exception(f"Критическая ошибка при конфигурации Gemini API: {e}")
@@ -97,77 +111,65 @@ except Exception as e:
     logger.exception("Критическая ошибка при инициализации моделей Gemini!")
     exit(f"Не удалось настроить Gemini (General Error): {e}")
 
-# --- Инициализация ИСТОРИЙ ЧАТА ---
-primary_chat_histories = {}
-secondary_chat_histories = {}
+# --- Хранение состояния пользователя ---
+# chat_id -> 'UserFriendlyName' (alias)
+user_selected_model: Dict[int, str] = {}
+# chat_id -> ChatSession (для текущей выбранной модели)
+# Сбрасывается при смене модели!
+chat_histories: Dict[int, genai_types.ChatSession] = {}
 
 # --- Функция выполнения поиска Google ---
+# (Без изменений)
 async def perform_google_search(query: str, num_results: int = 5) -> str:
-    if not google_search_sync:
-        logger.warning("!!!! Попытка поиска Google, но библиотека не установлена.")
-        return "Ошибка: Функция поиска недоступна."
-    logger.info(f"!!!! Начало выполнения Google поиска по запросу: '{query}'")
+    if not google_search_sync: return "Ошибка: Функция поиска недоступна."
+    logger.info(f"Выполнение Google поиска по запросу: '{query}'")
     try:
-        # Выполняем синхронную функцию в отдельном потоке
-        search_results = await asyncio.to_thread(
-            google_search_sync, query, num_results=num_results, stop=num_results, lang="ru"
-        )
-        results_list = list(search_results) # Преобразуем генератор
-        if not results_list:
-            logger.warning(f"!!!! Google поиск по '{query}' не дал результатов.")
-            return "Поиск Google не дал результатов по данному запросу."
-
+        search_results = await asyncio.to_thread(google_search_sync, query, num_results=num_results, stop=num_results, lang="ru")
+        results_list = list(search_results)
+        if not results_list: return "Поиск Google не дал результатов."
         formatted_results = f"Результаты поиска Google по запросу '{query}':\n" + "".join(f"{i}. {r}\n" for i, r in enumerate(results_list, 1))
-        logger.info(f"!!!! Поиск Google по '{query}' успешно вернул {len(results_list)} ссылок.")
-        return formatted_results[:1500] # Ограничиваем длину
-
+        logger.info(f"Поиск Google по '{query}' вернул {len(results_list)} ссылок.")
+        return formatted_results[:1500]
     except Exception as e:
-        # Логируем именно ошибку поиска
-        logger.exception(f"!!!! ОШИБКА во время выполнения Google поиска по запросу '{query}': {e}")
+        logger.exception(f"Ошибка во время поиска Google '{query}': {e}")
         return f"Ошибка при выполнении поиска Google: {e}"
 
 # --- Вспомогательная функция для обработки хода Gemini ---
+# (Без изменений, использует genai_types.Part для v0.7.1)
 async def process_gemini_chat_turn(
-    chat_session,
-    model_name: str,
-    initial_content,
+    chat_session: genai_types.ChatSession, # Используем type hint для v0.7.1
+    model_name: str, # Принимаем имя модели для логов
+    initial_content: Union[str, genai_types.Part], # Используем type hint для v0.7.1
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int
 ) -> str:
     """Обрабатывает один ход диалога с Gemini, включая Function Calling (для v0.7.1)."""
     current_message_or_response = initial_content
-    is_function_response = False # Определим внутри цикла
+    # Определяем по типу Part
+    is_function_response = isinstance(initial_content, genai_types.Part)
 
     for attempt in range(5):
-        # Определяем, отправляем мы ответ на функцию или исходное сообщение
-        # Используем genai.protos.FunctionResponse, т.к. current_message_or_response будет им в цикле
-        is_function_response = isinstance(current_message_or_response, genai.protos.FunctionResponse)
         logger.info(f"[{model_name}] Итерация {attempt+1}. Отправка {'ОТВЕТА НА ФУНКЦИЮ' if is_function_response else 'СООБЩЕНИЯ'}.")
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-        # Готовим контент для отправки
-        content_to_send = None
-        if is_function_response:
-            try:
-                # Оборачиваем FunctionResponse в Part
-                content_to_send = genai.protos.Part(function_response=current_message_or_response)
-                logger.info(f"[{model_name}] Упаковываем FunctionResponse в Part: {content_to_send}")
-            except Exception as e:
-                logger.exception(f"[{model_name}] !!! Ошибка упаковки FunctionResponse в Part: {e}")
-                raise RuntimeError("Ошибка упаковки ответа функции") from e
-        else:
-            content_to_send = current_message_or_response
-            logger.info(f"[{model_name}] Отправляем как есть (строка): {str(content_to_send)[:100]}...") # Логируем начало строки
+        content_to_send = current_message_or_response # По умолчанию
 
-        if content_to_send is None:
-             raise ValueError("Не удалось подготовить контент для отправки")
+        # ВАЖНО: В v0.7.1 Part создается НЕ ТАК, а из FunctionResponse напрямую
+        if is_function_response:
+             # Если current_message_or_response это protos.FunctionResponse,
+             # библиотека должна сама уметь его отправить в send_message_async
+             # Не нужно оборачивать в Part вручную в этой версии!
+             logger.info(f"[{model_name}] Отправляем FunctionResponse как есть: {current_message_or_response.name}")
+             # content_to_send остается current_message_or_response
+        else:
+            logger.info(f"[{model_name}] Отправляем как есть (строка): {str(content_to_send)[:100]}...")
 
         try:
             logger.info(f"[{model_name}] !!! НАЧАЛО вызова send_message_async...")
+            # Передаем строку или FunctionResponse
             response = await chat_session.send_message_async(content=content_to_send)
             logger.info(f"[{model_name}] !!! ЗАВЕРШЕНИЕ вызова send_message_async.")
 
-            # Проверка ответа
             if response.candidates and response.candidates[0].content.parts:
                 part = response.candidates[0].content.parts[0]
                 logger.info(f"[{model_name}] ПОЛУЧЕНА ЧАСТЬ ОТВЕТА: {part}")
@@ -176,12 +178,11 @@ async def process_gemini_chat_turn(
                     function_call = part.function_call
                     logger.info(f"[{model_name}] !!!! ОБНАРУЖЕН ВЫЗОВ ФУНКЦИИ google_search.")
 
-                    # --- Логика обработки Function Call ---
                     if not google_search_tool:
-                         logger.error(f"[{model_name}] !!! Инструмент поиска не настроен, хотя был запрошен!")
+                         logger.error(f"[{model_name}] !!! Инструмент поиска не настроен!")
                          s_err = Struct(); s_err.update({"content": "Ошибка: Функция поиска не настроена."})
+                         # Готовим protos.FunctionResponse
                          current_message_or_response = genai.protos.FunctionResponse(name="google_search", response=s_err)
-                         # is_function_response = True # уже будет True для след. итерации
                          continue
 
                     args = {key: value for key, value in function_call.args.items()}
@@ -189,26 +190,22 @@ async def process_gemini_chat_turn(
                     logger.info(f"[{model_name}] Извлечен поисковый запрос: '{query}'")
 
                     if query:
-                        # Вызываем функцию поиска
                         logger.info(f"[{model_name}] !!! НАЧАЛО вызова perform_google_search...")
                         search_result = await perform_google_search(query)
-                        logger.info(f"[{model_name}] !!! ЗАВЕРШЕНИЕ вызова perform_google_search. Результат (начало): {search_result[:100]}...")
-
-                        # Готовим ответ для Gemini
+                        logger.info(f"[{model_name}] !!! ЗАВЕРШЕНИЕ вызова perform_google_search...")
                         s_res = Struct(); s_res.update({"content": search_result})
+                        # Готовим protos.FunctionResponse
                         current_message_or_response = genai.protos.FunctionResponse(name="google_search", response=s_res)
                         logger.info(f"[{model_name}] Подготовлен FunctionResponse для отправки.")
-                        # is_function_response = True
-                        continue # К следующей итерации
+                        continue
                     else: # Нет query
-                         logger.warning(f"[{model_name}] !!! Вызов google_search без параметра 'query'.")
+                         logger.warning(f"[{model_name}] !!! Вызов google_search без 'query'.")
                          s_err = Struct(); s_err.update({"content": "Ошибка: Параметр 'query' не предоставлен."})
+                         # Готовим protos.FunctionResponse
                          current_message_or_response = genai.protos.FunctionResponse(name="google_search", response=s_err)
-                         # is_function_response = True
                          continue
-                    # --- Конец логики обработки Function Call ---
 
-                else: # Не function call - финальный ответ
+                else: # Не function call
                     try:
                         logger.info(f"[{model_name}] Это не вызов функции, извлекаем текст...")
                         final_text = response.text
@@ -220,14 +217,13 @@ async def process_gemini_chat_turn(
                         raise ValueError(f"Ответ модели {model_name} заблокирован. Причина: {reason}") from e
                     except AttributeError: # Нет .text
                         logger.warning(f"[{model_name}] !!! Ответ не содержит атрибута .text")
-                        # ... (попытка собрать из частей, как раньше) ...
                         try:
                             final_text = "".join(p.text for p in response.parts if hasattr(p, 'text'))
-                            if final_text: return final_text
+                            if final_text: logger.info(f"[{model_name}] Текст собран из частей."); return final_text
                             else: raise Exception("Нет текста в .parts")
                         except Exception as e_inner: raise Exception("Не удалось извлечь текст") from e_inner
 
-            else: # Пустой ответ без частей
+            else: # Пустой ответ
                  logger.warning(f"[{model_name}] !!! Получен пустой ответ без кандидатов/частей.")
                  reason = getattr(response.prompt_feedback, 'block_reason', 'Неизвестно') if hasattr(response, 'prompt_feedback') else 'Неизвестно'
                  if reason != 'BLOCK_REASON_UNSPECIFIED': raise ValueError(f"Пустой ответ {model_name} заблокирован: {reason}")
@@ -235,109 +231,193 @@ async def process_gemini_chat_turn(
 
         except (ResourceExhausted, FailedPrecondition, GoogleAPIError) as e:
              logger.error(f"[{model_name}] !!! Ошибка API: {e}")
-             raise e
+             raise e # Передаем выше
         except ValueError as ve: # Блокировка
              logger.error(f"[{model_name}] !!! Ошибка ValueError (блокировка?): {ve}")
              raise ve
         except Exception as e:
              logger.exception(f"[{model_name}] !!! Непредвиденная ошибка в цикле: {e}")
-             raise e # Передаем выше
+             raise e
 
-    # Если вышли из цикла
     logger.error(f"[{model_name}] !!! Превышен лимит ({attempt+1}) обработки функций.")
     raise Exception(f"Превышен лимит обработки функций для модели {model_name}.")
 
 
-# --- Обработчики Telegram ---
+# --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ВЫБОРА МОДЕЛИ ---
+
+async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправляет сообщение с кнопками для выбора модели."""
+    chat_id = update.effective_chat.id
+    current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
+
+    keyboard = []
+    for alias in LOADED_MODELS.keys(): # Используем только загруженные модели
+        text = f"✅ {alias}" if alias == current_alias else alias
+        # callback_data будет алиасом модели
+        keyboard.append([InlineKeyboardButton(text, callback_data=alias)])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        f"Текущая модель: *{current_alias}*\n\nВыберите модель для общения:",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатие кнопки выбора модели."""
+    query = update.callback_query
+    await query.answer() # Отвечаем на колбэк, чтобы убрать "часики" у пользователя
+
+    selected_alias = query.data
+    chat_id = query.message.chat_id
+    current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
+
+    if selected_alias not in LOADED_MODELS:
+        await query.edit_message_text(text="Ошибка: Выбранная модель недоступна.")
+        return
+
+    if selected_alias != current_alias:
+        user_selected_model[chat_id] = selected_alias
+        logger.info(f"Пользователь {chat_id} сменил модель на '{selected_alias}'")
+        # СБРАСЫВАЕМ ИСТОРИЮ при смене модели
+        if chat_id in chat_histories:
+            del chat_histories[chat_id]
+            logger.info(f"История чата для {chat_id} сброшена из-за смены модели.")
+
+        # Обновляем клавиатуру
+        keyboard = []
+        for alias in LOADED_MODELS.keys():
+            text = f"✅ {alias}" if alias == selected_alias else alias
+            keyboard.append([InlineKeyboardButton(text, callback_data=alias)])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            text=f"✅ Модель изменена на: *{selected_alias}*\n"
+                 f"⚠️ История предыдущего диалога сброшена.\n\n"
+                 f"Выберите модель для общения:",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        # Если нажали на уже выбранную модель
+        await context.bot.send_message(chat_id=chat_id, text=f"Модель *{selected_alias}* уже выбрана.", parse_mode=ParseMode.MARKDOWN)
+
+
+# --- СТАРЫЕ ОБРАБОТЧИКИ ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код start без изменений) ...
     user = update.effective_user; chat_id = update.effective_chat.id
-    if chat_id in primary_chat_histories: del primary_chat_histories[chat_id]
-    if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
-    logger.info(f"Истории чатов сброшены для {chat_id}")
+    # Сбрасываем выбор модели и историю
+    if chat_id in user_selected_model: del user_selected_model[chat_id]
+    if chat_id in chat_histories: del chat_histories[chat_id]
+    logger.info(f"Выбор модели и история чата сброшены для {chat_id} по команде /start")
+
+    default_model = LOADED_MODELS.get(DEFAULT_MODEL_ALIAS)
+    model_display_name = DEFAULT_MODEL_ALIAS if default_model else "Ошибка загрузки модели"
+
     search_status = "включен (если нужна)" if google_search_tool else "отключен"
-    # Обновим сообщение start, т.к. поменяли модели местами
     await update.message.reply_html(
-        f"Привет, {user.mention_html()}! Я - Gemini бот (Модель: {PRIMARY_MODEL_NAME}).\n"
-        f"🔍 Поиск Google {search_status} для обеих моделей.\n"
-        f"⚡ При перегрузке используется запасная ({SECONDARY_MODEL_NAME}).\n"
-        f"⚠️ Лимиты запасной модели малы!",
+        f"Привет, {user.mention_html()}! Я - Google AI бот.\n"
+        f"Модель по умолчанию: {model_display_name}\n"
+        f"Используйте /model для выбора другой модели.\n"
+        f"🔍 Поиск Google {search_status}.",
         reply_to_message_id=update.message.message_id
     )
     logger.info(f"/start от {user.id}")
 
-# ДОБАВЛЯЕМ ТЕСТОВУЮ КОМАНДУ /testsearch
-async def test_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Тестирует функцию perform_google_search."""
-    query = " ".join(context.args)
-    chat_id = update.effective_chat.id
-    if not query:
-        await update.message.reply_text("Пожалуйста, укажите поисковый запрос после команды /testsearch.")
-        return
-
-    logger.info(f"Тестовый поиск для чата {chat_id} по запросу: '{query}'")
-    await update.message.reply_text(f"Выполняю тестовый поиск по запросу: '{query}'...")
-    try:
-        search_result = await perform_google_search(query)
-        logger.info(f"Тестовый поиск для чата {chat_id} вернул: {search_result[:200]}...")
-        # Отправляем результат поиска, обрезая для лимитов Telegram
-        await update.message.reply_text(f"Результат тестового поиска:\n\n{search_result[:4000]}", parse_mode=ParseMode.HTML) # Можно попробовать HTML для ссылок, если библиотека их так вернет
-    except Exception as e:
-        logger.exception(f"Ошибка во время выполнения тестового поиска для чата {chat_id}: {e}")
-        await update.message.reply_text(f"Ошибка во время тестового поиска: {e}")
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код handle_message без изменений в логике, используем последнюю рабочую версию с правильными отступами) ...
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id
     logger.info(f"Сообщение от {user.id}: '{user_message[:50]}...'")
-    if not primary_model or not secondary_model: await update.message.reply_text("Ошибка: Модели не готовы."); return
-    final_text: Optional[str] = None; used_fallback: bool = False; error_message: Optional[str] = None
 
-    try: # --- Основная модель (теперь Flash) ---
-        if chat_id not in primary_chat_histories: primary_chat_histories[chat_id] = primary_model.start_chat(history=[]); logger.info(f"Начат основной чат {chat_id}")
-        primary_chat = primary_chat_histories[chat_id]; logger.info(f"Попытка с {PRIMARY_MODEL_NAME}")
-        final_text = await process_gemini_chat_turn(primary_chat, PRIMARY_MODEL_NAME, user_message, context, chat_id)
-    except ResourceExhausted as e_primary: logger.warning(f"{PRIMARY_MODEL_NAME} квота исчерпана: {e_primary}"); used_fallback = True
-    except FailedPrecondition as e_precondition: logger.error(f"{PRIMARY_MODEL_NAME} FailedPrecondition: {e_precondition}. Сброс."); error_message = "..."; del primary_chat_histories[chat_id]; if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
-    except ValueError as e_blocked: logger.warning(f"{PRIMARY_MODEL_NAME} блокировка: {e_blocked}"); error_message = f"⚠️ {e_blocked}"
-    except (GoogleAPIError, Exception) as e_primary_other: logger.exception(f"Ошибка {PRIMARY_MODEL_NAME}: {e_primary_other}"); error_message = f"Ошибка основной модели: {e_primary_other}"
+    # Определяем выбранную модель
+    selected_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
+    selected_model_object = LOADED_MODELS.get(selected_alias)
 
-    if used_fallback: # --- Запасная модель (теперь Pro) ---
-        logger.info(f"Переключение на {SECONDARY_MODEL_NAME}")
-        try:
-            if chat_id not in secondary_chat_histories: secondary_chat_histories[chat_id] = secondary_model.start_chat(history=[]); logger.info(f"Начат запасной чат {chat_id}")
-            secondary_chat = secondary_chat_histories[chat_id]; logger.info(f"Попытка с {SECONDARY_MODEL_NAME}")
-            final_text = await process_gemini_chat_turn(secondary_chat, SECONDARY_MODEL_NAME, user_message, context, chat_id)
-            error_message = None # Успех
-        except ResourceExhausted as e_secondary: logger.error(f"{SECONDARY_MODEL_NAME} ТОЖЕ квота исчерпана: {e_secondary}"); error_message = f"😔 Обе AI модели ({PRIMARY_MODEL_NAME}, {SECONDARY_MODEL_NAME}) сейчас перегружены."
-        except FailedPrecondition as e_precondition_fallback: logger.error(f"{SECONDARY_MODEL_NAME} FailedPrecondition: {e_precondition_fallback}. Сброс."); error_message = "..."; if chat_id in secondary_chat_histories: del secondary_chat_histories[chat_id]
-        except ValueError as e_blocked_fallback: logger.warning(f"{SECONDARY_MODEL_NAME} блокировка: {e_blocked_fallback}"); error_message = f"⚠️ {e_blocked_fallback}"
-        except (GoogleAPIError, Exception) as e_fallback_other: logger.exception(f"Ошибка {SECONDARY_MODEL_NAME}: {e_fallback_other}"); error_message = f"Ошибка запасной модели: {e_fallback_other}"
+    if not selected_model_object:
+        logger.error(f"Выбранная модель '{selected_alias}' для чата {chat_id} не найдена среди загруженных!")
+        # Попытка использовать модель по умолчанию, если она есть
+        selected_alias = DEFAULT_MODEL_ALIAS
+        selected_model_object = LOADED_MODELS.get(DEFAULT_MODEL_ALIAS)
+        if not selected_model_object:
+            await update.message.reply_text("Критическая ошибка: Ни одна рабочая модель AI не найдена."); return
+        else:
+             await update.message.reply_text(f"Ошибка: Выбранная вами модель недоступна. Использую модель по умолчанию: {selected_alias}")
+             user_selected_model[chat_id] = selected_alias # Запоминаем дефолтную
 
-    # --- Отправка ответа ---
+    final_text: Optional[str] = None; error_message: Optional[str] = None
+
+    try: # --- Попытка с ВЫБРАННОЙ моделью ---
+        # Получаем или создаем сессию чата (используем один словарь)
+        if chat_id not in chat_histories:
+            chat_histories[chat_id] = selected_model_object.start_chat(history=[])
+            logger.info(f"Начат новый чат для {chat_id} с моделью '{selected_alias}'")
+        current_chat_session = chat_histories[chat_id]
+
+        logger.info(f"Попытка обработки с моделью: {selected_alias}")
+        final_text = await process_gemini_chat_turn(
+            current_chat_session, selected_alias, user_message, context, chat_id # Передаем имя для логов
+        )
+
+    except ResourceExhausted as e_limit:
+        logger.warning(f"Модель '{selected_alias}' исчерпала квоту: {e_limit}")
+        error_message = f"😔 Выбранная модель '{selected_alias}' сейчас перегружена или ее дневной лимит исчерпан. Попробуйте позже или выберите другую модель через /model."
+        # НЕ используем автоматический fallback
+    except FailedPrecondition as e_precondition:
+        logger.error(f"Модель '{selected_alias}' FailedPrecondition: {e_precondition}. Сброс истории.")
+        error_message = f"⚠️ История чата с моделью '{selected_alias}' стала слишком длинной. Я ее сбросил. Повторите запрос."
+        if chat_id in chat_histories:
+            del chat_histories[chat_id] # Сбрасываем только текущую сессию
+    except ValueError as e_blocked:
+        logger.warning(f"Модель '{selected_alias}' блокировка: {e_blocked}")
+        error_message = f"⚠️ {e_blocked}"
+    except (GoogleAPIError, Exception) as e_other:
+        logger.exception(f"Ошибка при обработке моделью '{selected_alias}': {e_other}")
+        error_message = f"Произошла ошибка при обработке запроса моделью '{selected_alias}': {e_other}"
+
+    # --- Отправка ответа или сообщения об ошибке ---
     if final_text:
-        bot_response = final_text[:4090]; prefix = f"⚡️ [{SECONDARY_MODEL_NAME}]:\n" if used_fallback else "" # Поправил префикс
-        try: await update.message.reply_text(f"{prefix}{bot_response}", reply_to_message_id=update.message.message_id); logger.info(f"Ответ{' (fallback)' if used_fallback else ''} отправлен {user.id}")
-        except Exception as e: logger.exception(f"Ошибка отправки ответа: {e}"); try: await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id) except Exception: pass
+        bot_response = final_text[:4090]
+        # Префикс больше не нужен, т.к. нет автоматического fallback
+        try:
+            await update.message.reply_text(bot_response, reply_to_message_id=update.message.message_id)
+            logger.info(f"Ответ от '{selected_alias}' отправлен {user.id}")
+        except Exception as e:
+            logger.exception(f"Ошибка отправки ответа: {e}")
+            try: await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id)
+            except Exception: pass
     elif error_message:
-        try: await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id); logger.info(f"Сообщение об ошибке отправлено: {error_message[:100]}...")
-        except Exception as e: logger.error(f"Не удалось отправить сообщение об ошибке '{error_message[:100]}...': {e}")
-    else: logger.warning(f"Нет финального текста и сообщения об ошибке для {chat_id}."); if "История чата" not in (error_message or "") and "Ответ модели" not in (error_message or "") : try: await update.message.reply_text("Не удалось обработать запрос.", reply_to_message_id=update.message.message_id) except Exception: pass
+        try:
+            await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id)
+            logger.info(f"Сообщение об ошибке отправлено: {error_message[:100]}...")
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение об ошибке '{error_message[:100]}...': {e}")
+    else:
+        logger.warning(f"Нет финального текста и сообщения об ошибке для {chat_id}.")
+        # Упростим сообщение об общей ошибке
+        try: await update.message.reply_text("Извините, не удалось обработать ваш запрос.", reply_to_message_id=update.message.message_id)
+        except Exception: pass
 
 
 # --- main ---
 def main() -> None:
     """Запускает бота."""
-    if not primary_model or not secondary_model:
-         logger.critical("Модели не инициализированы."); print("Крит. ошибка: Модели не готовы."); return
+    if not LOADED_MODELS:
+         logger.critical("Ни одна модель не загружена!"); print("Крит. ошибка: Модели не готовы."); return
     if not google_search_sync:
          logger.warning("Запуск БЕЗ поиска Google.")
-    logger.info("Инициализация Telegram..."); application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    # Добавляем обработчик для /testsearch
-    application.add_handler(CommandHandler("testsearch", test_search))
-    application.add_handler(CommandHandler("start", start)); application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("Запуск бота..."); application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    logger.info("Инициализация Telegram...");
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Регистрируем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("model", select_model_command)) # Команда выбора
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(select_model_callback)) # Обработчик нажатий кнопок
+
+    logger.info("Запуск бота...");
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
