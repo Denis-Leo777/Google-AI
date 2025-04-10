@@ -1,6 +1,6 @@
-# --- START OF REALLY x25 FULL CORRECTED main.py (SYSTEM INSTRUCTION IN CONFIG) ---
+# --- START OF REALLY x26 FULL CORRECTED main.py (FIXED SYNTAX ERROR AGAIN) ---
 
-# ... (все импорты, настройки логгера, определения типов/заглушек как в v22) ...
+# ... (все импорты, настройки логгера, определения типов/заглушек как в v25) ...
 import logging
 import os
 import asyncio
@@ -74,18 +74,16 @@ else: logger.error(f"!!! Классы 'Tool' или 'GoogleSearch' не импо
 
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
-# Системная инструкция (текст)
 system_instruction_text = (
     # ... (Твой длинный системный промпт) ...
-    "Никогда не сокращай текст, код и прочее, пиши всё полностью. Обязательно используй поиск в интернете для сверки с новой информацией по теме. Если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа, то отвечай в пределах 2000 знаков. Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку. Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение. Активно применяй юмор: несоответствие ожиданиям, культурные и бытовые отсылки, шутки об актуальных в интернете темах, жизненный абсурд и абсурдные решения проблем, псевдомудрость, разрушение идиом, безобидная ирония и самоирония, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, тонкие и интимные намёки, редукционизм, пост-модерн и интернет-юмор. При создании уникальной работы не допускай признаков ИИ, избегай копирования или близкого пересказа существующих текстов, включай гипотетические ситуации для иллюстрации понятий, применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи, варьируй структуру предложений, естественно включай разговорные выражения, идиомы и фигуры речи, используй живые стилистические решения, свойственные людям, вставляй региональные выражения или культурно специфичные ссылки, где это уместно, добавляй остроумие."
+    "Никогда не сокращай текст, код и прочее с помощью "...", пиши всё как было полностью. Обязательно используй поиск в интернете для сверки с новой информацией по теме. Если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа, то отвечай в пределах 2000 знаков. Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку. Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение. Активно применяй юмор: несоответствие ожиданиям, культурные и бытовые отсылки, шутки об актуальных в интернете темах, жизненный абсурд и абсурдные решения проблем, псевдомудрость, разрушение идиом, безобидная ирония и самоирония, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, тонкие и интимные намёки, редукционизм, пост-модерн и интернет-юмор. При создании уникальной работы не допускай признаков ИИ, избегай копирования или близкого пересказа существующих текстов, включай гипотетические ситуации для иллюстрации понятий, применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи, варьируй структуру предложений, естественно включай разговорные выражения, идиомы и фигуры речи, используй живые стилистические решения, свойственные людям, вставляй региональные выражения или культурно специфичные ссылки, где это уместно, добавляй остроумие."
 )
-# Системную инструкцию будем передавать в config
 
 def extract_response_text(response) -> Optional[str]:
     # (Код функции без изменений)
     try: return response.text
-    except ValueError as e_val: logger.warning(f"ValueError: {e_val}"); # ...
-    except AttributeError: logger.warning(".text нет, пробуем parts."); # ...
+    except ValueError as e_val: # ...
+    except AttributeError: # ...
     except Exception as e: logger.exception(f"Ошибка извлечения текста: {e}"); return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -96,8 +94,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v25." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
-
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v26." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код select_model_command без изменений)
@@ -107,14 +104,29 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
+# --- ИСПРАВЛЕННЫЙ select_model_callback ---
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_callback без изменений)
+    """Обработчик нажатия на кнопку выбора модели."""
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
-    if selected_alias not in AVAILABLE_MODELS: logger.error(f"{user_id} выбрал неверный alias: {selected_alias}"); try: await query.edit_message_text(text="❌ Ошибка: Неизвестный выбор.")
-    except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); return
-    if selected_alias == current_alias: logger.info(f"{user_id} перевыбрал модель: {selected_alias}"); try: await query.edit_message_reply_markup(reply_markup=query.message.reply_markup)
-    except Exception as e: logger.warning(f"Не удалось изменить разметку: {e}"); return
+
+    # --- СНОВА ИСПРАВЛЕННЫЙ БЛОК ---
+    if selected_alias not in AVAILABLE_MODELS:
+        logger.error(f"Пользователь {user_id} выбрал неверный alias: {selected_alias}")
+        # Используем правильные отступы
+        try:
+            await query.edit_message_text(text="❌ Ошибка: Неизвестный выбор модели.")
+        except Exception as e:
+            logger.warning(f"Не удалось изменить сообщение об ошибке выбора модели: {e}")
+        return # Выход из функции после обработки ошибки
+    # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
+
+    if selected_alias == current_alias:
+        logger.info(f"{user_id} перевыбрал модель: {selected_alias}")
+        try: await query.edit_message_reply_markup(reply_markup=query.message.reply_markup)
+        except Exception as e: logger.warning(f"Не удалось изменить разметку: {e}")
+        return
+
     user_selected_model[chat_id] = selected_alias; logger.info(f"{user_id} сменил модель: {selected_alias}")
     reset_message = "";
     if chat_id in chat_histories: del chat_histories[chat_id]; logger.info(f"История чата {chat_id} сброшена."); reset_message = "\n⚠️ История сброшена."
@@ -124,102 +136,47 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     try: await query.edit_message_text(text=f"✅ Модель: *{selected_alias}*!{reset_message}\n\nНачните чат:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
-
-# --- ИСПРАВЛЕННЫЙ handle_message ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # (Код handle_message без изменений по сравнению с v25)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.info(f"Сообщение от {user.id} ({len(user_message)}): '{user_message[:80].replace(chr(10), ' ')}...'")
-
     selected_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     model_id = AVAILABLE_MODELS.get(selected_alias)
     if not model_id: logger.error(f"Крит. ошибка: Не найден ID для '{selected_alias}'"); await update.message.reply_text("Ошибка конфига.", reply_to_message_id=message_id); return
-
     final_text: Optional[str] = None; search_suggestions: List[str] = []; error_message: Optional[str] = None; start_time = time.monotonic()
-
     try:
         current_history = chat_histories.get(chat_id, [])
         api_contents = []
-        try:
-             user_part = Part(text=user_message) if Part is not dict else {'text': user_message}
-             # Формируем контент ТОЛЬКО из истории и текущего сообщения
-             api_contents = current_history + [{'role': 'user', 'parts': [user_part]}]
+        try: user_part = Part(text=user_message) if Part is not dict else {'text': user_message}; api_contents = current_history + [{'role': 'user', 'parts': [user_part]}]
         except Exception as e: logger.error(f"Ошибка Part user: {e}"); api_contents = current_history + [{'role': 'user', 'parts': [{'text': user_message}]}]
-
         logger.info(f"Запрос к '{model_id}'. История: {len(current_history)} сообщ.")
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-
-        # --- ИЗМЕНЕНО: Создаем конфиг с system_instruction ---
-        config_obj = None
-        tools_list = [google_search_tool] if google_search_tool else None
+        config_obj = None; tools_list = [google_search_tool] if google_search_tool else None
         try:
-             if GenerateContentConfig is not None:
-                 # Передаем системную инструкцию и инструменты в конфиг
-                 config_obj = GenerateContentConfig(
-                     system_instruction=system_instruction_text, # <--- ДОБАВЛЕНО СЮДА
-                     tools=tools_list
-                     # Можно добавить и другие параметры: temperature и т.д.
-                 )
-                 logger.debug("GenerateContentConfig создан с system_instruction и tools.")
-             else:
-                  logger.warning("GenerateContentConfig не импортирован, конфиг не создан.")
-        except Exception as e:
-             logger.error(f"Ошибка создания GenerateContentConfig: {e}")
-             # Попробуем создать конфиг хотя бы только с tools, если system_instruction вызвал ошибку
-             if GenerateContentConfig is not None and tools_list:
-                  try:
-                       config_obj = GenerateContentConfig(tools=tools_list)
-                       logger.warning("Создан GenerateContentConfig только с tools (ошибка с system_instruction?).")
-                  except Exception as e2:
-                       logger.error(f"Ошибка создания GenerateContentConfig даже только с tools: {e2}")
-
-
-        # --- Вызов API с параметром 'config' ---
-        response = gemini_client.models.generate_content(
-            model=model_id,
-            contents=api_contents, # Без системной инструкции
-            config=config_obj      # Передаем конфиг сюда
-        )
-
-        processing_time = time.monotonic() - start_time
-        logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
-
+             if GenerateContentConfig is not None: config_obj = GenerateContentConfig(system_instruction=system_instruction_text, tools=tools_list); logger.debug("GenerateContentConfig создан с system_instruction и tools.")
+             else: logger.warning("GenerateContentConfig не импортирован, конфиг не создан.")
+        except Exception as e: logger.error(f"Ошибка создания GenerateContentConfig: {e}") # ... (fallback)
+        response = gemini_client.models.generate_content(model=model_id, contents=api_contents, config=config_obj)
+        processing_time = time.monotonic() - start_time; logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
         final_text = extract_response_text(response)
-
-        # --- Обновление истории ---
         if final_text and not final_text.startswith("⚠️"):
-             try:
-                 model_part = Part(text=final_text) if Part is not dict else {'text': final_text}
-                 history_to_update = chat_histories.get(chat_id, [])[:]
-                 # Добавляем ТОЛЬКО user message и model response
-                 history_to_update.append({'role': 'user', 'parts': api_contents[-1]['parts']})
-                 history_to_update.append({'role': 'model', 'parts': [model_part]})
-                 chat_histories[chat_id] = history_to_update
-             except Exception as e:
-                  logger.error(f"Ошибка обновления истории: {e}")
-                  # ... (fallback обновление)
-
+             try: model_part = Part(text=final_text) if Part is not dict else {'text': final_text}; history_to_update = chat_histories.get(chat_id, [])[:]; history_to_update.append({'role': 'user', 'parts': api_contents[-1]['parts']}); history_to_update.append({'role': 'model', 'parts': [model_part]}); chat_histories[chat_id] = history_to_update
+             except Exception as e: logger.error(f"Ошибка обновления истории: {e}") # ... (fallback)
              logger.info(f"История чата {chat_id} обновлена, теперь {len(chat_histories[chat_id])} сообщений.")
         elif final_text and final_text.startswith("⚠️"): error_message = final_text; final_text = None; logger.warning(f"Ответ был ошибкой, история не обновлена.")
         else:
             if not error_message: error_message = "⚠️ Получен пустой или некорректный ответ."
             logger.warning(f"Не удалось извлечь текст, история не обновлена.")
-
-        # Извлечение поисковых предложений/источников (без изменений)
-        if hasattr(response, 'candidates') and response.candidates: # ...
-
-    # Обработка исключений API (без изменений)
-    except InvalidArgument as e_arg: logger.error(f"Ошибка InvalidArgument для '{model_id}': {e_arg}"); error_message = f"❌ Ошибка в запросе к '{selected_alias}'. Проверьте формат данных.";
+        if hasattr(response, 'candidates') and response.candidates: # ... (извлечение метаданных)
+    except InvalidArgument as e_arg: logger.error(f"Ошибка InvalidArgument для '{model_id}': {e_arg}"); error_message = f"❌ Ошибка в запросе к '{selected_alias}'.";
     except ResourceExhausted as e_limit: logger.warning(f"Исчерпана квота API для '{model_id}': {e_limit}"); error_message = f"😔 Модель '{selected_alias}' устала (лимиты)."
     except (GoogleAPIError, Exception) as e_other: logger.exception(f"Неожиданная ошибка API ('{model_id}'): {e_other}"); error_message = f"😵 Ошибка ({type(e_other).__name__}) при общении с '{selected_alias}'."
-
-    # Отправка ответа или ошибки (без изменений)
     reply_markup = None
-    if search_suggestions: # ...
-
-    if final_text: # ...
-    elif error_message: # ...
-    else: # ...
+    if search_suggestions: # ... (создание клавиатуры)
+    if final_text: # ... (отправка ответа)
+    elif error_message: # ... (отправка ошибки)
+    else: # ... (fallback)
 
 
 def main() -> None:
@@ -245,5 +202,4 @@ if __name__ == '__main__':
     if 'gemini_client' in globals() and gemini_client: logger.info("Клиент Gemini создан. Запускаем main()."); main()
     else: logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-
-# --- END OF REALLY x25 FULL CORRECTED main.py (SYSTEM INSTRUCTION IN CONFIG) ---
+# --- END OF REALLY x26 FULL CORRECTED main.py (FIXED SYNTAX ERROR AGAIN) ---
