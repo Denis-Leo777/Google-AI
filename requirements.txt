@@ -1,6 +1,4 @@
 python-telegram-bot[ext]>=20.0
-google-generativeai==0.8.4 # <-- Убедимся, что версия зафиксирована
-# Убираем ненужные, если не используются больше нигде:
-# googlesearch-python
-# httpx
-# beautifulsoup4
+google-genai # <-- ИСПОЛЬЗУЕМ ЭТУ БИБЛИОТЕКУ!
+# Убираем google-generativeai
+# Убираем все остальные (googlesearch-python, httpx, beautifulsoup4), т.к. встроенный поиск должен работать
