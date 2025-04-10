@@ -1,10 +1,10 @@
-# --- START OF REALLY x6 FULL CORRECTED main.py (SyntaxError in extract_response_text FIXED) ---
+# --- START OF REALLY x7 FULL CORRECTED main.py ---
 
 import logging
 import os
 import asyncio
-import google.generativeai as genai # Используем пакет google-genai
-# Импорты типов ТЕПЕРЬ ДОЛЖНЫ РАБОТАТЬ из google.generativeai.types
+import google.generativeai as genai
+# Используем псевдоним types (нужна версия >= 0.8.0)
 from google.generativeai import types as genai_types
 import time
 import random
@@ -47,6 +47,7 @@ if not GOOGLE_API_KEY: exit("Google API ключ не найден")
 AVAILABLE_MODELS = {
     '⚡ Flash': 'gemini-2.0-flash-001',
     '🧠 Pro Exp': 'gemini-2.5-pro-exp-03-25',
+    '🖼️ Imagen 3 (Картинки!)': 'imagen-3.0-generate-002',
 }
 DEFAULT_MODEL_ALIAS = '⚡ Flash'
 
@@ -58,13 +59,13 @@ try:
          google_search_config = genai_types.GoogleSearch()
          google_search_tool = genai_types.Tool(google_search=google_search_config)
          search_tool_type_used = "GoogleSearch (v2.0+)"
-         logger.info(f"Инструмент ВСТРОЕННОГО поиска '{search_tool_type_used}' определен.")
+         logger.info(f"Инструмент '{search_tool_type_used}' определен.")
     elif hasattr(genai_types, 'GoogleSearchRetrieval'):
          google_search_retrieval_config = genai_types.GoogleSearchRetrieval()
-         google_search_tool = genai_types.Tool(google_search_retrieval=google_search_retrieval_config) # ИЗМЕНЕНО: используем google_search_retrieval здесь
+         google_search_tool = genai_types.Tool(google_search_retrieval=google_search_retrieval_config) # Используем правильное поле
          search_tool_type_used = "GoogleSearchRetrieval (v1.5)"
-         logger.info(f"Инструмент ВСТРОЕННОГО поиска '{search_tool_type_used}' определен.")
-    else: logger.error("!!! Классы GoogleSearch/GoogleSearchRetrieval НЕ НАЙДЕНЫ в genai_types.")
+         logger.info(f"Инструмент '{search_tool_type_used}' определен.")
+    else: logger.error("!!! Классы GoogleSearch/GoogleSearchRetrieval НЕ НАЙДЕНЫ.")
 except AttributeError as e: logger.error(f"!!! Ошибка атрибута при поиске инструмента: {e}")
 except Exception as e: logger.exception(f"!!! Ошибка при определении инструмента поиска: {e}")
 
@@ -73,12 +74,12 @@ LOADED_MODELS: Dict[str, genai.GenerativeModel] = {}
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
     system_instruction_text = (
-        "Отвечай... остроумие. "
+        "Отвечай в пределах 2000 знаков... "
         "КРИТИЧЕСКИ ВАЖНО: ... ПРИОРИТИЗИРУЙ информацию из google_search..."
     ) # Полная инструкция
     for alias, model_id in AVAILABLE_MODELS.items():
-        if 'imagen' in model_id.lower(): logger.warning(...); continue
-        current_tools = [google_search_tool] if google_search_tool else None # Передаем найденный инструмент
+        if 'imagen' in model_id.lower(): logger.warning(f"'{alias}' пропущена."); continue
+        current_tools = [google_search_tool] if google_search_tool else None
         try:
             model = genai.GenerativeModel(
                 model_id,
@@ -87,12 +88,12 @@ try:
                 tools=current_tools
             )
             LOADED_MODELS[alias] = model
-            logger.info(f"Модель '{alias}' ({model_id}) [Built-in Search: {'Enabled (' + search_tool_type_used + ')' if current_tools else 'Disabled'}] успешно загружена.")
+            logger.info(f"Модель '{alias}' ({model_id}) [Search: {'Enabled (' + search_tool_type_used + ')' if current_tools else 'Disabled'}] загружена.")
         except Exception as e: logger.error(f"!!! ОШИБКА загрузки '{alias}': {e}")
-    if not LOADED_MODELS: raise RuntimeError("Ни одна текстовая модель не загружена!")
+    if not LOADED_MODELS: raise RuntimeError("Нет текстовых моделей!")
     if DEFAULT_MODEL_ALIAS not in LOADED_MODELS:
-        try: DEFAULT_MODEL_ALIAS = next(iter(LOADED_MODELS)); logger.warning(f"Установлена модель по умолчанию: {DEFAULT_MODEL_ALIAS}")
-        except StopIteration: raise RuntimeError("Нет моделей для установки по умолчанию.")
+        try: DEFAULT_MODEL_ALIAS = next(iter(LOADED_MODELS)); logger.warning(f"Дефолт: {DEFAULT_MODEL_ALIAS}")
+        except StopIteration: raise RuntimeError("Нет моделей.")
 except GoogleAPIError as e: logger.exception(...); exit(...)
 except Exception as e: logger.exception(...); exit(...)
 
@@ -100,32 +101,24 @@ except Exception as e: logger.exception(...); exit(...)
 user_selected_model: Dict[int, str] = {}
 chat_histories: Dict[int, Any] = {}
 
-# --- Вспомогательная функция для извлечения текста (ИСПРАВЛЕННАЯ) ---
+# --- Вспомогательная функция для извлечения текста ---
 def extract_response_text(response) -> Optional[str]:
     """Извлекает текст из ответа Gemini, пробуя разные способы."""
-    try:
-        return response.text
+    try: return response.text
     except ValueError:
-        logger.warning("Не удалось извлечь response.text (ValueError, возможно блокировка)")
+        logger.warning("ValueError при извлечении text")
         block_reason = getattr(response.prompt_feedback, 'block_reason', None) if hasattr(response, 'prompt_feedback') else None
-        if block_reason and hasattr(genai_types, 'BlockReason') and block_reason != genai_types.BlockReason.BLOCK_REASON_UNSPECIFIED:
-             # Добавляем проверку hasattr на BlockReason на всякий случай
-            logger.warning(f"Причина блокировки: {block_reason}")
+        block_reason_exists = hasattr(genai_types, 'BlockReason')
+        if block_reason and block_reason_exists and block_reason != genai_types.BlockReason.BLOCK_REASON_UNSPECIFIED: logger.warning(f"Блок: {block_reason}")
         return None
     except AttributeError:
-        logger.warning("Ответ не содержит атрибута .text, пробуем собрать из parts.")
-        # ИСПРАВЛЕННЫЙ БЛОК try/except:
+        logger.warning("Нет .text, пробуем parts.")
         try:
             if response.candidates and response.candidates[0].content.parts:
                  parts_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
-                 # Исправлено: Возвращаем текст или None
                  return parts_text if parts_text else None
-            else:
-                 logger.warning("Не найдены parts для сборки текста.")
-                 return None
-        except Exception as e_inner:
-            logger.error(f"Ошибка при сборке текста из parts: {e_inner}")
-            return None
+            else: logger.warning("Нет parts."); return None
+        except Exception as e_inner: logger.error(f"Ошибка сборки из parts: {e_inner}"); return None
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -154,16 +147,16 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if selected_alias != current_alias:
         user_selected_model[chat_id] = selected_alias; logger.info(...)
         if chat_id in chat_histories: del chat_histories[chat_id]; logger.info(...)
-        keyboard = []; imagen_alias = '🖼️ Imagen 3 (Картинки!)' # Строим кнопки
+        keyboard = []; imagen_alias = '🖼️ Imagen 3 (Картинки!)'
         for alias in LOADED_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == selected_alias else alias, callback_data=alias)])
-        if imagen_alias in AVAILABLE_MODELS and imagen_alias not in LOADED_MODELS: keyboard.append(...)
+        if imagen_alias in AVAILABLE_MODELS and imagen_alias not in LOADED_MODELS: keyboard.append([InlineKeyboardButton(f"{imagen_alias} (Недоступна)", callback_data="imagen_info")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(...)
     else:
         try: await query.edit_message_reply_markup(reply_markup=query.message.reply_markup)
         except Exception as e: logger.warning(...); await context.bot.send_message(...)
 
-# handle_message (без изменений по сравнению с предыдущей версией)
+# ИСПРАВЛЕННАЯ handle_message
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id
     logger.info(f"Сообщение от {user.id}: '{user_message[:50]}...'")
@@ -177,42 +170,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await context.bot.send_chat_action(...)
         response = await current_chat_session.send_message_async(content=user_message)
         logger.info(f"[{selected_alias}] Ответ получен. Проверка...")
-        final_text = extract_response_text(response) # Используем исправленную функцию
+        final_text = extract_response_text(response)
         if final_text is None: raise ValueError(f"Не удалось извлечь текст (причина: {getattr(response.prompt_feedback, 'block_reason', '?')})")
         if response.candidates and hasattr(response.candidates[0], 'grounding_metadata') and response.candidates[0].grounding_metadata:
              metadata = response.candidates[0].grounding_metadata
              if metadata.web_search_queries: search_suggestions = list(metadata.web_search_queries); logger.info(f"[{selected_alias}] !!!! Предложения поиска: {search_suggestions}")
              else: logger.info(f"[{selected_alias}] meta без запросов.")
         else: logger.info(f"[{selected_alias}] НЕТ grounding_metadata.")
-    # ... (обработка исключений ResourceExhausted, FailedPrecondition, ValueError, Exception) ...
-    except ResourceExhausted as e_limit: logger.warning(...); error_message = f"😔 '{selected_alias}' перегружена. /model"
-    except FailedPrecondition as e_precondition: logger.error(...); error_message = f"⚠️ История '{selected_alias}' сброшена."; if chat_id in chat_histories: del chat_histories[chat_id]
-    except ValueError as e_blocked: logger.warning(...); error_message = f"⚠️ {e_blocked}"
-    except (GoogleAPIError, Exception) as e_other: logger.exception(...); error_message = f"Ошибка модели '{selected_alias}': {e_other}"
+    except ResourceExhausted as e_limit:
+        logger.warning(f"Модель '{selected_alias}' квота: {e_limit}")
+        error_message = f"😔 Модель '{selected_alias}' перегружена. /model"
+    except FailedPrecondition as e_precondition:
+        # ИСПРАВЛЕННЫЙ БЛОК С ОТСТУПАМИ
+        logger.error(f"Модель '{selected_alias}' FailedPrecondition: {e_precondition}. Сброс истории.")
+        error_message = f"⚠️ История чата с моделью '{selected_alias}' стала слишком длинной. Я ее сбросил. Повторите запрос."
+        if chat_id in chat_histories:
+            del chat_histories[chat_id] # Отступ
+    except ValueError as e_blocked:
+        logger.warning(f"Модель '{selected_alias}' блокировка: {e_blocked}")
+        error_message = f"⚠️ {e_blocked}"
+    except (GoogleAPIError, Exception) as e_other:
+        logger.exception(f"Ошибка при обработке моделью '{selected_alias}': {e_other}")
+        error_message = f"Произошла ошибка при обработке запроса моделью '{selected_alias}': {e_other}"
     # --- Отправка ответа ---
     reply_markup = None
-    if search_suggestions: keyboard = []; # ... (создаем кнопки поиска) ... ; if keyboard: reply_markup = InlineKeyboardMarkup(keyboard); logger.info(...)
+    if search_suggestions:
+        keyboard = []
+        for suggestion in search_suggestions: search_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(suggestion)}"; keyboard.append([InlineKeyboardButton(f"🔎 {suggestion}", url=search_url)])
+        if keyboard: reply_markup = InlineKeyboardMarkup(keyboard); logger.info(...)
     if final_text:
         bot_response = final_text[:4090]
         try: await update.message.reply_text(bot_response, reply_to_message_id=update.message.message_id, reply_markup=reply_markup); logger.info(...)
         except Exception as e:
-            logger.exception(f"Ошибка отправки ответа: {e}") # Правильный отступ
-            try:
-                await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id) # Правильный отступ
-            except Exception:
-                pass # Правильный отступ
+            logger.exception(f"Ошибка отправки ответа: {e}")
+            try: await update.message.reply_text("Не смог отправить ответ AI.", reply_to_message_id=update.message.message_id)
+            except Exception: pass
     elif error_message:
         try: await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id); logger.info(...)
         except Exception as e: logger.error(...)
     else:
-        # ИСПРАВЛЕННЫЙ БЛОК else
         logger.warning(f"Нет финального текста и сообщения об ошибке для {chat_id}.")
         if "История чата" not in (error_message or "") and "Ответ модели" not in (error_message or ""):
-             # На новых строках с отступами
-             try:
-                 await update.message.reply_text("Не удалось обработать запрос (неизвестная ошибка).", reply_to_message_id=update.message.message_id)
-             except Exception:
-                 pass
+             try: await update.message.reply_text("Не удалось обработать запрос (неизвестная ошибка).", reply_to_message_id=update.message.message_id)
+             except Exception: pass
 
 # --- main ---
 def main() -> None:
@@ -222,7 +222,6 @@ def main() -> None:
     else: logger.info(f"Встроенный поиск настроен (тип: {search_tool_type_used}).")
     logger.info("Инициализация Telegram...");
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    # Убрали /testsearch
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("model", select_model_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -232,5 +231,7 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
+# --- END OF REALLY x7 FULL CORRECTED main.py ---
 
 # --- END OF REALLY x6 FULL CORRECTED main.py ---
