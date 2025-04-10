@@ -1,4 +1,5 @@
 python-telegram-bot[ext]>=20.0
-google-genai # <-- ИСПОЛЬЗУЕМ ЭТУ БИБЛИОТЕКУ!
-# Убираем google-generativeai
-# Убираем все остальные (googlesearch-python, httpx, beautifulsoup4), т.к. встроенный поиск должен работать
+google-genai>=1.10.0 # <-- Убедись, что версия актуальна или та, что в логах
+google-api-core>=2.0.0  # <-- Для exceptions
+protobuf>=4.0.0         # <-- Для Struct и прочего
+# --- END OF FILE requirements.txt ---
