@@ -56,7 +56,7 @@ if not GOOGLE_API_KEY: exit("Google API ключ не найден")
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
 AVAILABLE_MODELS = {
     '⚡ Flash 2.0': 'models/gemini-2.0-flash-001',
-    '✨ Pro 2.5': 'models/gemini-2.5-pro-03-25',
+    '✨ Pro 2.5': 'models/gemini-2.5-pro-exp-03-25',
     '🖼️ Imagen 3 (Картинки!)': 'imagen-3.0-generate-002',
 }
 DEFAULT_MODEL_ALIAS = '⚡ Flash 2.0'
