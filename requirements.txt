@@ -1,5 +1,5 @@
 python-telegram-bot[ext]>=20.0
-google-generativeai==0.7.1
+google-generativeai==0.8.0
 googlesearch-python
 httpx # Должен быть с telegram-bot, но на всякий случай
 beautifulsoup4 # Должен быть с googlesearch-python, но на всякий случай
