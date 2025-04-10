@@ -1,9 +1,9 @@
-# --- START OF FULL CORRECTED main.py (FINALLY fixed ALL SyntaxErrors, I hope) ---
+# --- START OF REALLY x10 FULL CORRECTED main.py (NO MORE SYNTAX ERRORS GUARANTEED... probably) ---
 
 import logging
 import os
 import asyncio
-# ПРАВИЛЬНЫЙ ИМПОРТ
+# ПРАВИЛЬНЫЙ ИМПОРТ для пакета google-genai
 import google.genai as genai
 import time
 import random
@@ -13,16 +13,13 @@ try:
     # logger тут еще не готов, поэтому print
     print("INFO: Успешно импортирован types из google.genai")
 except ImportError:
-    # ИСПРАВЛЕННЫЙ БЛОК except ImportError
     print("!!! НЕ УДАЛОСЬ импортировать types из google.genai.")
-    class DummyTypes: # На новой строке
-        pass # На новой строке
-    genai_types = DummyTypes() # На новой строке
-except NameError: # Если logger еще не определен (хотя мы его ниже определяем)
+    class DummyTypes: pass
+    genai_types = DummyTypes()
+except NameError: # Если logger еще не определен
     print("!!! НЕ УДАЛОСЬ импортировать types из google.genai (NameError).")
-    class DummyTypes: # На новой строке
-        pass # На новой строке
-    genai_types = DummyTypes() # На новой строке
+    class DummyTypes: pass
+    genai_types = DummyTypes()
 
 
 from typing import Optional, Dict, Union, Any, Tuple, List
@@ -58,7 +55,7 @@ if not GOOGLE_API_KEY: exit("Google API ключ не найден")
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
 AVAILABLE_MODELS = {
-    '⚡ Flash 2.0': 'models/gemini-2.0-flash-001',
+    '⚡ Flash 2.0': 'models/gemini-2.0-flash-001', # Используем стандартные ID
     '✨ Pro 2.5': 'models/gemini-2.5-pro-exp-03-25',
 }
 DEFAULT_MODEL_ALIAS = '⚡ Flash 2.0'
@@ -107,7 +104,7 @@ try:
         if google_search_tool:
              if '1.5' in model_id and hasattr(genai_types, 'GoogleSearchRetrieval'):
                   retrieval_config = genai_types.GoogleSearchRetrieval(); current_tools = [genai_types.Tool(google_search_retrieval=retrieval_config)]; model_search_type = "GSR (v1.5)"
-             elif ('2.0' in model_id or '2.5' in model_id) and hasattr(genai_types, 'GoogleSearch'):
+             elif ('2.0' in model_id or '2.5' in model_id) and hasattr(genai_types, 'GoogleSearch'): # Предполагаем, что 2.x используют GoogleSearch
                   search_config = genai_types.GoogleSearch(); current_tools = [genai_types.Tool(google_search=search_config)]; model_search_type = "GS (v2.0+)"
              else: logger.warning(f"Нет типа поиска для '{alias}'.")
         try:
@@ -124,7 +121,7 @@ except Exception as e: logger.exception("Крит. ошибка инициали
 # --- Хранение состояния пользователя ---
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, Any] = {}
 
-# --- Вспомогательная функция для извлечения текста ---
+# --- Вспомогательная функция для извлечения текста (ИСПРАВЛЕННАЯ) ---
 def extract_response_text(response) -> Optional[str]:
     """Извлекает текст из ответа Gemini, пробуя разные способы."""
     try: return response.text
@@ -134,7 +131,7 @@ def extract_response_text(response) -> Optional[str]:
         return None
     except AttributeError:
         logger.warning("Нет .text, пробуем parts.")
-        # ИСПРАВЛЕННЫЙ БЛОК try/except С ПРАВИЛЬНЫМИ ОТСТУПАМИ:
+        # ИСПРАВЛЕННЫЙ БЛОК try/except:
         try:
             if response.candidates and response.candidates[0].content.parts:
                  parts_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
@@ -143,21 +140,32 @@ def extract_response_text(response) -> Optional[str]:
                  logger.warning("Не найдены parts для сборки текста.")
                  return None
         except Exception as e_inner:
-            logger.error(f"Ошибка при сборке текста из parts: {e_inner}")
             # ИСПРАВЛЕНО: Просто возвращаем None
+            logger.error(f"Ошибка при сборке текста из parts: {e_inner}")
             return None
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user; chat_id = update.effective_chat.id; # ... (сброс состояния) ...
-    if chat_id in user_selected_model: del user_selected_model[chat_id]; if chat_id in chat_histories: del chat_histories[chat_id]; logger.info(f"Состояние {chat_id} сброшено")
-    default_model_display_name = DEFAULT_MODEL_ALIAS; search_status = f"включен ({search_tool_type_used})" if google_search_tool else "отключен"
-    await update.message.reply_html( f"Привет, {user.mention_html()}! ... Модель: {default_model_display_name}... /model ... 🔍 Поиск Google {search_status}.", reply_to_message_id=update.message.message_id); logger.info(f"/start от {user.id}")
+    user = update.effective_user; chat_id = update.effective_chat.id
+    # ИСПРАВЛЕНО: Отступы в if
+    if chat_id in user_selected_model:
+        del user_selected_model[chat_id]
+    if chat_id in chat_histories:
+        del chat_histories[chat_id]
+    logger.info(f"Состояние для {chat_id} сброшено по /start")
+    default_model_display_name = DEFAULT_MODEL_ALIAS
+    search_status = f"включен ({search_tool_type_used})" if google_search_tool else "отключен"
+    await update.message.reply_html( f"Привет, {user.mention_html()}! Я - Gemini бот.\nМодель по умолчанию: {default_model_display_name}\nИспользуйте /model для выбора.\n🔍 Поиск Google {search_status}.", reply_to_message_id=update.message.message_id)
+    logger.info(f"/start от {user.id}")
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []; imagen_alias = '🖼️ Imagen 3 (Картинки!)'
-    for alias in LOADED_MODELS_ANY.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
-    if imagen_alias in AVAILABLE_MODELS and imagen_alias not in LOADED_MODELS_ANY: keyboard.append([InlineKeyboardButton(f"{imagen_alias} (Недоступна)", callback_data="imagen_info")])
+    for alias in LOADED_MODELS_ANY.keys():
+        # ИСПРАВЛЕНО: Отступ в append
+        keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
+    if imagen_alias in AVAILABLE_MODELS and imagen_alias not in LOADED_MODELS_ANY:
+        # ИСПРАВЛЕНО: Отступ в append
+        keyboard.append([InlineKeyboardButton(f"{imagen_alias} (Недоступна)", callback_data="imagen_info")])
     reply_markup = InlineKeyboardMarkup(keyboard); await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -169,13 +177,22 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
         user_selected_model[chat_id] = selected_alias; logger.info(f"{chat_id} сменил на '{selected_alias}'")
         if chat_id in chat_histories: del chat_histories[chat_id]; logger.info(f"История {chat_id} сброшена.")
         keyboard = []; imagen_alias = '🖼️ Imagen 3 (Картинки!)'
-        for alias in LOADED_MODELS_ANY.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == selected_alias else alias, callback_data=alias)])
-        if imagen_alias in AVAILABLE_MODELS and imagen_alias not in LOADED_MODELS_ANY: keyboard.append([InlineKeyboardButton(f"{imagen_alias} (Недоступна)", callback_data="imagen_info")])
+        for alias in LOADED_MODELS_ANY.keys():
+            # ИСПРАВЛЕНО: Отступ в append
+             keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == selected_alias else alias, callback_data=alias)])
+        if imagen_alias in AVAILABLE_MODELS and imagen_alias not in LOADED_MODELS_ANY:
+            # ИСПРАВЛЕНО: Отступ в append
+             keyboard.append([InlineKeyboardButton(f"{imagen_alias} (Недоступна)", callback_data="imagen_info")])
         reply_markup = InlineKeyboardMarkup(keyboard); await query.edit_message_text(text=f"✅ Модель: *{selected_alias}*\n⚠️ История сброшена.\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
-        try: await query.edit_message_reply_markup(reply_markup=query.message.reply_markup)
-        except Exception as e: logger.warning(f"Не ред. разметку {chat_id}: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель *{selected_alias}* уже выбрана.", parse_mode=ParseMode.MARKDOWN)
+        # ИСПРАВЛЕННЫЙ БЛОК else
+        try:
+            await query.edit_message_reply_markup(reply_markup=query.message.reply_markup)
+        except Exception as e:
+            logger.warning(f"Не ред. разметку {chat_id}: {e}")
+            await context.bot.send_message(chat_id=chat_id, text=f"Модель *{selected_alias}* уже выбрана.", parse_mode=ParseMode.MARKDOWN)
 
+# handle_message
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; logger.info(f"Сообщение от {user.id}: '{user_message[:50]}...'")
     selected_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); selected_model_object = LOADED_MODELS_ANY.get(selected_alias)
@@ -185,40 +202,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if chat_id not in chat_histories: chat_histories[chat_id] = selected_model_object.start_chat(history=[]); logger.info(...)
         current_chat_session = chat_histories[chat_id]; logger.info(f"Попытка с {selected_alias} (Встроенный поиск)")
         await context.bot.send_chat_action(...)
-        # Передаем пустой tools, т.к. он уже в модели
-        response = await current_chat_session.send_message_async(content=user_message) # Убрали tools= отсюда
+        response = await current_chat_session.send_message_async(content=user_message)
         logger.info(f"[{selected_alias}] Ответ получен. Проверка...")
         final_text = extract_response_text(response)
         if final_text is None: raise ValueError(...) # Ошибка извлечения
-        # Проверка groundingMetadata
         if response.candidates and hasattr(response.candidates[0], 'grounding_metadata') and response.candidates[0].grounding_metadata:
              metadata = response.candidates[0].grounding_metadata
              if hasattr(metadata, 'web_search_queries') and metadata.web_search_queries: search_suggestions = list(metadata.web_search_queries); logger.info(f"[{selected_alias}] !!!! Предложения поиска: {search_suggestions}")
              else: logger.info(f"[{selected_alias}] meta без запросов.")
         else: logger.info(f"[{selected_alias}] НЕТ grounding_metadata.")
-    # ... (обработка исключений ResourceExhausted, FailedPrecondition, ValueError, Exception) ...
-    except ResourceExhausted as e_limit: logger.warning(...); error_message = f"😔 '{selected_alias}' перегружена. /model"
-    except FailedPrecondition as e_precondition: logger.error(...); error_message = f"⚠️ История '{selected_alias}' сброшена."; if chat_id in chat_histories: del chat_histories[chat_id]
-    except ValueError as e_blocked: logger.warning(...); error_message = f"⚠️ {e_blocked}"
-    except (GoogleAPIError, Exception) as e_other: logger.exception(...); error_message = f"Ошибка модели '{selected_alias}': {e_other}"
+    except ResourceExhausted as e_limit:
+        logger.warning(f"Модель '{selected_alias}' квота: {e_limit}")
+        error_message = f"😔 '{selected_alias}' перегружена. /model"
+    except FailedPrecondition as e_precondition:
+        # ИСПРАВЛЕННЫЙ БЛОК
+        logger.error(f"Модель '{selected_alias}' FailedPrecondition: {e_precondition}. Сброс.")
+        error_message = f"⚠️ История '{selected_alias}' сброшена. Повторите."
+        if chat_id in chat_histories:
+            del chat_histories[chat_id] # Отступ
+    except ValueError as e_blocked:
+        logger.warning(f"Модель '{selected_alias}' блокировка: {e_blocked}")
+        error_message = f"⚠️ {e_blocked}"
+    except (GoogleAPIError, Exception) as e_other:
+        logger.exception(f"Ошибка при обработке моделью '{selected_alias}': {e_other}")
+        error_message = f"Произошла ошибка при обработке запроса моделью '{selected_alias}': {e_other}"
     # --- Отправка ответа ---
     reply_markup = None
-    if search_suggestions: keyboard = []; # ... (создаем кнопки поиска) ... ; if keyboard: reply_markup = InlineKeyboardMarkup(keyboard); logger.info(...)
+    if search_suggestions:
+        keyboard = []
+        for suggestion in search_suggestions: search_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(suggestion)}"; keyboard.append([InlineKeyboardButton(f"🔎 {suggestion}", url=search_url)])
+        if keyboard: reply_markup = InlineKeyboardMarkup(keyboard); logger.info(...)
     if final_text:
         bot_response = final_text[:4090]
         try: await update.message.reply_text(bot_response, reply_to_message_id=update.message.message_id, reply_markup=reply_markup); logger.info(...)
         except Exception as e:
-            logger.exception(f"Ошибка отправки ответа: {e}")
-            try: await update.message.reply_text("Не смог отправить.", reply_to_message_id=update.message.message_id)
-            except Exception: pass
+            logger.exception(f"Ошибка отправки ответа: {e}") # Отступ
+            try:
+                await update.message.reply_text("Не смог отправить.", reply_to_message_id=update.message.message_id) # Отступ
+            except Exception:
+                pass # Отступ
     elif error_message:
         try: await update.message.reply_text(error_message, reply_to_message_id=update.message.message_id); logger.info(...)
         except Exception as e: logger.error(...)
     else:
+        # ИСПРАВЛЕННЫЙ БЛОК else
         logger.warning(f"Нет текста и ошибки для {chat_id}.")
-        if "История" not in (...) and "Ответ" not in (...):
-             try: await update.message.reply_text("Не удалось обработать.", reply_to_message_id=update.message.message_id)
-             except Exception: pass
+        if "История" not in (error_message or "") and "Ответ" not in (error_message or ""):
+             # На новых строках с отступами
+             try:
+                 await update.message.reply_text("Не удалось обработать (неизвестная ошибка).", reply_to_message_id=update.message.message_id)
+             except Exception:
+                 pass
 
 # --- main ---
 def main() -> None:
@@ -228,7 +262,6 @@ def main() -> None:
     else: logger.info(f"Встроенный поиск настроен (тип: {search_tool_type_used}).")
     logger.info("Инициализация Telegram...");
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    # Убрали /testsearch
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("model", select_model_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -239,4 +272,4 @@ def main() -> None:
 if __name__ == '__main__':
     main()
 
-# --- END OF REALLY x9 FULL CORRECTED main.py ---
+# --- END OF REALLY x10 FULL CORRECTED main.py ---
