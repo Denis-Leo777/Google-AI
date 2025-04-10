@@ -1,7 +1,5 @@
-# --- START OF FILE requirements.txt ---
-
 python-telegram-bot[ext]>=20.0
-google-genai>=1.10.0        # <-- Используем эту библиотеку (как и было изначально!)
-google-api-core>=2.0.0      # Оставляем для совместимости и исключений
-protobuf>=4.0.0             # Оставляем для Struct и типов
-# --- END OF FILE requirements.txt ---
+google-genai>=1.10.0
+google-api-core>=2.0.0
+protobuf>=4.0.0
+aiohttp>=3.0.0 # <-- ДОБАВИТЬ
