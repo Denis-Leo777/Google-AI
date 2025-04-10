@@ -40,7 +40,6 @@ if not GOOGLE_API_KEY: exit("Google API ключ не найден")
 AVAILABLE_MODELS = {
     '⚡ Flash': 'gemini-2.0-flash-001',
     '🧠 Pro Exp': 'gemini-2.5-pro-exp-03-25',
-    '🖼️ Imagen 3 (Картинки!)': 'imagen-3.0-generate-002',
 }
 DEFAULT_MODEL_ALIAS = '⚡ Flash'
 
@@ -48,24 +47,33 @@ DEFAULT_MODEL_ALIAS = '⚡ Flash'
 google_search_tool = None
 search_tool_type_used = None # Запомним, какой класс нашелся
 try:
+    # --- ДОБАВЛЯЕМ ДИАГНОСТИКУ ---
+    logger.info("--- Содержимое google.generativeai.types ---")
+    try:
+        # Выводим все атрибуты модуля types
+        print(dir(genai_types))
+        logger.info("-------------------------------------------")
+    except Exception as e_dir:
+         logger.error(f"Не удалось вывести dir(genai_types): {e_dir}")
+    # --- КОНЕЦ ДИАГНОСТИКИ ---
     # Сначала ищем GoogleSearch (для v2.0+)
     if hasattr(genai_types, 'GoogleSearch'):
+         # ... (остальная логика как в предыдущем коде) ...
          google_search_config = genai_types.GoogleSearch()
          google_search_tool = genai_types.Tool(google_search=google_search_config)
          search_tool_type_used = "GoogleSearch (v2.0+)"
-         logger.info(f"Инструмент ВСТРОЕННОГО поиска '{search_tool_type_used}' определен.")
-    # Если не нашли, ищем GoogleSearchRetrieval (для v1.5, но вдруг сработает?)
+         logger.info(f"Инструмент '{search_tool_type_used}' определен.")
     elif hasattr(genai_types, 'GoogleSearchRetrieval'):
+         # ... (логика для GoogleSearchRetrieval) ...
          google_search_retrieval_config = genai_types.GoogleSearchRetrieval()
          google_search_tool = genai_types.Tool(google_search=google_search_retrieval_config)
          search_tool_type_used = "GoogleSearchRetrieval (v1.5 fallback)"
-         logger.info(f"Инструмент ВСТРОЕННОГО поиска '{search_tool_type_used}' определен (как fallback).")
+         logger.info(f"Инструмент '{search_tool_type_used}' определен (как fallback).")
     else:
-         logger.error("!!! Классы GoogleSearch И GoogleSearchRetrieval НЕ НАЙДЕНЫ в genai_types. Встроенный поиск НЕ БУДЕТ работать. Проверьте версию google-generativeai.")
-
+         logger.error("!!! Классы GoogleSearch И GoogleSearchRetrieval НЕ НАЙДЕНЫ в genai_types...")
+        
 except AttributeError as e: logger.error(f"!!! Ошибка атрибута при поиске инструмента (версия?): {e}")
 except Exception as e: logger.exception(f"!!! Ошибка при определении инструмента поиска: {e}")
-
 
 # --- Загрузка и Настройка Моделей Gemini ---
 LOADED_MODELS: Dict[str, genai.GenerativeModel] = {}
