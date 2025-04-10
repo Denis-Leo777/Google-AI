@@ -1,4 +1,6 @@
 python-telegram-bot[ext]>=20.0
-google-generativeai>=0.8.0 # <-- ВАЖНО: Обновляем версию!
-# googlesearch-python больше не нужна для встроенного поиска!
-# httpx и beautifulsoup4 тоже не нужны для встроенного поиска!
+google-generativeai==0.8.4 # <-- Убедимся, что версия зафиксирована
+# Убираем ненужные, если не используются больше нигде:
+# googlesearch-python
+# httpx
+# beautifulsoup4
