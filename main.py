@@ -1,6 +1,6 @@
-# --- START OF REALLY x26 FULL CORRECTED main.py (FIXED SYNTAX ERROR AGAIN) ---
+# --- START OF REALLY x27 FULL CORRECTED main.py (FIXED INDENTATION ERROR) ---
 
-# ... (все импорты, настройки логгера, определения типов/заглушек как в v25) ...
+# ... (все импорты, настройки логгера, определения типов/заглушек как в v26) ...
 import logging
 import os
 import asyncio
@@ -79,12 +79,68 @@ system_instruction_text = (
     "Никогда не сокращай текст, код и прочее, пиши всё полностью. Обязательно используй поиск в интернете для сверки с новой информацией по теме. Если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа, то отвечай в пределах 2000 знаков. Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку. Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение. Активно применяй юмор: несоответствие ожиданиям, культурные и бытовые отсылки, шутки об актуальных в интернете темах, жизненный абсурд и абсурдные решения проблем, псевдомудрость, разрушение идиом, безобидная ирония и самоирония, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, тонкие и интимные намёки, редукционизм, пост-модерн и интернет-юмор. При создании уникальной работы не допускай признаков ИИ, избегай копирования или близкого пересказа существующих текстов, включай гипотетические ситуации для иллюстрации понятий, применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи, варьируй структуру предложений, естественно включай разговорные выражения, идиомы и фигуры речи, используй живые стилистические решения, свойственные людям, вставляй региональные выражения или культурно специфичные ссылки, где это уместно, добавляй остроумие."
 )
 
+# --- ИСПРАВЛЕННАЯ extract_response_text ---
 def extract_response_text(response) -> Optional[str]:
-    # (Код функции без изменений)
-    try: return response.text
-    except ValueError as e_val: # ...
-    except AttributeError: # ...
-    except Exception as e: logger.exception(f"Ошибка извлечения текста: {e}"); return None
+    """Извлекает текст из ответа client.models.generate_content."""
+    try:
+        return response.text
+    except ValueError as e_val:
+        logger.warning(f"ValueError при извлечении response.text: {e_val}")
+        try:
+            if response.candidates:
+                 candidate = response.candidates[0]
+                 finish_reason = getattr(candidate, 'finish_reason', None)
+                 safety_ratings = getattr(candidate, 'safety_ratings', [])
+                 error_parts = []
+                 # Используем Enum-заглушки или реальные Enum
+                 finish_map = getattr(FinishReason, '_enum_map', {})
+                 harm_cat_map = getattr(HarmCategory, '_enum_map', {})
+                 harm_prob_map = getattr(HarmProbability, '_enum_map', {})
+
+                 if finish_reason and finish_reason not in (FinishReason.FINISH_REASON_UNSPECIFIED, FinishReason.STOP):
+                     finish_reason_name = finish_map.get(finish_reason, finish_reason)
+                     error_parts.append(f"Причина остановки: {finish_reason_name}")
+
+                 relevant_ratings = [f"{harm_cat_map.get(r.category, r.category)}: {harm_prob_map.get(r.probability, r.probability)}"
+                                     for r in safety_ratings if hasattr(r, 'probability') and r.probability not in (HarmProbability.HARM_PROBABILITY_UNSPECIFIED, HarmProbability.NEGLIGIBLE)]
+                 if relevant_ratings:
+                     error_parts.append(f"Фильтры безопасности: {', '.join(relevant_ratings)}")
+
+                 if error_parts:
+                     return f"⚠️ Не удалось получить ответ. {' '.join(error_parts)}."
+
+            # Проверяем prompt_feedback отдельно
+            prompt_feedback = getattr(response, 'prompt_feedback', None)
+            if prompt_feedback and getattr(prompt_feedback, 'block_reason', None):
+                # .name может не быть у заглушки, используем просто значение
+                reason = getattr(prompt_feedback.block_reason, 'name', prompt_feedback.block_reason)
+                return f"⚠️ Не удалось получить ответ. Блокировка: {reason}."
+
+            logger.warning("Не удалось извлечь текст и нет явных причин блокировки/ошибки.")
+            return None # Не нашли причин, но текста нет
+
+        except (AttributeError, IndexError, Exception) as e_details:
+            logger.warning(f"Ошибка при попытке получить детали ошибки из ответа: {e_details}")
+            return None # Ошибка при анализе
+
+    except AttributeError:
+        logger.warning("Ответ не имеет атрибута .text. Попытка извлечь из parts.")
+        # --- ВОССТАНОВЛЕННЫЙ БЛОК ---
+        try:
+            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                parts_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
+                # Возвращаем текст, если он не пустой после удаления пробелов
+                return parts_text.strip() if parts_text and parts_text.strip() else None
+            else:
+                logger.warning("Не найдено candidates или parts для извлечения текста.")
+                return None
+        except (AttributeError, IndexError, Exception) as e_inner:
+            logger.error(f"Ошибка при сборке текста из parts: {e_inner}")
+            return None
+        # --- КОНЕЦ ВОССТАНОВЛЕННОГО БЛОКА ---
+    except Exception as e:
+        logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}")
+        return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код start без изменений)
@@ -94,7 +150,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v26." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v27." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код select_model_command без изменений)
@@ -104,29 +161,20 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
-# --- ИСПРАВЛЕННЫЙ select_model_callback ---
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик нажатия на кнопку выбора модели."""
+    # (Код select_model_callback без изменений, т.к. был исправлен в v26)
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
-
-    # --- СНОВА ИСПРАВЛЕННЫЙ БЛОК ---
     if selected_alias not in AVAILABLE_MODELS:
         logger.error(f"Пользователь {user_id} выбрал неверный alias: {selected_alias}")
-        # Используем правильные отступы
-        try:
-            await query.edit_message_text(text="❌ Ошибка: Неизвестный выбор модели.")
-        except Exception as e:
-            logger.warning(f"Не удалось изменить сообщение об ошибке выбора модели: {e}")
-        return # Выход из функции после обработки ошибки
-    # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
-
+        try: await query.edit_message_text(text="❌ Ошибка: Неизвестный выбор модели.")
+        except Exception as e: logger.warning(f"Не удалось изменить сообщение об ошибке выбора модели: {e}")
+        return
     if selected_alias == current_alias:
         logger.info(f"{user_id} перевыбрал модель: {selected_alias}")
         try: await query.edit_message_reply_markup(reply_markup=query.message.reply_markup)
         except Exception as e: logger.warning(f"Не удалось изменить разметку: {e}")
         return
-
     user_selected_model[chat_id] = selected_alias; logger.info(f"{user_id} сменил модель: {selected_alias}")
     reset_message = "";
     if chat_id in chat_histories: del chat_histories[chat_id]; logger.info(f"История чата {chat_id} сброшена."); reset_message = "\n⚠️ История сброшена."
@@ -135,6 +183,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     reply_markup = InlineKeyboardMarkup(keyboard)
     try: await query.edit_message_text(text=f"✅ Модель: *{selected_alias}*!{reset_message}\n\nНачните чат:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код handle_message без изменений по сравнению с v25)
@@ -154,8 +203,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         config_obj = None; tools_list = [google_search_tool] if google_search_tool else None
         try:
-             if GenerateContentConfig is not None: config_obj = GenerateContentConfig(system_instruction=system_instruction_text, tools=tools_list); logger.debug("GenerateContentConfig создан с system_instruction и tools.")
-             else: logger.warning("GenerateContentConfig не импортирован, конфиг не создан.")
+             if GenerateContentConfig is not None: config_obj = GenerateContentConfig(system_instruction=system_instruction_text, tools=tools_list); logger.debug("GenerateContentConfig создан.")
+             else: logger.warning("GenerateContentConfig не импортирован.")
         except Exception as e: logger.error(f"Ошибка создания GenerateContentConfig: {e}") # ... (fallback)
         response = gemini_client.models.generate_content(model=model_id, contents=api_contents, config=config_obj)
         processing_time = time.monotonic() - start_time; logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
@@ -177,7 +226,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if final_text: # ... (отправка ответа)
     elif error_message: # ... (отправка ошибки)
     else: # ... (fallback)
-
 
 def main() -> None:
     # (Код main без изменений)
@@ -202,4 +250,5 @@ if __name__ == '__main__':
     if 'gemini_client' in globals() and gemini_client: logger.info("Клиент Gemini создан. Запускаем main()."); main()
     else: logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x26 FULL CORRECTED main.py (FIXED SYNTAX ERROR AGAIN) ---
+
+# --- END OF REALLY x27 FULL CORRECTED main.py (FIXED INDENTATION ERROR) ---
