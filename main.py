@@ -1,17 +1,15 @@
-# --- START OF REALLY x60 FULL CORRECTED main.py (SWITCH TO WEBHOOKS) ---
+# --- START OF REALLY x62 FULL CORRECTED main.py (ADD application.initialize() for webhooks) ---
 
 import logging
 import os
 import asyncio
-import signal
+import signal # <-- Для обработки сигналов остановки
 import time
 import random
 import google.genai as genai
 import aiohttp.web
 import sys
 import secrets # Для генерации секретного пути
-from typing import Optional, Dict, Union, Any, List, Tuple # Возвращаем полный импорт
-import urllib.parse
 from urllib.parse import urljoin # Для создания URL вебхука
 
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
@@ -23,11 +21,11 @@ logging.getLogger("httpx").setLevel(logging.DEBUG)
 logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
 logging.getLogger("telegram.bot").setLevel(logging.DEBUG)
 logging.getLogger("telegram.request").setLevel(logging.DEBUG)
-logging.getLogger("aiohttp.web").setLevel(logging.DEBUG) # Добавим и для aiohttp
+logging.getLogger("aiohttp.web").setLevel(logging.DEBUG)
 # *************************
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки из x59)
+# (Импорт и заглушки из x61)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -36,7 +34,6 @@ FinishReason = DummyFinishReasonEnum(); HarmCategory = DummyHarmCategoryEnum(); 
 ResourceExhausted=Exception; GoogleAPIError=Exception; FailedPrecondition=Exception; InvalidArgument=ValueError; BadRequest = Exception
 try:
     from google.genai import types as genai_types; logger.info("Импортирован модуль google.genai.types.")
-    # ... (остальные try-except для типов) ...
     try: Tool = genai_types.Tool; logger.info("Найден genai_types.Tool")
     except AttributeError: logger.warning("genai_types.Tool не найден.")
     try: GenerateContentConfig = genai_types.GenerateContentConfig; logger.info("Найден genai_types.GenerateContentConfig")
@@ -54,13 +51,18 @@ try:
     try: HarmProbability = genai_types.HarmProbability; logger.info("Найден genai_types.HarmProbability")
     except AttributeError: logger.warning("genai_types.HarmProbability не найден, используется заглушка.")
 except ImportError as e: logger.error(f"!!! НЕ удалось импортировать модуль google.genai.types: {e}. Используются заглушки.")
+
+# Возвращаем импорт типов из typing
+from typing import Optional, Dict, Union, Any, List, Tuple
+import urllib.parse
+
+try: logger.info(f"!!!!!!!!!! Используемая версия google-genai: {genai.__version__} !!!!!!!!!!")
+except Exception as e: logger.error(f"!!!!!!!!!! Ошибка получения версии google-genai: {e} !!!!!!!!!!")
 try: from google.api_core.exceptions import ResourceExhausted, GoogleAPIError, FailedPrecondition, InvalidArgument; logger.info("Исключения google.api_core импортированы.")
 except ImportError: logger.warning("!!! НЕ УДАЛОСЬ импортировать google.api_core.exceptions.")
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
-# *** Убираем Updater, TypeHandler (не нужны для вебхуков в этой реализации) ***
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-# *** Добавляем ошибки Telegram ***
 from telegram.error import TelegramError, BadRequest
 try: from google.protobuf.struct_pb2 import Struct; logger.info("Protobuf Struct импортирован.")
 except ImportError: logger.warning("!!! Protobuf не импортирован."); Struct = dict
@@ -68,10 +70,7 @@ except ImportError: logger.warning("!!! Protobuf не импортирован."
 # --- КОНФИГУРАЦИЯ ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-# *** ВАЖНО: Укажи здесь свой публичный URL от Render! ***
-# Пример: "https://my-cool-bot.onrender.com"
-WEBHOOK_HOST = os.getenv('WEBHOOK_HOST') # Получаем из переменной окружения
-# *** Генерируем секретный путь для вебхука ***
+WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
 WEBHOOK_SECRET_PATH = secrets.token_urlsafe(32)
 
 if not TELEGRAM_BOT_TOKEN: logger.critical("Telegram токен не найден!"); exit("Telegram токен не найден")
@@ -88,7 +87,7 @@ DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
 # --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
-# (Без изменений из x59)
+# (Без изменений из x61)
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
 if Tool is not None and GoogleSearch is not None:
@@ -107,7 +106,7 @@ else:
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 system_instruction_text = (
-    # (Текст системного промпта без изменений из x59)
+    # (Текст системного промпта без изменений из x61)
     "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку."
     "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение."
     "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
@@ -122,7 +121,7 @@ system_instruction_text = (
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
 def extract_response_text(response) -> Optional[str]:
-    # (Код extract_response_text без изменений из x59)
+    # (Код extract_response_text без изменений из x61)
     try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
@@ -149,17 +148,17 @@ def extract_response_text(response) -> Optional[str]:
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код start без изменений из x59, только версия в тексте)
+    # (Код start без изменений из x61, только версия в тексте)
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
     if chat_id in chat_histories: del chat_histories[chat_id]
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v60 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v62 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_command без изменений из x59)
+    # (Код select_model_command без изменений из x61)
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
     for alias in AVAILABLE_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
     if not keyboard: await update.message.reply_text("Нет моделей."); return
@@ -167,7 +166,7 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_callback без изменений из x59)
+    # (Код select_model_callback без изменений из x61)
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     if selected_alias not in AVAILABLE_MODELS:
@@ -190,7 +189,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код handle_message без изменений из x59)
+    # (Код handle_message без изменений из x61)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.debug(f"handle_message вызван для сообщения {message_id} в чате {chat_id}")
@@ -284,46 +283,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try: await update.message.reply_text("Модель вернула пустой ответ без ошибок. 🤷", reply_to_message_id=message_id)
         except Exception as e: logger.error(f"Не удалось отправить fallback ответ: {e}")
 
-# *** УБРАН ОБРАБОТЧИК all_updates_handler - не нужен для вебхуков ***
-
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА ---
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    # (Код handle_ping без изменений из x59)
+    # (Код handle_ping без изменений из x61)
     peername = request.remote; host = request.headers.get('Host', 'N/A')
     logger.info(f"Получен HTTP пинг от {peername} к хосту {host}")
     return aiohttp.web.Response(text="OK", status=200)
 
-# *** НОВЫЙ ОБРАБОТЧИК ДЛЯ ВЕБХУКОВ TELEGRAM ***
 async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    """Принимает обновления от Telegram и передает их в PTB."""
-    application = request.app.get('bot_app') # Получаем объект Application из состояния aiohttp
+    # (Код handle_telegram_webhook без изменений из x61)
+    application = request.app.get('bot_app')
     if not application:
         logger.error("Объект Application не найден в состоянии aiohttp!")
         return aiohttp.web.Response(status=500, text="Internal Server Error: Bot not configured")
-
-    # Проверяем, что это POST запрос
     if request.method != "POST":
         logger.warning(f"Получен не-POST запрос на webhook URL: {request.method}")
-        return aiohttp.web.Response(status=405, text="Method Not Allowed") # 405 Method Not Allowed
-
+        return aiohttp.web.Response(status=405, text="Method Not Allowed")
     try:
-        # Получаем JSON данные
         data = await request.json()
         logger.debug(f"Получен вебхук: {data}")
     except Exception as e:
         logger.error(f"Не удалось распарсить JSON из вебхука: {e}")
-        return aiohttp.web.Response(status=400, text="Bad Request: Invalid JSON") # 400 Bad Request
-
+        return aiohttp.web.Response(status=400, text="Bad Request: Invalid JSON")
     try:
-        # Создаем объект Update
-        # Важно передать application.bot для корректной десериализации
         update = Update.de_json(data, application.bot)
         if not update:
              raise ValueError("Update.de_json вернул None")
         logger.debug(f"Вебхук успешно преобразован в Update: {update.update_id}")
-
-        # Передаем обновление в PTB для обработки
-        # Используем asyncio.create_task, чтобы не блокировать ответ Telegram
         async def process():
             try:
                 await application.process_update(update)
@@ -331,35 +317,25 @@ async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.R
             except Exception as e_process:
                  logger.exception(f"Ошибка при обработке обновления {update.update_id} в process_update: {e_process}")
         asyncio.create_task(process())
-
-        # Отвечаем Telegram немедленно, что мы получили обновление
         return aiohttp.web.Response(status=200, text="OK")
-
     except Exception as e:
         logger.exception(f"Ошибка при обработке вебхука или передаче в PTB: {e}")
         return aiohttp.web.Response(status=500, text="Internal Server Error during webhook processing")
 
-# *** Обновленный запуск веб-сервера ***
 async def run_web_server(port: int, stop_event: asyncio.Event, application: Application):
-    """Запускает веб-сервер aiohttp, добавляя маршруты для пинга и вебхука."""
+    # (Код run_web_server без изменений из x61)
     app = aiohttp.web.Application()
-    # Сохраняем application в состоянии aiohttp, чтобы обработчик вебхука имел к нему доступ
     app['bot_app'] = application
-
-    # Добавляем маршруты
     app.router.add_get('/', handle_ping)
-    # *** Используем секретный путь для вебхука ***
     webhook_path = f"/{WEBHOOK_SECRET_PATH}"
     app.router.add_post(webhook_path, handle_telegram_webhook)
     logger.info(f"Вебхук будет слушаться на пути: {webhook_path}")
-
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
     try:
         await site.start()
         logger.info(f"Веб-сервер для пинга и вебхука запущен на http://0.0.0.0:{port}")
-        # Ожидаем события остановки
         await stop_event.wait()
     except asyncio.CancelledError:
         logger.info("Задача веб-сервера отменена.")
@@ -373,15 +349,11 @@ async def run_web_server(port: int, stop_event: asyncio.Event, application: Appl
 
 # --- НОВЫЕ ФУНКЦИИ ДЛЯ РУЧНОГО УПРАВЛЕНИЯ ЦИКЛОМ (ВЕБХУК-ВЕРСИЯ) ---
 async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task]):
-    """Выполняет грациозную остановку для режима вебхуков."""
+    # (Код shutdown_sequence без изменений из x61)
     logger.info("Последовательность остановки (вебхук-версия) запущена...")
-
-    # 1. Сигнализируем веб-серверу об остановке
     if not stop_event.is_set():
         logger.info("Установка stop_event для веб-сервера...")
         stop_event.set()
-
-    # 2. Ждем завершения веб-сервера (с таймаутом)
     if web_server_task and not web_server_task.done():
         logger.info("Ожидание завершения задачи веб-сервера...")
         try:
@@ -396,55 +368,47 @@ async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio
             logger.exception(f"Ошибка при ожидании задачи веб-сервера: {e}")
     elif web_server_task: logger.info("Задача веб-сервера уже была завершена.")
     else: logger.info("Задачи веб-сервера не существует.")
-
-    # 3. Полностью завершаем работу PTB
     if application:
         logger.info("Полное завершение работы Telegram Application (shutdown)...")
         try:
-            # Опционально: удаляем вебхук при остановке
             logger.info("Удаление вебхука...")
-            await application.bot.delete_webhook(drop_pending_updates=False) # Не сбрасываем обновления при удалении
+            await application.bot.delete_webhook(drop_pending_updates=False)
             logger.info("Вебхук удален.")
-            # Завершаем работу application
             await application.shutdown()
             logger.info("Telegram Application shutdown завершен.")
         except BadRequest as e_bad:
              if "Webhook was not set" in str(e_bad):
                  logger.warning("Не удалось удалить вебхук: он не был установлен.")
-                 # Все равно пытаемся сделать shutdown
                  try: await application.shutdown()
                  except Exception as e_sd: logger.error(f"Ошибка при application.shutdown() после неудачного delete_webhook: {e_sd}")
              else:
                  logger.exception(f"Ошибка BadRequest при удалении вебхука или shutdown: {e_bad}")
         except Exception as e:
             logger.exception(f"Ошибка во время application.shutdown(): {e}")
-
-    # 4. Останавливаем цикл событий
     if loop.is_running():
         logger.info("Остановка event loop...")
         loop.stop()
 
 def handle_signal(sig, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task]):
-    """Callback для обработки сигналов ОС (вебхук-версия)."""
+    # (Код handle_signal без изменений из x61)
     logger.info(f"Получен сигнал {sig.name}. Запуск последовательности остановки.")
     if application:
-        # polling_task больше не нужен
         asyncio.ensure_future(shutdown_sequence(loop, stop_event, application, web_server_task), loop=loop)
     else:
         logger.error("Application не был создан, невозможно запустить полную остановку.")
         if loop.is_running():
             loop.stop()
 
+
 # --- ФУНКЦИЯ НАСТРОЙКИ БОТА И СЕРВЕРА (ВЕБХУК-ВЕРСИЯ) ---
 async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Application], Optional[asyncio.Future]]:
-    """Инициализирует бота, устанавливает вебхук и подготавливает корутину веб-сервера."""
     application: Optional[Application] = None
     web_server_coro: Optional[asyncio.Future] = None
     try:
         if 'gemini_client' not in globals() or not gemini_client: raise RuntimeError("Клиент Gemini не создан.")
         if not TELEGRAM_BOT_TOKEN: raise RuntimeError("Токен Telegram не найден.")
         if not GOOGLE_API_KEY: raise RuntimeError("Ключ Google API не найден.")
-        if not WEBHOOK_HOST: raise RuntimeError("WEBHOOK_HOST не указан!") # Проверка здесь тоже
+        if not WEBHOOK_HOST: raise RuntimeError("WEBHOOK_HOST не указан!")
 
         search_status = "включен" if google_search_tool else "ОТКЛЮЧЕН"
         logger.info(f"Встроенный поиск Google ({search_tool_type_used}) глобально {search_status}.")
@@ -455,7 +419,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
                        .build())
         logger.info("Application создан с настройками по умолчанию (кроме токена).")
 
-        # Добавляем хендлеры (TypeHandler больше не нужен)
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("model", select_model_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -463,26 +426,26 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
 
         port = int(os.environ.get("PORT", 8080)); logger.info(f"Порт для веб-сервера: {port}")
 
-        # *** ВАЖНО: Инициализация для вебхука отличается ***
-        # await application.initialize() # Это не нужно для вебхуков
+        # *** ВОЗВРАЩАЕМ application.initialize() ***
+        logger.info("Инициализация Telegram Application (initialize)...")
+        await application.initialize()
+        # *******************************************
 
-        # *** Установка вебхука ***
         webhook_path = f"/{WEBHOOK_SECRET_PATH}"
-        webhook_url = urljoin(WEBHOOK_HOST, webhook_path) # Собираем полный URL
+        webhook_url = urljoin(WEBHOOK_HOST, webhook_path)
         logger.info(f"Попытка установить вебхук на URL: {webhook_url}")
         try:
             await application.bot.set_webhook(
                 url=webhook_url,
-                allowed_updates=Update.ALL_TYPES, # Получать все типы обновлений
-                drop_pending_updates=True # Сбросить ожидающие обновления при установке
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
             )
             logger.info(f"Вебхук успешно установлен на {webhook_url}")
         except TelegramError as e:
             logger.exception(f"!!! Не удалось установить вебхук: {e}")
-            raise # Перевыбрасываем ошибку, чтобы прервать запуск
+            raise
 
         logger.info("Подготовка корутины веб-сервера...")
-        # Передаем application в корутину веб-сервера
         web_server_coro = run_web_server(port, stop_event, application)
 
         logger.info("Настройка бота и сервера (вебхук) завершена.")
@@ -495,17 +458,15 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
 
 # --- ТОЧКА ВХОДА (С РУЧНЫМ УПРАВЛЕНИЕМ ЦИКЛОМ - ВЕБХУК) ---
 if __name__ == '__main__':
+    # (Код точки входа без изменений из x61)
     if 'gemini_client' in globals() and gemini_client:
         logger.info("Клиент Gemini создан. Настройка и запуск event loop (Webhook).")
-
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
         stop_event = asyncio.Event()
         application: Optional[Application] = None
         web_server_task: Optional[asyncio.Task] = None
         web_server_coro: Optional[asyncio.Future] = None
-
         try:
             logger.info("Запуск setup_bot_and_server (вебхук-версия)...")
             setup_result = loop.run_until_complete(setup_bot_and_server(stop_event))
@@ -515,8 +476,6 @@ if __name__ == '__main__':
             if not web_server_coro: raise RuntimeError("Корутина веб-сервера не была создана в setup_bot_and_server.")
             logger.info("setup_bot_and_server завершен успешно.")
 
-            # *** Поллинг не запускаем! ***
-
             logger.info("Создание задачи для веб-сервера...")
             web_server_task = loop.create_task(web_server_coro)
             logger.info("Задача веб-сервера создана.")
@@ -524,7 +483,6 @@ if __name__ == '__main__':
             logger.info("Настройка обработчиков сигналов...")
             sigs = (signal.SIGINT, signal.SIGTERM)
             for s in sigs:
-                # polling_task больше нет
                 loop.add_signal_handler(
                     s,
                     lambda s=s: handle_signal(s, loop, stop_event, application, web_server_task)
@@ -532,9 +490,7 @@ if __name__ == '__main__':
             logger.info("Обработчики сигналов настроены.")
             logger.info("Настройка обработчиков сигналов завершена.")
             logger.info("=== ПОПЫТКА ЗАПУСКА run_forever() (вебхук-режим) ===")
-            # Цикл теперь нужен только для работы веб-сервера и обработки сигналов
             loop.run_forever()
-
         except (KeyboardInterrupt, SystemExit):
             logger.info("Прерывание (KeyboardInterrupt/SystemExit) получено.")
             if loop.is_running() and application:
@@ -543,7 +499,6 @@ if __name__ == '__main__':
             elif loop.is_running():
                  logger.warning("Application не существует, просто останавливаем цикл.")
                  loop.stop()
-
         except Exception as e:
             logger.exception("Необработанная критическая ошибка в главном потоке!")
             if loop.is_running():
@@ -552,21 +507,18 @@ if __name__ == '__main__':
                      loop.run_until_complete(shutdown_sequence(loop, stop_event, application, web_server_task))
                 else:
                      loop.stop()
-
         finally:
+            # (Код finally без изменений из x61)
             logger.info("Блок finally erreicht.")
             if loop.is_running():
                 logger.warning("Цикл все еще работает в блоке finally! Принудительная остановка.")
                 loop.stop()
-
             logger.info("Ожидание завершения оставшихся задач...")
             try:
                  current_task = asyncio.current_task(loop=loop) if sys.version_info >= (3, 7) else None
-                 # Убрали polling_task из списка
                  tasks_to_check = [task for task in [web_server_task] if task is not None and task is not current_task and not task.done()]
                  other_tasks = [task for task in asyncio.all_tasks(loop=loop) if task is not current_task and task not in tasks_to_check]
                  tasks = tasks_to_check + other_tasks
-
                  if tasks:
                      logger.info(f"Отмена {len(tasks)} оставшихся задач...")
                      for task in tasks:
@@ -584,7 +536,6 @@ if __name__ == '__main__':
                       logger.error(f"Ошибка RuntimeError при завершении оставшихся задач: {e}")
             except Exception as e:
                  logger.error(f"Неожиданная ошибка при завершении оставшихся задач: {e}")
-
             if not loop.is_closed():
                  logger.info("Закрытие event loop...")
                  loop.close()
@@ -595,4 +546,4 @@ if __name__ == '__main__':
     else:
         logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x60 FULL CORRECTED main.py (SWITCH TO WEBHOOKS) ---
+# --- END OF REALLY x62 FULL CORRECTED main.py (ADD application.initialize() for webhooks) ---
