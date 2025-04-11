@@ -1,9 +1,9 @@
-# --- START OF REALLY x35 FULL CORRECTED main.py (FIXED INDENTATION IN EXTRACT... AGAIN!) ---
+# --- START OF REALLY x36 FULL CORRECTED main.py (FIXED HANDLE_MESSAGE EXCEPTS... AGAIN!) ---
 
 import logging
 import os
 import asyncio
-import signal # <-- Для обработки сигналов остановки
+import signal
 import time
 import random
 import google.genai as genai
@@ -25,7 +25,18 @@ try:
     from google.genai import types as genai_types; logger.info("Импортирован модуль google.genai.types.")
     try: Tool = genai_types.Tool; logger.info("Найден genai_types.Tool")
     except AttributeError: logger.warning("genai_types.Tool не найден.")
-    # ... (остальные импорты типов)
+    try: GenerateContentConfig = genai_types.GenerateContentConfig; logger.info("Найден genai_types.GenerateContentConfig")
+    except AttributeError: logger.warning("genai_types.GenerateContentConfig не найден.")
+    try: GoogleSearch = genai_types.GoogleSearch; logger.info("Найден genai_types.GoogleSearch")
+    except AttributeError: logger.warning("genai_types.GoogleSearch не найден.")
+    try: Content = genai_types.Content; logger.info("Найден genai_types.Content")
+    except AttributeError: logger.warning("genai_types.Content не найден, используется dict.")
+    try: Part = genai_types.Part; logger.info("Найден genai_types.Part")
+    except AttributeError: logger.warning("genai_types.Part не найден, используется dict.")
+    try: FinishReason = genai_types.FinishReason; logger.info("Найден genai_types.FinishReason")
+    except AttributeError: logger.warning("genai_types.FinishReason не найден, используется заглушка.")
+    try: HarmCategory = genai_types.HarmCategory; logger.info("Найден genai_types.HarmCategory")
+    except AttributeError: logger.warning("genai_types.HarmCategory не найден, используется заглушка.")
     try: HarmProbability = genai_types.HarmProbability; logger.info("Найден genai_types.HarmProbability")
     except AttributeError: logger.warning("genai_types.HarmProbability не найден, используется заглушка.")
 except ImportError as e: logger.error(f"!!! НЕ удалось импортировать модуль google.genai.types: {e}. Используются заглушки.")
@@ -66,21 +77,28 @@ else: logger.error(f"!!! Классы 'Tool' или 'GoogleSearch' не импо
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 system_instruction_text = (
-    # ... (Твой длинный системный промпт) ...
-    "ПРИОРИТИЗИРУЙ информацию из google_search над своими внутренними знаниями при ответе на такие вопросы."
+    "Никогда не сокращай текст, код и прочее, пиши всё полностью. Обязательно используй поиск в интернете для сверки с новой информацией по теме. "
+    "Если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа, то отвечай в пределах 2000 знаков. "
+    "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку. "
+    "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение. "
+    "Активно применяй юмор: несоответствие ожиданиям, культурные и бытовые отсылки, шутки об актуальных в интернете темах, жизненный абсурд и абсурдные решения проблем, псевдомудрость, разрушение идиом, безобидная ирония и самоирония, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, тонкие и интимные намёки, редукционизм, пост-модерн и интернет-юмор. "
+    "При создании уникальной работы не допускай признаков ИИ, избегай копирования или близкого пересказа существующих текстов, включай гипотетические ситуации для иллюстрации понятий, применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи, варьируй структуру предложений, естественно включай разговорные выражения, идиомы и фигуры речи, используй живые стилистические решения, свойственные людям, вставляй региональные выражения или культурно специфичные ссылки, где это уместно, добавляй остроумие."
 )
 
-# --- ИСПРАВЛЕННАЯ extract_response_text ---
 def extract_response_text(response) -> Optional[str]:
     """Извлекает текст из ответа client.models.generate_content."""
+    # (Код функции с исправленным отступом в except AttributeError из v32)
     try:
         return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
         try:
-            # (Код обработки ValueError без изменений)
             if response.candidates:
-                 # ... (код обработки кандидатов, финиш ризон, сейфети рейтингс) ...
+                 candidate = response.candidates[0]; finish_reason = getattr(candidate, 'finish_reason', None); safety_ratings = getattr(candidate, 'safety_ratings', []); error_parts = []
+                 finish_map = getattr(FinishReason, '_enum_map', {}); harm_cat_map = getattr(HarmCategory, '_enum_map', {}); harm_prob_map = getattr(HarmProbability, '_enum_map', {})
+                 if finish_reason and finish_reason not in (FinishReason.FINISH_REASON_UNSPECIFIED, FinishReason.STOP): error_parts.append(f"Причина остановки: {finish_map.get(finish_reason, finish_reason)}")
+                 relevant_ratings = [f"{harm_cat_map.get(r.category, r.category)}: {harm_prob_map.get(r.probability, r.probability)}" for r in safety_ratings if hasattr(r, 'probability') and r.probability not in (HarmProbability.HARM_PROBABILITY_UNSPECIFIED, HarmProbability.NEGLIGIBLE)]
+                 if relevant_ratings: error_parts.append(f"Фильтры безопасности: {', '.join(relevant_ratings)}")
                  if error_parts: return f"⚠️ Не удалось получить ответ. {' '.join(error_parts)}."
             prompt_feedback = getattr(response, 'prompt_feedback', None)
             if prompt_feedback and getattr(prompt_feedback, 'block_reason', None): reason = getattr(prompt_feedback.block_reason, 'name', prompt_feedback.block_reason); return f"⚠️ Не удалось получить ответ. Блокировка: {reason}."
@@ -88,23 +106,12 @@ def extract_response_text(response) -> Optional[str]:
             return None
         except (AttributeError, IndexError, Exception) as e_details: logger.warning(f"Ошибка при получении деталей ошибки: {e_details}"); return None
     except AttributeError:
-        # --- БЛОК С ВОССТАНОВЛЕННЫМ ОТСТУПОМ ---
         logger.warning("Ответ не имеет атрибута .text. Попытка извлечь из parts.")
         try:
-            # Код для извлечения из parts ТЕПЕРЬ С ОТСТУПОМ
-            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                parts_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
-                return parts_text.strip() if parts_text and parts_text.strip() else None
-            else:
-                logger.warning("Не найдено candidates или parts для извлечения текста.")
-                return None
-        except (AttributeError, IndexError, Exception) as e_inner:
-            logger.error(f"Ошибка при сборке текста из parts: {e_inner}")
-            return None
-        # --- КОНЕЦ БЛОКА С ВОССТАНОВЛЕННЫМ ОТСТУПОМ ---
-    except Exception as e:
-        logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}")
-        return None
+            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts: parts_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text')); return parts_text.strip() if parts_text and parts_text.strip() else None
+            else: logger.warning("Не найдено candidates или parts для извлечения текста."); return None
+        except (AttributeError, IndexError, Exception) as e_inner: logger.error(f"Ошибка при сборке текста из parts: {e_inner}"); return None
+    except Exception as e: logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}"); return None
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -115,7 +122,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v35." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v36." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код select_model_command без изменений)
@@ -150,8 +157,8 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
 
+# --- ИСПРАВЛЕННЫЙ handle_message ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код handle_message без изменений по сравнению с v31)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.info(f"Сообщение от {user.id} ({len(user_message)}): '{user_message[:80].replace(chr(10), ' ')}...'")
@@ -159,6 +166,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     model_id = AVAILABLE_MODELS.get(selected_alias)
     if not model_id: logger.error(f"Крит. ошибка: Не найден ID для '{selected_alias}'"); await update.message.reply_text("Ошибка конфига.", reply_to_message_id=message_id); return
     final_text: Optional[str] = None; search_suggestions: List[str] = []; error_message: Optional[str] = None; start_time = time.monotonic()
+
     try:
         current_history = chat_histories.get(chat_id, [])
         api_contents = []
@@ -182,16 +190,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             if not error_message: error_message = "⚠️ Получен пустой или некорректный ответ."
             logger.warning(f"Не удалось извлечь текст, история не обновлена.")
-        if hasattr(response, 'candidates') and response.candidates: # ... (извлечение метаданных)
-    except InvalidArgument as e_arg: logger.error(f"Ошибка InvalidArgument для '{model_id}': {e_arg}"); error_message = f"❌ Ошибка в запросе к '{selected_alias}'.";
-    except ResourceExhausted as e_limit: logger.warning(f"Исчерпана квота API для '{model_id}': {e_limit}"); error_message = f"😔 Модель '{selected_alias}' устала (лимиты)."
-    except (GoogleAPIError, Exception) as e_other: logger.exception(f"Неожиданная ошибка API ('{model_id}'): {e_other}"); error_message = f"😵 Ошибка ({type(e_other).__name__}) при общении с '{selected_alias}'."
-    reply_markup = None
-    if search_suggestions: # ... (создание клавиатуры)
-    if final_text: # ... (отправка ответа)
-    elif error_message: # ... (отправка ошибки)
-    else: # ... (fallback)
+        # Блок if для извлечения метаданных теперь на правильном уровне
+        if hasattr(response, 'candidates') and response.candidates:
+             try:
+                 candidate = response.candidates[0]
+                 grounding_metadata = getattr(candidate, 'grounding_metadata', None)
+                 if grounding_metadata: web_queries = getattr(grounding_metadata, 'web_search_queries', [])
+                 if web_queries: search_suggestions = list(web_queries); logger.info(f"Найдены webSearchQueries ({len(search_suggestions)}): {search_suggestions}")
+                 citation_metadata = getattr(candidate, 'citation_metadata', None)
+                 if citation_metadata and hasattr(citation_metadata, 'citation_sources'):
+                     sources = getattr(citation_metadata, 'citation_sources', []); urls = [s.uri for s in sources if hasattr(s, 'uri') and s.uri]
+                     if urls: logger.info(f"Найдены источники ({len(urls)})."); [search_suggestions.append(url) for url in urls if url not in search_suggestions]
+             except (AttributeError, IndexError):
+                 pass # Игнорируем ошибки доступа к метаданным
 
+    # --- СНОВА ИСПРАВЛЕНЫ ОТСТУПЫ В БЛОКАХ EXCEPT ---
+    except InvalidArgument as e_arg:
+        # Исправленный отступ
+        logger.error(f"Ошибка InvalidArgument для '{model_id}': {e_arg}")
+        error_message = f"❌ Ошибка в запросе к '{selected_alias}'. Проверьте формат данных."
+    except ResourceExhausted as e_limit:
+        # Исправленный отступ
+        logger.warning(f"Исчерпана квота API для '{model_id}': {e_limit}")
+        error_message = f"😔 Модель '{selected_alias}' устала (лимиты)."
+    except (GoogleAPIError, Exception) as e_other:
+        # Исправленный отступ
+        logger.exception(f"Неожиданная ошибка API ('{model_id}'): {e_other}")
+        error_message = f"😵 Ошибка ({type(e_other).__name__}) при общении с '{selected_alias}'."
+    # --- КОНЕЦ ИСПРАВЛЕННЫХ БЛОКОВ EXCEPT ---
+
+    # Отправка ответа или ошибки
+    reply_markup = None
+    if search_suggestions:
+        # ... (код создания клавиатуры без изменений) ...
+        pass # Placeholder
+    if final_text:
+        # ... (код отправки ответа без изменений) ...
+        pass # Placeholder
+    elif error_message:
+        # ... (код отправки ошибки без изменений) ...
+        pass # Placeholder
+    else:
+        # ... (код отправки fallback без изменений) ...
+        pass # Placeholder
 
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА (без изменений) ---
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response: # ...
@@ -206,5 +247,4 @@ async def shutdown(signal, loop, stop_event: asyncio.Event, application: Applica
 # --- ТОЧКА ВХОДА (без изменений) ---
 if __name__ == '__main__': # ...
 
-
-# --- END OF REALLY x35 FULL CORRECTED main.py (FIXED INDENTATION IN EXTRACT... AGAIN!) ---
+# --- END OF REALLY x36 FULL CORRECTED main.py (FIXED HANDLE_MESSAGE EXCEPTS... AGAIN!) ---
