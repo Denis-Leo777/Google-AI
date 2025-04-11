@@ -72,7 +72,7 @@ except ImportError: logger.warning("!!! Protobuf не импортирован."
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
-WEBHOOK_SECRET_PATH = secrets.token_urlsafe(32)
+WEBHOOK_SECRET_PATH = webhook
 
 if not TELEGRAM_BOT_TOKEN: logger.critical("Telegram токен не найден!"); exit("Telegram токен не найден")
 if not GOOGLE_API_KEY: logger.critical("Ключ Google API не найден!"); exit("Google API ключ не найден")
