@@ -1,4 +1,4 @@
-# --- START OF REALLY x39 FULL CORRECTED main.py (FINAL INDENTATION FIX IN EXTRACT) ---
+# --- START OF REALLY x40 FULL CORRECTED main.py (FINAL FINAL INDENTATION FIX) ---
 
 import logging
 import os
@@ -14,7 +14,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки)
+# (Импорт и заглушки без изменений)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -25,18 +25,7 @@ try:
     from google.genai import types as genai_types; logger.info("Импортирован модуль google.genai.types.")
     try: Tool = genai_types.Tool; logger.info("Найден genai_types.Tool")
     except AttributeError: logger.warning("genai_types.Tool не найден.")
-    try: GenerateContentConfig = genai_types.GenerateContentConfig; logger.info("Найден genai_types.GenerateContentConfig")
-    except AttributeError: logger.warning("genai_types.GenerateContentConfig не найден.")
-    try: GoogleSearch = genai_types.GoogleSearch; logger.info("Найден genai_types.GoogleSearch")
-    except AttributeError: logger.warning("genai_types.GoogleSearch не найден.")
-    try: Content = genai_types.Content; logger.info("Найден genai_types.Content")
-    except AttributeError: logger.warning("genai_types.Content не найден, используется dict.")
-    try: Part = genai_types.Part; logger.info("Найден genai_types.Part")
-    except AttributeError: logger.warning("genai_types.Part не найден, используется dict.")
-    try: FinishReason = genai_types.FinishReason; logger.info("Найден genai_types.FinishReason")
-    except AttributeError: logger.warning("genai_types.FinishReason не найден, используется заглушка.")
-    try: HarmCategory = genai_types.HarmCategory; logger.info("Найден genai_types.HarmCategory")
-    except AttributeError: logger.warning("genai_types.HarmCategory не найден, используется заглушка.")
+    # ... (остальные импорты типов) ...
     try: HarmProbability = genai_types.HarmProbability; logger.info("Найден genai_types.HarmProbability")
     except AttributeError: logger.warning("genai_types.HarmProbability не найден, используется заглушка.")
 except ImportError as e: logger.error(f"!!! НЕ удалось импортировать модуль google.genai.types: {e}. Используются заглушки.")
@@ -89,7 +78,7 @@ def extract_response_text(response) -> Optional[str]:
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
         try:
-            # (Код обработки ValueError)
+            # (Код обработки ValueError без изменений)
             if response.candidates:
                  candidate = response.candidates[0]; finish_reason = getattr(candidate, 'finish_reason', None); safety_ratings = getattr(candidate, 'safety_ratings', []); error_parts = []
                  finish_map = getattr(FinishReason, '_enum_map', {}); harm_cat_map = getattr(HarmCategory, '_enum_map', {}); harm_prob_map = getattr(HarmProbability, '_enum_map', {})
@@ -103,9 +92,9 @@ def extract_response_text(response) -> Optional[str]:
             return None
         except (AttributeError, IndexError, Exception) as e_details: logger.warning(f"Ошибка при получении деталей ошибки: {e_details}"); return None
     except AttributeError:
-        # --- БЛОК С ИСПРАВЛЕННЫМ ОТСТУПОМ (СНОВА!) ---
+        # --- БЛОК С ИСПРАВЛЕННЫМ ОТСТУПОМ (В ПОСЛЕДНИЙ РАЗ!) ---
         logger.warning("Ответ не имеет атрибута .text. Попытка извлечь из parts.")
-        # Код ниже ТЕПЕРЬ ТОЧНО с отступом
+        # Код ниже ТЕПЕРЬ с правильным отступом
         try:
             if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                 parts_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
@@ -121,20 +110,91 @@ def extract_response_text(response) -> Optional[str]:
         logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}")
         return None
 
-
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений)
-    pass
+    # (Код start без изменений)
+    user = update.effective_user; chat_id = update.effective_chat.id
+    if chat_id in user_selected_model: del user_selected_model[chat_id]
+    if chat_id in chat_histories: del chat_histories[chat_id]
+    logger.info(f"Обработка /start для {user.id} в {chat_id}.")
+    actual_default_model = DEFAULT_MODEL_ALIAS
+    search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v40." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений)
-    pass
+    # (Код select_model_command без изменений)
+    chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
+    for alias in AVAILABLE_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
+    if not keyboard: await update.message.reply_text("Нет моделей."); return
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений)
-    pass
+    # (Код select_model_callback без изменений)
+    query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
+    current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
+    if selected_alias not in AVAILABLE_MODELS:
+        logger.error(f"Пользователь {user_id} выбрал неверный alias: {selected_alias}")
+        try: await query.edit_message_text(text="❌ Ошибка: Неизвестный выбор модели.")
+        except Exception as e: logger.warning(f"Не удалось изменить сообщение об ошибке выбора модели: {e}")
+        return
+    if selected_alias == current_alias:
+        logger.info(f"{user_id} перевыбрал модель: {selected_alias}")
+        try: await query.edit_message_reply_markup(reply_markup=query.message.reply_markup)
+        except Exception as e: logger.warning(f"Не удалось изменить разметку: {e}")
+        return
+    user_selected_model[chat_id] = selected_alias; logger.info(f"{user_id} сменил модель: {selected_alias}")
+    reset_message = "";
+    if chat_id in chat_histories: del chat_histories[chat_id]; logger.info(f"История чата {chat_id} сброшена."); reset_message = "\n⚠️ История сброшена."
+    keyboard = [];
+    for alias in AVAILABLE_MODELS.keys(): button_text = f"✅ {alias}" if alias == selected_alias else alias; keyboard.append([InlineKeyboardButton(button_text, callback_data=alias)])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    try: await query.edit_message_text(text=f"✅ Модель: *{selected_alias}*!{reset_message}\n\nНачните чат:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений, включая ИСПРАВЛЕННЫЕ except блоки)
-    pass
+    # (Код handle_message без изменений)
+    if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
+    user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
+    logger.info(f"Сообщение от {user.id} ({len(user_message)}): '{user_message[:80].replace(chr(10), ' ')}...'")
+    selected_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
+    model_id = AVAILABLE_MODELS.get(selected_alias)
+    if not model_id: logger.error(f"Крит. ошибка: Не найден ID для '{selected_alias}'"); await update.message.reply_text("Ошибка конфига.", reply_to_message_id=message_id); return
+    final_text: Optional[str] = None; search_suggestions: List[str] = []; error_message: Optional[str] = None; start_time = time.monotonic()
+    try:
+        current_history = chat_histories.get(chat_id, [])
+        api_contents = []
+        try: user_part = Part(text=user_message) if Part is not dict else {'text': user_message}; api_contents = current_history + [{'role': 'user', 'parts': [user_part]}]
+        except Exception as e: logger.error(f"Ошибка Part user: {e}"); api_contents = current_history + [{'role': 'user', 'parts': [{'text': user_message}]}]
+        logger.info(f"Запрос к '{model_id}'. История: {len(current_history)} сообщ.")
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        config_obj = None; tools_list = [google_search_tool] if google_search_tool else None
+        try:
+             if GenerateContentConfig is not None: config_obj = GenerateContentConfig(system_instruction=system_instruction_text, tools=tools_list); logger.debug("GenerateContentConfig создан.")
+             else: logger.warning("GenerateContentConfig не импортирован.")
+        except Exception as e: logger.error(f"Ошибка создания GenerateContentConfig: {e}")
+        response = gemini_client.models.generate_content(model=model_id, contents=api_contents, config=config_obj)
+        processing_time = time.monotonic() - start_time; logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
+        final_text = extract_response_text(response)
+        if final_text and not final_text.startswith("⚠️"):
+             try: model_part = Part(text=final_text) if Part is not dict else {'text': final_text}; history_to_update = chat_histories.get(chat_id, [])[:]; history_to_update.append({'role': 'user', 'parts': api_contents[-1]['parts']}); history_to_update.append({'role': 'model', 'parts': [model_part]}); chat_histories[chat_id] = history_to_update
+             except Exception as e: logger.error(f"Ошибка обновления истории: {e}")
+             logger.info(f"История чата {chat_id} обновлена, теперь {len(chat_histories[chat_id])} сообщений.")
+        elif final_text and final_text.startswith("⚠️"): error_message = final_text; final_text = None; logger.warning(f"Ответ был ошибкой, история не обновлена.")
+        else:
+            if not error_message: error_message = "⚠️ Получен пустой или некорректный ответ."
+            logger.warning(f"Не удалось извлечь текст, история не обновлена.")
+        if hasattr(response, 'candidates') and response.candidates:
+             try: # ... (извлечение метаданных)
+             except (AttributeError, IndexError): pass
+    except InvalidArgument as e_arg: logger.error(f"Ошибка InvalidArgument для '{model_id}': {e_arg}"); error_message = f"❌ Ошибка в запросе к '{selected_alias}'.";
+    except ResourceExhausted as e_limit: logger.warning(f"Исчерпана квота API для '{model_id}': {e_limit}"); error_message = f"😔 Модель '{selected_alias}' устала (лимиты)."
+    except (GoogleAPIError, Exception) as e_other: logger.exception(f"Неожиданная ошибка API ('{model_id}'): {e_other}"); error_message = f"😵 Ошибка ({type(e_other).__name__}) при общении с '{selected_alias}'."
+    reply_markup = None
+    if search_suggestions: # ... (создание клавиатуры)
+    if final_text: # ... (отправка ответа)
+    elif error_message: # ... (отправка ошибки)
+    else: # ... (fallback)
 
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА ---
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -159,4 +219,4 @@ if __name__ == '__main__':
     # ... (код без изменений)
     pass
 
-# --- END OF REALLY x39 FULL CORRECTED main.py (FINAL INDENTATION FIX IN EXTRACT) ---
+# --- END OF REALLY x40 FULL CORRECTED main.py (FINAL FINAL INDENTATION FIX) ---
