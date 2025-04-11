@@ -336,9 +336,7 @@ async def main_async() -> None:
     logger.info("Запуск обработки обновлений Telegram (run_polling как задача)...")
     polling_task = None # Инициализируем переменную
     try:
-        polling_task = asyncio.create_task(application.run_polling(
-            stop_signals=None # Управляем сигналами сами
-        ))
+        polling_task = asyncio.create_task(application.run_polling())
         logger.info("Бот и веб-сервер запущены. Ожидание сигнала остановки (Ctrl+C)...")
 
         # Ждем, пока не будет установлен stop_event (сигналом или ошибкой)
