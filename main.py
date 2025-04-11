@@ -1,21 +1,23 @@
-# --- START OF REALLY x63 FULL CORRECTED main.py (SIMPLIFIED WEBHOOK HANDLER FOR LOGGING ONLY) ---
+# --- START OF REALLY x62 FULL CORRECTED main.py (ADD application.initialize() for webhooks) ---
 
 import logging
 import os
 import asyncio
-import signal
+import signal # <-- Для обработки сигналов остановки
 import time
 import random
 import google.genai as genai
 import aiohttp.web
 import sys
-import secrets
-from urllib.parse import urljoin
-import json # Добавляем импорт json
+import secrets # Для генерации секретного пути
+from urllib.parse import urljoin # Для создания URL вебхука
+import json # Добавляем импорт json (на всякий случай, хотя в этом коде он не нужен)
 
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# *** DEBUG логирование ***
 logging.getLogger("httpx").setLevel(logging.DEBUG)
 logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
 logging.getLogger("telegram.bot").setLevel(logging.DEBUG)
@@ -24,7 +26,7 @@ logging.getLogger("aiohttp.web").setLevel(logging.DEBUG)
 # *************************
 
 # --- ИМПОРТ ТИПОВ ---
-# (Без изменений от x62)
+# (Импорт и заглушки из x61)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -51,6 +53,7 @@ try:
     except AttributeError: logger.warning("genai_types.HarmProbability не найден, используется заглушка.")
 except ImportError as e: logger.error(f"!!! НЕ удалось импортировать модуль google.genai.types: {e}. Используются заглушки.")
 
+# Возвращаем импорт типов из typing
 from typing import Optional, Dict, Union, Any, List, Tuple
 import urllib.parse
 
@@ -85,7 +88,7 @@ DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
 # --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
-# (Без изменений из x62)
+# (Без изменений из x61)
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
 if Tool is not None and GoogleSearch is not None:
@@ -104,7 +107,7 @@ else:
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 system_instruction_text = (
-    # (Текст системного промпта без изменений из x62)
+    # (Текст системного промпта без изменений из x61)
     "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку."
     "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение."
     "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
@@ -119,7 +122,7 @@ system_instruction_text = (
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
 def extract_response_text(response) -> Optional[str]:
-    # (Код extract_response_text без изменений из x62)
+    # (Код extract_response_text без изменений из x61)
     try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
@@ -146,17 +149,17 @@ def extract_response_text(response) -> Optional[str]:
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код start без изменений из x62, только версия в тексте)
+    # (Код start без изменений из x61, только версия в тексте)
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
     if chat_id in chat_histories: del chat_histories[chat_id]
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v63 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v62 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_command без изменений из x62)
+    # (Код select_model_command без изменений из x61)
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
     for alias in AVAILABLE_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
     if not keyboard: await update.message.reply_text("Нет моделей."); return
@@ -164,7 +167,7 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_callback без изменений из x62)
+    # (Код select_model_callback без изменений из x61)
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     if selected_alias not in AVAILABLE_MODELS:
@@ -187,7 +190,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код handle_message без изменений из x62)
+    # (Код handle_message без изменений из x61)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.debug(f"handle_message вызван для сообщения {message_id} в чате {chat_id}")
@@ -288,35 +291,52 @@ async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
     logger.info(f"Получен HTTP пинг от {peername} к хосту {host}")
     return aiohttp.web.Response(text="OK", status=200)
 
-# *** ИЗМЕНЕННЫЙ ОБРАБОТЧИК ВЕБХУКА (ТОЛЬКО ЛОГИРОВАНИЕ) ***
+# *** ВОЗВРАЩАЕМ ПОЛНОЦЕННЫЙ ОБРАБОТЧИК ВЕБХУКА ***
 async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    """Принимает обновления от Telegram, ЛОГИРУЕТ их и отвечает OK."""
+    """Принимает обновления от Telegram и передает их в PTB."""
+    application = request.app.get('bot_app') # Получаем объект Application из состояния aiohttp
+    if not application:
+        logger.error("Объект Application не найден в состоянии aiohttp!")
+        return aiohttp.web.Response(status=500, text="Internal Server Error: Bot not configured")
+
     if request.method != "POST":
         logger.warning(f"Получен не-POST запрос на webhook URL: {request.method}")
         return aiohttp.web.Response(status=405, text="Method Not Allowed")
 
     try:
-        raw_body = await request.text()
-        logger.info(f"!!! ПОЛУЧЕН ЗАПРОС НА ВЕБХУК !!! Метод: {request.method}, Путь: {request.path}")
-        logger.debug(f"Заголовки вебхука: {request.headers}")
-        logger.debug(f"Тело вебхука (raw): {raw_body}")
+        data = await request.json()
+        logger.debug(f"Получен вебхук: {data}")
+    except Exception as e:
+        logger.error(f"Не удалось распарсить JSON из вебхука: {e}")
+        return aiohttp.web.Response(status=400, text="Bad Request: Invalid JSON")
 
-        try:
-             data = json.loads(raw_body) # Используем импортированный json
-             logger.debug(f"Тело вебхука (parsed JSON): {data}")
-        except Exception as json_e:
-             logger.warning(f"Не удалось распарсить тело вебхука как JSON (ошибка: {json_e}), но запрос все равно получен.")
+    try:
+        update = Update.de_json(data, application.bot)
+        if not update:
+             raise ValueError("Update.de_json вернул None")
+        logger.debug(f"Вебхук успешно преобразован в Update: {update.update_id}")
 
-        # НЕ ПЫТАЕМСЯ ОБРАБОТАТЬ ЧЕРЕЗ PTB
-        logger.info("Отвечаем Telegram 200 OK на вебхук (обработка PTB отключена для теста).")
+        # Используем asyncio.create_task, чтобы не блокировать ответ Telegram
+        async def process():
+            try:
+                await application.process_update(update)
+                logger.debug(f"Обновление {update.update_id} передано в application.process_update")
+            except Exception as e_process:
+                 logger.exception(f"Ошибка при обработке обновления {update.update_id} в process_update: {e_process}")
+        asyncio.create_task(process())
+
         return aiohttp.web.Response(status=200, text="OK")
 
+    except ValueError as e_val: # Отдельно ловим ошибку парсинга Update
+         logger.error(f"Ошибка преобразования JSON в Update: {e_val}")
+         return aiohttp.web.Response(status=400, text="Bad Request: Invalid Update object")
     except Exception as e:
-        logger.exception(f"Критическая ошибка при получении/логировании вебхука: {e}")
-        return aiohttp.web.Response(status=500, text="Internal Server Error during webhook logging")
+        logger.exception(f"Ошибка при обработке вебхука или передаче в PTB: {e}")
+        return aiohttp.web.Response(status=500, text="Internal Server Error during webhook processing")
+# *************************************************
 
 async def run_web_server(port: int, stop_event: asyncio.Event, application: Application):
-    # (Код run_web_server без изменений из x62, использует новый handle_telegram_webhook)
+    # (Код run_web_server без изменений из x62)
     app = aiohttp.web.Application()
     app['bot_app'] = application
     app.router.add_get('/', handle_ping)
@@ -538,4 +558,4 @@ if __name__ == '__main__':
     else:
         logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x63 FULL CORRECTED main.py (SIMPLIFIED WEBHOOK HANDLER FOR LOGGING ONLY) ---
+# --- END OF REALLY x62 FULL CORRECTED main.py (ADD application.initialize() for webhooks) ---
