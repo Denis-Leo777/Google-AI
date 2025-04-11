@@ -1,4 +1,4 @@
-# --- START OF REALLY x57 FULL CORRECTED main.py (UPDATE system_instruction_text in x56) ---
+# --- START OF REALLY x58 FULL CORRECTED main.py (ADD drop_pending_updates=True) ---
 
 import logging
 import os
@@ -22,7 +22,7 @@ logging.getLogger("telegram.request").setLevel(logging.DEBUG)
 # *************************
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки из x56)
+# (Импорт и заглушки из x57)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -77,7 +77,7 @@ DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
 # --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
-# (Без изменений из x56)
+# (Без изменений из x57)
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
 if Tool is not None and GoogleSearch is not None:
@@ -95,8 +95,8 @@ else:
 
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
-# *** НАЧАЛО ОБНОВЛЕННОГО БЛОКА system_instruction_text ***
 system_instruction_text = (
+    # (Текст системного промпта без изменений из x57)
     "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку."
     "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение."
     "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
@@ -108,11 +108,10 @@ system_instruction_text = (
     "Если пользователь предоставляет свой полный текст (или код) как основу, используй именно этот текст (код). Не пытайся 'улучшить' или 'переформатировать' его части, не относящиеся к запросу на исправление, если только пользователь явно об этом не попросил."
     "В диалогах, связанных с разработкой или итеративным исправлением, всегда явно ссылайся на номер версии или предыдущее сообщение, которое берется за основу. Поддерживай четкое понимание, какая версия кода является 'последней рабочей' или 'последней предоставленной'."
 )
-# *** КОНЕЦ ОБНОВЛЕННОГО БЛОКА system_instruction_text ***
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
 def extract_response_text(response) -> Optional[str]:
-    # (Код extract_response_text без изменений из x56)
+    # (Код extract_response_text без изменений из x57)
     try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
@@ -139,17 +138,17 @@ def extract_response_text(response) -> Optional[str]:
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код start без изменений из x56, только версия в тексте)
+    # (Код start без изменений из x57, только версия в тексте)
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
     if chat_id in chat_histories: del chat_histories[chat_id]
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v57." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v58." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_command без изменений из x56)
+    # (Код select_model_command без изменений из x57)
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
     for alias in AVAILABLE_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
     if not keyboard: await update.message.reply_text("Нет моделей."); return
@@ -157,7 +156,7 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_callback без изменений из x56)
+    # (Код select_model_callback без изменений из x57)
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     if selected_alias not in AVAILABLE_MODELS:
@@ -180,7 +179,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код handle_message без изменений из x56)
+    # (Код handle_message без изменений из x57)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.debug(f"handle_message вызван для сообщения {message_id} в чате {chat_id}")
@@ -277,13 +276,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА ---
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    # (Код handle_ping без изменений из x56)
+    # (Код handle_ping без изменений из x57)
     peername = request.remote; host = request.headers.get('Host', 'N/A')
     logger.info(f"Получен HTTP пинг от {peername} к хосту {host}")
     return aiohttp.web.Response(text="OK", status=200)
 
 async def run_web_server(port: int, stop_event: asyncio.Event):
-    # (Код run_web_server без изменений из x56)
+    # (Код run_web_server без изменений из x57)
     app = aiohttp.web.Application(); app.router.add_get('/', handle_ping)
     runner = aiohttp.web.AppRunner(app); await runner.setup()
     site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
@@ -300,7 +299,7 @@ async def run_web_server(port: int, stop_event: asyncio.Event):
 
 # --- НОВЫЕ ФУНКЦИИ ДЛЯ РУЧНОГО УПРАВЛЕНИЯ ЦИКЛОМ ---
 async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task], polling_task: Optional[asyncio.Task]):
-    # (Код shutdown_sequence без изменений из x56)
+    # (Код shutdown_sequence без изменений из x57)
     logger.info("Последовательность остановки запущена...")
     if polling_task:
         logger.debug(f"Состояние polling_task перед остановкой: done={polling_task.done()}, cancelled={polling_task.cancelled()}")
@@ -358,7 +357,7 @@ async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio
         loop.stop()
 
 def handle_signal(sig, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task], polling_task: Optional[asyncio.Task]):
-    # (Код handle_signal без изменений из x56)
+    # (Код handle_signal без изменений из x57)
     logger.info(f"Получен сигнал {sig.name}. Запуск последовательности остановки.")
     if application:
         asyncio.ensure_future(shutdown_sequence(loop, stop_event, application, web_server_task, polling_task), loop=loop)
@@ -370,7 +369,7 @@ def handle_signal(sig, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Even
 
 # --- ФУНКЦИЯ НАСТРОЙКИ БОТА И СЕРВЕРА ---
 async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Application], Optional[asyncio.Future]]:
-    # (Код setup_bot_and_server без изменений из x56)
+    # (Код setup_bot_and_server без изменений из x57)
     application: Optional[Application] = None
     web_server_coro: Optional[asyncio.Future] = None
     try:
@@ -410,7 +409,7 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
 
 # --- ТОЧКА ВХОДА (С РУЧНЫМ УПРАВЛЕНИЕМ ЦИКЛОМ) ---
 if __name__ == '__main__':
-    # (Код точки входа без изменений из x56)
+    # (Код точки входа без изменений из x57, кроме добавления drop_pending_updates=True)
     if 'gemini_client' in globals() and gemini_client:
         logger.info("Клиент Gemini создан. Настройка и запуск event loop.")
         loop = asyncio.new_event_loop()
@@ -436,8 +435,10 @@ if __name__ == '__main__':
             web_server_task = loop.create_task(web_server_coro)
             logger.info("Задача веб-сервера создана.")
             logger.info("Запуск поллинга Telegram (updater.start_polling)...")
-            polling_task = loop.create_task(updater.start_polling())
-            logger.info("Задача поллинга Telegram создана.")
+            # *** ИЗМЕНЕНИЕ: Добавлено drop_pending_updates=True ***
+            polling_task = loop.create_task(updater.start_polling(drop_pending_updates=True))
+            logger.info("Задача поллинга Telegram создана (с drop_pending_updates=True).")
+            # ***************************************************
             logger.info("Настройка обработчиков сигналов...")
             sigs = (signal.SIGINT, signal.SIGTERM)
             for s in sigs:
@@ -503,4 +504,4 @@ if __name__ == '__main__':
     else:
         logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x57 FULL CORRECTED main.py (UPDATE system_instruction_text in x56) ---
+# --- END OF REALLY x58 FULL CORRECTED main.py (ADD drop_pending_updates=True) ---
