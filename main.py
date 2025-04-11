@@ -333,15 +333,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         tools_list = [google_search_tool] if google_search_tool else None
         generation_config_for_api = {}
-        # Передаём системную инструкцию в generation_config, если она задана:
+        # Передаем системную инструкцию в generation_config, если она задана:
         if system_instruction_text:
-            generation_config_for_api['system_instruction'] = (Content(parts=[Part(text=system_instruction_text)])
+            generation_config_for_api['system_instruction'] = (
+                Content(parts=[Part(text=system_instruction_text)])
                 if Content is not dict and Part is not dict
-                else {'parts': [{'text': system_instruction_text}]})
-        # Генерируем ответ напрямую через клиента:
-        response = gemini_client.generate_content(
+                else {'parts': [{'text': system_instruction_text}]}
+            )
+        # Генерируем ответ напрямую через клиента, используя метод generate_text:
+        response = gemini_client.generate_text(
             model=model_id,
-            contents=api_contents,
+            prompt=api_contents,
             generation_config=generation_config_for_api if generation_config_for_api else None,
             tools=tools_list
         )
