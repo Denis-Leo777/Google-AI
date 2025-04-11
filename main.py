@@ -341,11 +341,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 else {'parts': [{'text': system_instruction_text}]}
             )
         # Генерируем ответ напрямую через клиента, используя метод generate_text:
-        response = gemini_client.generate_text(
-            model=model_id,
-            prompt=api_contents,
-            generation_config=generation_config_for_api if generation_config_for_api else None,
-            tools=tools_list
+        response = gemini_client.generate_content( 
+        model=model_id, 
+        contents=api_contents, 
+        generation_config=generation_config_for_api if generation_config_for_api else None, 
+        tools=tools_list
         )
 
         processing_time = time.monotonic() - start_time
