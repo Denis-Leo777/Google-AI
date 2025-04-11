@@ -164,10 +164,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         response = gemini_client.generate_content(
-            model=model_id,
-            contents=[{"role": "user", "parts": [{"text": user_message}]],
-            system_instruction={"parts": [{"text": system_instruction_text}]}
+        model=model_id,
+        contents=[{"role": "user", "parts": [{"text": user_message}]}],  # Закрыл `contents` правильно
+        system_instruction={"parts": [{"text": system_instruction_text}]}
         )
+
         reply_text = extract_response_text(response)
         
         if not reply_text:
