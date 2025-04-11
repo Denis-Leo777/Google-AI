@@ -334,7 +334,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         tools_list = [google_search_tool] if google_search_tool else None
         generation_config_for_api = {}
 
-        model_obj = gemini_client.get_model(model_id)
+        model_obj = gemini_client.model(model_id)
         if not model_obj:
             raise ValueError(f"Не удалось получить объект модели для {model_id}")
 
