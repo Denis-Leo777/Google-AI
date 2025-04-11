@@ -1,20 +1,20 @@
-# --- START OF REALLY x36 FULL CORRECTED main.py (FIXED HANDLE_MESSAGE EXCEPTS... AGAIN!) ---
+# --- START OF REALLY x37 FULL CORRECTED main.py (x28 + AIOHTTP + FIXED HANDLE_MESSAGE EXCEPTS) ---
 
 import logging
 import os
 import asyncio
-import signal
+import signal # <-- Для обработки сигналов остановки
 import time
 import random
 import google.genai as genai
-import aiohttp.web
+import aiohttp.web # <-- Для веб-сервера
 
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки без изменений)
+# (Импорт и заглушки из x28)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -86,10 +86,8 @@ system_instruction_text = (
 )
 
 def extract_response_text(response) -> Optional[str]:
-    """Извлекает текст из ответа client.models.generate_content."""
-    # (Код функции с исправленным отступом в except AttributeError из v32)
-    try:
-        return response.text
+    # (Код функции взят из v32/x28 - без ошибок отступов)
+    try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
         try:
@@ -122,7 +120,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v36." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v37." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код select_model_command без изменений)
@@ -131,7 +129,6 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if not keyboard: await update.message.reply_text("Нет моделей."); return
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код select_model_callback без изменений)
@@ -155,7 +152,6 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     reply_markup = InlineKeyboardMarkup(keyboard)
     try: await query.edit_message_text(text=f"✅ Модель: *{selected_alias}*!{reset_message}\n\nНачните чат:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
-
 
 # --- ИСПРАВЛЕННЫЙ handle_message ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -190,7 +186,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             if not error_message: error_message = "⚠️ Получен пустой или некорректный ответ."
             logger.warning(f"Не удалось извлечь текст, история не обновлена.")
-        # Блок if для извлечения метаданных теперь на правильном уровне
+        # Блок if для извлечения метаданных
         if hasattr(response, 'candidates') and response.candidates:
              try:
                  candidate = response.candidates[0]
@@ -204,17 +200,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              except (AttributeError, IndexError):
                  pass # Игнорируем ошибки доступа к метаданным
 
-    # --- СНОВА ИСПРАВЛЕНЫ ОТСТУПЫ В БЛОКАХ EXCEPT ---
+    # --- ИСПРАВЛЕННЫЕ БЛОКИ EXCEPT (как в v31) ---
     except InvalidArgument as e_arg:
-        # Исправленный отступ
         logger.error(f"Ошибка InvalidArgument для '{model_id}': {e_arg}")
         error_message = f"❌ Ошибка в запросе к '{selected_alias}'. Проверьте формат данных."
     except ResourceExhausted as e_limit:
-        # Исправленный отступ
         logger.warning(f"Исчерпана квота API для '{model_id}': {e_limit}")
         error_message = f"😔 Модель '{selected_alias}' устала (лимиты)."
     except (GoogleAPIError, Exception) as e_other:
-        # Исправленный отступ
         logger.exception(f"Неожиданная ошибка API ('{model_id}'): {e_other}")
         error_message = f"😵 Ошибка ({type(e_other).__name__}) при общении с '{selected_alias}'."
     # --- КОНЕЦ ИСПРАВЛЕННЫХ БЛОКОВ EXCEPT ---
@@ -222,16 +215,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Отправка ответа или ошибки
     reply_markup = None
     if search_suggestions:
-        # ... (код создания клавиатуры без изменений) ...
+        # ... (код создания клавиатуры) ...
         pass # Placeholder
     if final_text:
-        # ... (код отправки ответа без изменений) ...
+        # ... (код отправки ответа) ...
         pass # Placeholder
     elif error_message:
-        # ... (код отправки ошибки без изменений) ...
+        # ... (код отправки ошибки) ...
         pass # Placeholder
     else:
-        # ... (код отправки fallback без изменений) ...
+        # ... (код отправки fallback) ...
         pass # Placeholder
 
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА (без изменений) ---
@@ -247,4 +240,4 @@ async def shutdown(signal, loop, stop_event: asyncio.Event, application: Applica
 # --- ТОЧКА ВХОДА (без изменений) ---
 if __name__ == '__main__': # ...
 
-# --- END OF REALLY x36 FULL CORRECTED main.py (FIXED HANDLE_MESSAGE EXCEPTS... AGAIN!) ---
+# --- END OF REALLY x37 FULL CORRECTED main.py (x28 + AIOHTTP + FIXED HANDLE_MESSAGE EXCEPTS) ---
