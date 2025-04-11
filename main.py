@@ -1,10 +1,10 @@
 import logging
 import os
 import asyncio
-import signal  # Для обработки сигналов остановки
+import signal
 import time
 import google.genai as genai
-import sys  # Для использования sys в блоке finally
+import sys
 import urllib.parse
 
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
@@ -20,7 +20,7 @@ logging.getLogger("telegram.request").setLevel(logging.DEBUG)
 
 # --- ИМПОРТ ТИПОВ ---
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
-class DummyFinishReasonEnum: 
+class DummyFinishReasonEnum:
     FINISH_REASON_UNSPECIFIED = 0
     STOP = 1
     MAX_TOKENS = 2
@@ -28,14 +28,14 @@ class DummyFinishReasonEnum:
     RECITATION = 4
     OTHER = 5
     _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
-class DummyHarmCategoryEnum: 
+class DummyHarmCategoryEnum:
     HARM_CATEGORY_UNSPECIFIED = 0
     HARM_CATEGORY_HARASSMENT = 7
     HARM_CATEGORY_HATE_SPEECH = 8
     HARM_CATEGORY_SEXUALLY_EXPLICIT = 9
     HARM_CATEGORY_DANGEROUS_CONTENT = 10
     _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
-class DummyHarmProbabilityEnum: 
+class DummyHarmProbabilityEnum:
     HARM_PROBABILITY_UNSPECIFIED = 0
     NEGLIGIBLE = 1
     LOW = 2
@@ -46,38 +46,48 @@ FinishReason = DummyFinishReasonEnum()
 HarmCategory = DummyHarmCategoryEnum()
 HarmProbability = DummyHarmProbabilityEnum()
 ResourceExhausted = Exception; GoogleAPIError = Exception; FailedPrecondition = Exception; InvalidArgument = ValueError
+
 try:
-    from google.genai import types as genai_types; logger.info("Импортирован модуль google.genai.types.")
-    try: 
-        Tool = genai_types.Tool; logger.info("Найден genai_types.Tool")
-    except AttributeError: 
+    from google.genai import types as genai_types
+    logger.info("Импортирован модуль google.genai.types.")
+    try:
+        Tool = genai_types.Tool
+        logger.info("Найден genai_types.Tool")
+    except AttributeError:
         logger.warning("genai_types.Tool не найден.")
-    try: 
-        GenerateContentConfig = genai_types.GenerateContentConfig; logger.info("Найден genai_types.GenerateContentConfig")
+    try:
+        GenerateContentConfig = genai_types.GenerateContentConfig
+        logger.info("Найден genai_types.GenerateContentConfig")
     except AttributeError:
         logger.warning("genai_types.GenerateContentConfig не найден.")
-    try: 
-        GoogleSearch = genai_types.GoogleSearch; logger.info("Найден genai_types.GoogleSearch")
+    try:
+        GoogleSearch = genai_types.GoogleSearch
+        logger.info("Найден genai_types.GoogleSearch")
     except AttributeError:
         logger.warning("genai_types.GoogleSearch не найден.")
-    try: 
-        Content = genai_types.Content; logger.info("Найден genai_types.Content")
+    try:
+        Content = genai_types.Content
+        logger.info("Найден genai_types.Content")
     except AttributeError:
         logger.warning("genai_types.Content не найден, используется dict.")
-    try: 
-        Part = genai_types.Part; logger.info("Найден genai_types.Part")
+    try:
+        Part = genai_types.Part
+        logger.info("Найден genai_types.Part")
     except AttributeError:
         logger.warning("genai_types.Part не найден, используется dict.")
-    try: 
-        FinishReason = genai_types.FinishReason; logger.info("Найден genai_types.FinishReason")
+    try:
+        FinishReason = genai_types.FinishReason
+        logger.info("Найден genai_types.FinishReason")
     except AttributeError:
         logger.warning("genai_types.FinishReason не найден, используется заглушка.")
-    try: 
-        HarmCategory = genai_types.HarmCategory; logger.info("Найден genai_types.HarmCategory")
+    try:
+        HarmCategory = genai_types.HarmCategory
+        logger.info("Найден genai_types.HarmCategory")
     except AttributeError:
         logger.warning("genai_types.HarmCategory не найден, используется заглушка.")
-    try: 
-        HarmProbability = genai_types.HarmProbability; logger.info("Найден genai_types.HarmProbability")
+    try:
+        HarmProbability = genai_types.HarmProbability
+        logger.info("Найден genai_types.HarmProbability")
     except AttributeError:
         logger.warning("genai_types.HarmProbability не найден, используется заглушка.")
 except ImportError as e:
@@ -85,7 +95,7 @@ except ImportError as e:
 
 from typing import Optional, Dict, Any, List
 try:
-    from google.api_core.exceptions import ResourceExhausted, GoogleAPIError, FailedPrecondition, InvalidArgument; 
+    from google.api_core.exceptions import ResourceExhausted, GoogleAPIError, FailedPrecondition, InvalidArgument
     logger.info("Исключения google.api_core импортированы.")
 except ImportError:
     logger.warning("!!! НЕ УДАЛОСЬ импортировать google.api_core.exceptions.")
@@ -93,43 +103,44 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, TypeHandler
 
-try: 
-    from google.protobuf.struct_pb2 import Struct; 
+try:
+    from google.protobuf.struct_pb2 import Struct
     logger.info("Protobuf Struct импортирован.")
 except ImportError:
-    logger.warning("!!! Protobuf не импортирован."); Struct = dict
+    logger.warning("!!! Protobuf не импортирован.")
+    Struct = dict
 
+# --- ЧТЕНИЕ СЕКРЕТНЫХ ПЕРЕМЕННЫХ ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-WEBHOOK_URL = os.getenv('https://google-ai-lu0c.onrender.com')  # Укажите внешний URL вашего приложения, например: "https://myapp.onrender.com"
-if not TELEGRAM_BOT_TOKEN: 
-    logger.critical("Telegram токен не найден!")
-    exit("Telegram токен не найден")
-if not GOOGLE_API_KEY: 
-    logger.critical("Ключ Google API не найден!")
-    exit("Google API ключ не найден")
-else: 
-    logger.info("Ключ GOOGLE_API_KEY найден.")
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Пример: "https://google-ai-lu0c.onrender.com"
+if not TELEGRAM_BOT_TOKEN:
+    logger.critical("Telegram токен не задан!")
+    exit("Telegram токен не задан")
+if not GOOGLE_API_KEY:
+    logger.critical("Ключ Google API не задан!")
+    exit("Google API ключ не задан")
 if not WEBHOOK_URL:
-    logger.critical("https://google-ai-lu0c.onrender.com")
-    exit("https://google-ai-lu0c.onrender.com")
-    
-try: 
-    gemini_client = genai.Client(api_key=GOOGLE_API_KEY); 
+    logger.critical("WEBHOOK_URL не задан! Добавьте его в секреты Render и укажите внешний HTTPS URL вашего приложения.")
+    exit("WEBHOOK_URL не задан")
+logger.info(f"WEBHOOK_URL: {repr(WEBHOOK_URL)}")
+
+try:
+    gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
     logger.info("Клиент google.genai.Client создан.")
 except Exception as e:
     logger.exception("!!! КРИТ. ОШИБКА создания google.genai.Client!")
     exit("Ошибка создания клиента Gemini.")
 
 AVAILABLE_MODELS = {'⚡ Flash 2.0': 'models/gemini-2.0-flash-001', '✨ Pro 2.5': 'models/gemini-2.5-pro-exp-03-25'}
-if not AVAILABLE_MODELS: 
+if not AVAILABLE_MODELS:
     exit("Нет моделей в AVAILABLE_MODELS!")
 DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
-if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: 
+if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS:
     DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS))
     logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
-# --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
+# --- НАСТРОЙКА ИНСТРУМЕНТА ПОИСКА ---
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
 if Tool is not None and GoogleSearch is not None:
@@ -141,7 +152,7 @@ if Tool is not None and GoogleSearch is not None:
         google_search_tool = None
         search_tool_type_used = "N/A (creation error)"
 else:
-    logger.error(f"!!! Классы 'Tool' или 'GoogleSearch' НЕ были импортированы (None). Поиск недоступен.")
+    logger.error("!!! Классы 'Tool' или 'GoogleSearch' НЕ были импортированы (None). Поиск недоступен.")
     google_search_tool = None
     search_tool_type_used = "N/A (import error)"
 
@@ -178,8 +189,8 @@ def extract_response_text(response) -> Optional[str]:
                 if finish_reason and finish_reason not in (FinishReason.FINISH_REASON_UNSPECIFIED, FinishReason.STOP):
                     error_parts.append(f"Причина остановки: {finish_map.get(finish_reason, finish_reason)}")
                 relevant_ratings = [
-                    f"{harm_cat_map.get(r.category, r.category)}: {harm_prob_map.get(r.probability, r.probability)}" 
-                    for r in safety_ratings 
+                    f"{harm_cat_map.get(r.category, r.category)}: {harm_prob_map.get(r.probability, r.probability)}"
+                    for r in safety_ratings
                     if hasattr(r, 'probability') and r.probability not in (HarmProbability.HARM_PROBABILITY_UNSPECIFIED, HarmProbability.NEGLIGIBLE)
                 ]
                 if relevant_ratings:
@@ -358,11 +369,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif final_text and final_text.startswith("⚠️"):
             error_message = final_text
             final_text = None
-            logger.warning(f"Ответ был ошибкой, история не обновлена.")
+            logger.warning("Ответ был ошибкой, история не обновлена.")
         else:
             if not error_message:
                 error_message = "⚠️ Получен пустой или некорректный ответ."
-            logger.warning(f"Не удалось извлечь текст, история не обновлена.")
+            logger.warning("Не удалось извлечь текст, история не обновлена.")
         if hasattr(response, 'candidates') and response.candidates:
             try:
                 candidate = response.candidates[0]
@@ -476,9 +487,9 @@ async def setup_bot() -> Optional[Application]:
         return None
     return application
 
-# --- ТОЧКА ВХОДА ---
+# --- ТОЧКА ВХОДА (ВЕБХУКИ) ---
 if __name__ == '__main__':
-    # Для вебхуков используется встроенный сервер telegram.ext, поэтому нет необходимости запускать отдельный web-server.
+    # Для вебхуков используется встроенный сервер telegram.ext, поэтому отдельный воркер не нужен.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -486,10 +497,10 @@ if __name__ == '__main__':
         if not app:
             raise RuntimeError("Application не был создан в setup_bot.")
         port = int(os.environ.get("PORT", 8080))
-        # Формируем полный URL вебхука, добавляя токен к внешнему URL
+        # Формируем полный URL вебхука из переменной WEBHOOK_URL и добавляем путь равный TELEGRAM_BOT_TOKEN:
         webhook_full_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_BOT_TOKEN}"
         logger.info(f"Настройка вебхука: слушаем на 0.0.0.0:{port}, URL вебхука: {webhook_full_url}")
-        # Запускаем встроенный сервер для вебхуков. run_webhook() блокирует выполнение.
+        # Запускаем встроенный сервер для вебхуков, который блокирует выполнение:
         app.run_webhook(
             listen="0.0.0.0",
             port=port,
@@ -502,4 +513,5 @@ if __name__ == '__main__':
         logger.exception("Критическая ошибка в главном потоке!")
     finally:
         logger.info("Процесс завершен.")
+
 
