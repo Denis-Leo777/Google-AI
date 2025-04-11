@@ -1,4 +1,4 @@
-# --- START OF REALLY x65 FULL CORRECTED main.py (FIX gemini get_model AttributeError) ---
+# --- START OF REALLY x66 FULL CORRECTED main.py (x62 + CORRECTLY fix get_model + REMOVE Client object) ---
 
 import logging
 import os
@@ -6,7 +6,7 @@ import asyncio
 import signal # <-- Для обработки сигналов остановки
 import time
 import random
-import google.genai as genai
+import google.genai as genai # Импортируем сам модуль
 import aiohttp.web
 import sys
 import secrets # Для генерации секретного пути
@@ -16,8 +16,6 @@ import json
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# *** DEBUG логирование (можно будет потом убрать, когда все заработает) ***
 logging.getLogger("httpx").setLevel(logging.DEBUG)
 logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
 logging.getLogger("telegram.bot").setLevel(logging.DEBUG)
@@ -53,6 +51,7 @@ try:
     except AttributeError: logger.warning("genai_types.HarmProbability не найден, используется заглушка.")
 except ImportError as e: logger.error(f"!!! НЕ удалось импортировать модуль google.genai.types: {e}. Используются заглушки.")
 
+# Возвращаем импорт типов из typing
 from typing import Optional, Dict, Union, Any, List, Tuple
 import urllib.parse
 
@@ -78,8 +77,8 @@ if not GOOGLE_API_KEY: logger.critical("Ключ Google API не найден!")
 if not WEBHOOK_HOST: logger.critical("WEBHOOK_HOST не указан (URL сервиса Render)!"); exit("WEBHOOK_HOST не указан")
 else: logger.info(f"WEBHOOK_HOST={WEBHOOK_HOST}")
 
+# *** Используем ТОЛЬКО genai.configure() ***
 try:
-    # *** Используем genai.configure для установки ключа ***
     genai.configure(api_key=GOOGLE_API_KEY)
     logger.info("Клиент google.genai сконфигурирован.")
 except Exception as e:
@@ -124,8 +123,8 @@ system_instruction_text = (
 )
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
+# (Код extract_response_text без изменений из x62)
 def extract_response_text(response) -> Optional[str]:
-    # (Код extract_response_text без изменений из x62)
     try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
@@ -151,18 +150,17 @@ def extract_response_text(response) -> Optional[str]:
     except Exception as e: logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}"); return None
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
+# (Код start, select_model_command, select_model_callback без изменений из x62)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код start без изменений из x62, только версия в тексте)
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
     if chat_id in chat_histories: del chat_histories[chat_id]
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v65 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v66 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_command без изменений из x62)
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
     for alias in AVAILABLE_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
     if not keyboard: await update.message.reply_text("Нет моделей."); return
@@ -170,7 +168,6 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_callback без изменений из x62)
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     if selected_alias not in AVAILABLE_MODELS:
@@ -192,53 +189,56 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     try: await query.edit_message_text(text=f"✅ Модель: *{selected_alias}*!{reset_message}\n\nНачните чат:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
-    user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
-    logger.debug(f"handle_message вызван для сообщения {message_id} в чате {chat_id}")
-    logger.info(f"Сообщение от {user.id} ({len(user_message)}): '{user_message[:80].replace(chr(10), ' ')}...'")
-    selected_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
-    model_id = AVAILABLE_MODELS.get(selected_alias)
-    if not model_id: logger.error(f"Крит. ошибка: Не найден ID для '{selected_alias}'"); await update.message.reply_text("Ошибка конфига.", reply_to_message_id=message_id); return
-    final_text: Optional[str] = None; search_suggestions: List[str] = []; error_message: Optional[str] = None; start_time = time.monotonic()
+    # *** Блок try...except начинается здесь ***
     try:
-        current_history = chat_histories.get(chat_id, [])
-        api_contents = []
-        try: user_part = Part(text=user_message) if Part is not dict else {'text': user_message}; api_contents = current_history + [{'role': 'user', 'parts': [user_part]}]
-        except Exception as e: logger.error(f"Ошибка Part user: {e}"); api_contents = current_history + [{'role': 'user', 'parts': [{'text': user_message}]}]
-        logger.info(f"Запрос к '{model_id}'. История: {len(current_history)} сообщ.")
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
+        user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
+        logger.debug(f"handle_message вызван для сообщения {message_id} в чате {chat_id}")
+        logger.info(f"Сообщение от {user.id} ({len(user_message)}): '{user_message[:80].replace(chr(10), ' ')}...'")
+        selected_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
+        model_id = AVAILABLE_MODELS.get(selected_alias)
+        if not model_id: logger.error(f"Крит. ошибка: Не найден ID для '{selected_alias}'"); await update.message.reply_text("Ошибка конфига.", reply_to_message_id=message_id); return
+        final_text: Optional[str] = None; search_suggestions: List[str] = []; error_message: Optional[str] = None; start_time = time.monotonic()
 
-        tools_list = [google_search_tool] if google_search_tool else None
-        generation_config_for_api = {}
+        # *** Внутренний try для Gemini API ***
+        try:
+            current_history = chat_histories.get(chat_id, [])
+            api_contents = []
+            try: user_part = Part(text=user_message) if Part is not dict else {'text': user_message}; api_contents = current_history + [{'role': 'user', 'parts': [user_part]}]
+            except Exception as e: logger.error(f"Ошибка Part user: {e}"); api_contents = current_history + [{'role': 'user', 'parts': [{'text': user_message}]}]
+            logger.info(f"Запрос к '{model_id}'. История: {len(current_history)} сообщ.")
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-        # *** ИСПРАВЛЕНИЕ: Используем genai.GenerativeModel() ***
-        # model_obj = gemini_client.get_model(model_id) # Старый нерабочий вариант
-        model_obj = genai.GenerativeModel(model_id) # Новый правильный вариант
-        if not model_obj: # Эта проверка теперь менее актуальна, но оставим
-            raise ValueError(f"Не удалось получить объект модели для {model_id}")
-        # *********************************************************
+            tools_list = [google_search_tool] if google_search_tool else None
+            generation_config_for_api = {}
 
-        # Присваиваем system_instruction через атрибут модели
-        if system_instruction_text:
-            try:
-                 system_instruction_content = Content(parts=[Part(text=system_instruction_text)]) if Content is not dict and Part is not dict else {'parts': [{'text': system_instruction_text}]}
-                 model_obj.system_instruction = system_instruction_content
-                 logger.debug("System instruction присвоен объекту модели.")
-            except Exception as e:
-                logger.error(f"Ошибка создания/присвоения system_instruction Content: {e}")
+            # *** ИСПРАВЛЕНИЕ: Используем genai.GenerativeModel() ***
+            model_obj = genai.GenerativeModel(model_id)
+            if not model_obj:
+                raise ValueError(f"Не удалось получить объект модели для {model_id}")
+            # *********************************************************
 
-        # Передаем только config и tools в generate_content
-        response = model_obj.generate_content(
-             contents=api_contents,
-             generation_config=generation_config_for_api if generation_config_for_api else None,
-             tools=tools_list
-        )
+            if system_instruction_text:
+                try:
+                     system_instruction_content = Content(parts=[Part(text=system_instruction_text)]) if Content is not dict and Part is not dict else {'parts': [{'text': system_instruction_text}]}
+                     model_obj.system_instruction = system_instruction_content
+                     logger.debug("System instruction присвоен объекту модели.")
+                except Exception as e:
+                    logger.error(f"Ошибка создания/присвоения system_instruction Content: {e}")
 
-        processing_time = time.monotonic() - start_time; logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
-        final_text = extract_response_text(response)
-        if final_text and not final_text.startswith("⚠️"):
-             try: model_part = Part(text=final_text) if Part is not dict else {'text': final_text}; history_to_update = chat_histories.get(chat_id, [])[:]; history_to_update.append({'role': 'user', 'parts': api_contents[-1]['parts']}); history_to_update.append({'role': 'model', 'parts': [model_part]}); chat_histories[chat_id] = history_to_update
-             except Exception as e: logger.error(f"Ошибка обновления истории: {e}")
-             logger.info(f"История чата {chat_id} обновлена, теперь {len(chat_histories[chat_id])} сообщений.")
-        elif final_text and final_text.startswith("⚠️"): error_messa
+            response = model_obj.generate_content(
+                 contents=api_contents,
+                 generation_config=generation_config_for_api if generation_config_for_api else None,
+                 tools=tools_list
+            )
+
+            processing_time = time.monotonic() - start_time; logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
+            final_text = extract_response_text(response)
+            if final_text and not final_text.startswith("⚠️"):
+                 try: model_part = Part(text=final_text) if Part is not dict else {'text': final_text}; history_to_update = chat_histories.get(chat_id, [])[:]; history_to_update.append({'role': 'user', 'parts': api_contents[-1]['parts']}); history_to_update.append({'role': 'model', 'parts': [model_part]}); chat_histories[chat_id] = history_to_update
+                 except Exception as e: logger.error(f"Ошибка обновления истории: {e}")
+                 logger.info(f"История чата {chat_id} обновлена, теперь {len(chat_histories[chat_id])} сообщений.")
+            # *** ВОССТАНОВЛЕННЫЙ ELIF И ELSE ***
+            elif final_text and final_text.startswith("⚠️"): error_message = final_text; final_text = None; logger.warning(f"Ответ был ошибкой,
