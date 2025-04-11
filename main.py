@@ -1,4 +1,4 @@
-# --- START OF REALLY x51 FULL CORRECTED main.py (REVERT TO run_polling AS TASK) ---
+# --- START OF REALLY x53 FULL CORRECTED main.py (REVERT TO x50 start/stop + ADD DEBUG LOGGING) ---
 
 import logging
 import os
@@ -12,6 +12,13 @@ import aiohttp.web # <-- Для веб-сервера
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# *** ДОБАВЛЕНО DEBUG ЛОГИРОВАНИЕ ДЛЯ PTB и HTTPX ***
+logging.getLogger("httpx").setLevel(logging.DEBUG)
+logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
+logging.getLogger("telegram.bot").setLevel(logging.DEBUG)
+logging.getLogger("telegram.request").setLevel(logging.DEBUG)
+# ***************************************************
 
 # --- ИМПОРТ ТИПОВ ---
 # (Импорт и заглушки из x50)
@@ -138,7 +145,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v51." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v53." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код select_model_command без изменений из x50)
@@ -297,7 +304,7 @@ async def signal_handler(sig, stop_event: asyncio.Event):
         stop_event.set()
 
 
-# --- ОБНОВЛЕННАЯ АСИНХРОННАЯ ГЛАВНАЯ ФУНКЦИЯ (Возврат к run_polling как задаче) ---
+# --- ОБНОВЛЕННАЯ АСИНХРОННАЯ ГЛАВНАЯ ФУНКЦИЯ (Возврат к start/stop из x50) ---
 async def main_async() -> None:
     if 'gemini_client' not in globals() or not gemini_client: logger.critical("ЗАПУСК НЕВОЗМОЖЕН: Клиент Gemini не создан."); return
     if not TELEGRAM_BOT_TOKEN: logger.critical("ЗАПУСК НЕВОЗМОЖЕН: Токен Telegram не найден."); return
@@ -309,7 +316,7 @@ async def main_async() -> None:
     application = (Application.builder()
                    .token(TELEGRAM_BOT_TOKEN)
                    .read_timeout(30)
-                   .get_updates_read_timeout(40)
+                   .get_updates_read_timeout(40) # Важный таймаут для long polling
                    .connect_timeout(30)
                    .pool_timeout(60)
                    .build())
@@ -332,47 +339,34 @@ async def main_async() -> None:
     for s in sigs:
         loop.add_signal_handler(s, lambda s=s: asyncio.create_task(signal_handler(s, stop_event)))
 
-    # *** ИЗМЕНЕНИЕ: Запускаем run_polling как задачу ***
-    logger.info("Запуск обработки обновлений Telegram (run_polling как задача)...")
-    polling_task = None # Инициализируем переменную
     try:
-        polling_task = asyncio.create_task(application.run_polling())
+        # *** Возвращаемся к application.start() ***
+        logger.info("Запуск обработки обновлений Telegram (application.start)...")
+        await application.start() # Запускаем поллинг в фоновом режиме
         logger.info("Бот и веб-сервер запущены. Ожидание сигнала остановки (Ctrl+C)...")
 
-        # Ждем, пока не будет установлен stop_event (сигналом или ошибкой)
         await stop_event.wait()
         logger.info("Событие остановки получено.")
 
     except Exception as e:
-        logger.exception(f"Критическая ошибка во время запуска run_polling или ожидания stop_event: {e}")
+        logger.exception(f"Критическая ошибка во время работы или ожидания stop_event: {e}")
         if not stop_event.is_set():
             logger.info("Установка stop_event из-за ошибки...")
-            stop_event.set() # Устанавливаем событие, чтобы остановить и веб-сервер
+            stop_event.set()
     finally:
         logger.info("Начало процедуры shutdown...")
 
-        # *** ИЗМЕНЕНИЕ: Возвращаем остановку polling_task ***
-        logger.info("Остановка поллинга Telegram...")
-        if polling_task and not polling_task.done():
-            application.stop_polling() # Сигнализируем PTB об остановке
+        # Сначала останавливаем Telegram бота
+        if application:
+            # *** Возвращаемся к application.stop() ***
+            logger.info("Остановка Telegram Application (application.stop)...")
             try:
-                await asyncio.wait_for(polling_task, timeout=5.0)
-                logger.info("Задача поллинга успешно завершилась.")
-            except asyncio.TimeoutError:
-                logger.warning("Поллинг не остановился за 5 секунд, отменяем задачу...")
-                polling_task.cancel()
-                await asyncio.sleep(0.1)
-            except asyncio.CancelledError:
-                 logger.info("Задача поллинга была отменена во время ожидания.")
+                await application.stop() # Останавливаем фоновый поллинг
+                logger.info("Telegram Application остановлен (stop).")
             except Exception as e:
-                logger.error(f"Ошибка при ожидании остановки поллинга: {e}")
-        elif polling_task and polling_task.done():
-            logger.info("Задача поллинга уже была завершена (возможно, с ошибкой).")
-        else:
-             logger.info("Задача поллинга не была создана или уже None.")
-        logger.info("Поллинг остановлен (или была попытка остановки).")
+                 logger.error(f"Ошибка при вызове application.stop(): {e}")
 
-        # Затем останавливаем веб-сервер (убедившись, что stop_event установлен)
+        # Затем останавливаем веб-сервер (как в x50)
         if not stop_event.is_set():
             logger.warning("Stop_event не был установлен перед остановкой веб-сервера, устанавливаю принудительно.")
             stop_event.set()
@@ -395,10 +389,10 @@ async def main_async() -> None:
         else:
              logger.info("Веб-сервер не был запущен или уже None.")
 
-        # В конце вызываем shutdown для application
+        # В конце вызываем shutdown для application (как в x50)
         if application:
             logger.info("Окончательное завершение работы Telegram Application (shutdown)...")
-            await application.shutdown() # Освобождаем ресурсы
+            await application.shutdown()
             logger.info("Telegram Application shutdown завершен.")
         else:
             logger.info("Объект Telegram Application не существует, shutdown не требуется.")
@@ -420,4 +414,4 @@ if __name__ == '__main__':
         finally: logger.info("Процесс завершен.")
     else: logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x51 FULL CORRECTED main.py (REVERT TO run_polling AS TASK) ---
+# --- END OF REALLY x53 FULL CORRECTED main.py (REVERT TO x50 start/stop + ADD DEBUG LOGGING) ---
