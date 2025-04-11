@@ -58,7 +58,7 @@ AVAILABLE_MODELS = {
 }
 DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 user_selected_model: Dict[int, str] = {}
-chat_histories: Dict[int, List[Dict[str, Any]] = {}
+chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 # --- СИСТЕМНЫЙ ПРОМПТ ---
 system_instruction_text = (
