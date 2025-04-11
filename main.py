@@ -111,8 +111,8 @@ if not GOOGLE_API_KEY:
 else: 
     logger.info("Ключ GOOGLE_API_KEY найден.")
 if not WEBHOOK_URL:
-    logger.critical("WEBHOOK_URL не задан! Укажите внешний HTTPS URL вашего приложения.")
-    exit("WEBHOOK_URL не задан")
+    logger.critical("https://google-ai-lu0c.onrender.com")
+    exit("https://google-ai-lu0c.onrender.com")
     
 try: 
     gemini_client = genai.Client(api_key=GOOGLE_API_KEY); 
