@@ -1,4 +1,4 @@
-# --- START OF REALLY x58 FULL CORRECTED main.py (ADD drop_pending_updates=True) ---
+# --- START OF REALLY x59 FULL CORRECTED main.py (ADD CATCH-ALL TypeHandler) ---
 
 import logging
 import os
@@ -22,7 +22,7 @@ logging.getLogger("telegram.request").setLevel(logging.DEBUG)
 # *************************
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки из x57)
+# (Импорт и заглушки из x58)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -31,6 +31,7 @@ FinishReason = DummyFinishReasonEnum(); HarmCategory = DummyHarmCategoryEnum(); 
 ResourceExhausted=Exception; GoogleAPIError=Exception; FailedPrecondition=Exception; InvalidArgument=ValueError
 try:
     from google.genai import types as genai_types; logger.info("Импортирован модуль google.genai.types.")
+    # ... (остальные try-except для типов) ...
     try: Tool = genai_types.Tool; logger.info("Найден genai_types.Tool")
     except AttributeError: logger.warning("genai_types.Tool не найден.")
     try: GenerateContentConfig = genai_types.GenerateContentConfig; logger.info("Найден genai_types.GenerateContentConfig")
@@ -49,6 +50,7 @@ try:
     except AttributeError: logger.warning("genai_types.HarmProbability не найден, используется заглушка.")
 except ImportError as e: logger.error(f"!!! НЕ удалось импортировать модуль google.genai.types: {e}. Используются заглушки.")
 
+
 from typing import Optional, Dict, Union, Any, List
 import urllib.parse
 
@@ -58,7 +60,8 @@ try: from google.api_core.exceptions import ResourceExhausted, GoogleAPIError, F
 except ImportError: logger.warning("!!! НЕ УДАЛОСЬ импортировать google.api_core.exceptions.")
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, Updater
+# *** Добавляем TypeHandler ***
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, Updater, TypeHandler
 try: from google.protobuf.struct_pb2 import Struct; logger.info("Protobuf Struct импортирован.")
 except ImportError: logger.warning("!!! Protobuf не импортирован."); Struct = dict
 
@@ -77,7 +80,7 @@ DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
 # --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
-# (Без изменений из x57)
+# (Без изменений из x58)
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
 if Tool is not None and GoogleSearch is not None:
@@ -96,7 +99,7 @@ else:
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 system_instruction_text = (
-    # (Текст системного промпта без изменений из x57)
+    # (Текст системного промпта без изменений из x58)
     "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку."
     "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение."
     "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
@@ -111,7 +114,7 @@ system_instruction_text = (
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
 def extract_response_text(response) -> Optional[str]:
-    # (Код extract_response_text без изменений из x57)
+    # (Код extract_response_text без изменений из x58)
     try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
@@ -138,17 +141,17 @@ def extract_response_text(response) -> Optional[str]:
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код start без изменений из x57, только версия в тексте)
+    # (Код start без изменений из x58, только версия в тексте)
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
     if chat_id in chat_histories: del chat_histories[chat_id]
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v58." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v59." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_command без изменений из x57)
+    # (Код select_model_command без изменений из x58)
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
     for alias in AVAILABLE_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
     if not keyboard: await update.message.reply_text("Нет моделей."); return
@@ -156,7 +159,7 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_callback без изменений из x57)
+    # (Код select_model_callback без изменений из x58)
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     if selected_alias not in AVAILABLE_MODELS:
@@ -179,7 +182,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код handle_message без изменений из x57)
+    # (Код handle_message без изменений из x58)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.debug(f"handle_message вызван для сообщения {message_id} в чате {chat_id}")
@@ -273,22 +276,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try: await update.message.reply_text("Модель вернула пустой ответ без ошибок. 🤷", reply_to_message_id=message_id)
         except Exception as e: logger.error(f"Не удалось отправить fallback ответ: {e}")
 
+# *** НОВЫЙ ОБРАБОТЧИК ДЛЯ ВСЕХ ОБНОВЛЕНИЙ ***
+async def all_updates_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Логирует получение любого обновления диспетчером."""
+    update_type = type(update).__name__
+    update_details = update.to_dict() if hasattr(update, 'to_dict') else str(update)
+    logger.debug(f"--- Диспетчер получил обновление! Тип: {update_type}, Данные: {update_details} ---")
+# *******************************************
 
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА ---
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    # (Код handle_ping без изменений из x57)
+    # (Код handle_ping без изменений из x58)
     peername = request.remote; host = request.headers.get('Host', 'N/A')
     logger.info(f"Получен HTTP пинг от {peername} к хосту {host}")
     return aiohttp.web.Response(text="OK", status=200)
 
 async def run_web_server(port: int, stop_event: asyncio.Event):
-    # (Код run_web_server без изменений из x57)
+    # (Код run_web_server без изменений из x58)
     app = aiohttp.web.Application(); app.router.add_get('/', handle_ping)
     runner = aiohttp.web.AppRunner(app); await runner.setup()
     site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
     try:
         await site.start(); logger.info(f"Веб-сервер для пинга запущен на http://0.0.0.0:{port}")
-        await stop_event.wait() # Ожидаем события остановки
+        await stop_event.wait()
     except asyncio.CancelledError: logger.info("Задача веб-сервера отменена.")
     except Exception as e: logger.exception(f"Ошибка в работе веб-сервера: {e}")
     finally:
@@ -299,7 +309,7 @@ async def run_web_server(port: int, stop_event: asyncio.Event):
 
 # --- НОВЫЕ ФУНКЦИИ ДЛЯ РУЧНОГО УПРАВЛЕНИЯ ЦИКЛОМ ---
 async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task], polling_task: Optional[asyncio.Task]):
-    # (Код shutdown_sequence без изменений из x57)
+    # (Код shutdown_sequence без изменений из x58)
     logger.info("Последовательность остановки запущена...")
     if polling_task:
         logger.debug(f"Состояние polling_task перед остановкой: done={polling_task.done()}, cancelled={polling_task.cancelled()}")
@@ -357,7 +367,7 @@ async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio
         loop.stop()
 
 def handle_signal(sig, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task], polling_task: Optional[asyncio.Task]):
-    # (Код handle_signal без изменений из x57)
+    # (Код handle_signal без изменений из x58)
     logger.info(f"Получен сигнал {sig.name}. Запуск последовательности остановки.")
     if application:
         asyncio.ensure_future(shutdown_sequence(loop, stop_event, application, web_server_task, polling_task), loop=loop)
@@ -369,7 +379,7 @@ def handle_signal(sig, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Even
 
 # --- ФУНКЦИЯ НАСТРОЙКИ БОТА И СЕРВЕРА ---
 async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Application], Optional[asyncio.Future]]:
-    # (Код setup_bot_and_server без изменений из x57)
+    # (Код setup_bot_and_server без изменений из x58)
     application: Optional[Application] = None
     web_server_coro: Optional[asyncio.Future] = None
     try:
@@ -386,6 +396,12 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
                        .build())
         logger.info("Application создан с настройками по умолчанию (кроме токена).")
 
+        # *** ИЗМЕНЕНИЕ: Добавляем TypeHandler ПЕРЕД другими хендлерами (group=-1) ***
+        application.add_handler(TypeHandler(Update, all_updates_handler), group=-1)
+        logger.info("Добавлен TypeHandler для всех обновлений (group=-1).")
+        # **************************************************************************
+
+        # Добавляем остальные хендлеры (в группе 0 по умолчанию)
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("model", select_model_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -409,7 +425,7 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
 
 # --- ТОЧКА ВХОДА (С РУЧНЫМ УПРАВЛЕНИЕМ ЦИКЛОМ) ---
 if __name__ == '__main__':
-    # (Код точки входа без изменений из x57, кроме добавления drop_pending_updates=True)
+    # (Код точки входа без изменений из x58)
     if 'gemini_client' in globals() and gemini_client:
         logger.info("Клиент Gemini создан. Настройка и запуск event loop.")
         loop = asyncio.new_event_loop()
@@ -435,10 +451,8 @@ if __name__ == '__main__':
             web_server_task = loop.create_task(web_server_coro)
             logger.info("Задача веб-сервера создана.")
             logger.info("Запуск поллинга Telegram (updater.start_polling)...")
-            # *** ИЗМЕНЕНИЕ: Добавлено drop_pending_updates=True ***
             polling_task = loop.create_task(updater.start_polling(drop_pending_updates=True))
             logger.info("Задача поллинга Telegram создана (с drop_pending_updates=True).")
-            # ***************************************************
             logger.info("Настройка обработчиков сигналов...")
             sigs = (signal.SIGINT, signal.SIGTERM)
             for s in sigs:
@@ -467,41 +481,48 @@ if __name__ == '__main__':
                 else:
                      loop.stop()
         finally:
+            # *** Улучшенная логика сбора задач в finally ***
             logger.info("Блок finally erreicht.")
             if loop.is_running():
                 logger.warning("Цикл все еще работает в блоке finally! Принудительная остановка.")
                 loop.stop()
+
+            # Собираем все еще активные задачи (кроме текущей)
             logger.info("Ожидание завершения оставшихся задач...")
+            tasks_to_await = []
             try:
-                 current_task = asyncio.current_task(loop=loop) if sys.version_info >= (3, 7) else None
-                 tasks_to_check = [task for task in [web_server_task, polling_task] if task is not None and task is not current_task and not task.done()]
-                 other_tasks = [task for task in asyncio.all_tasks(loop=loop) if task is not current_task and task not in tasks_to_check]
-                 tasks = tasks_to_check + other_tasks
-                 if tasks:
-                     logger.info(f"Отмена {len(tasks)} оставшихся задач...")
-                     for task in tasks:
-                         logger.debug(f"Отмена задачи {task.get_name()}: done={task.done()}, cancelled={task.cancelled()}")
-                         task.cancel()
-                     results = loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
-                     logger.info(f"Результаты gather оставшихся задач: {results}")
-                     logger.info("Оставшиеся задачи завершены/отменены.")
-                 else:
-                      logger.info("Нет оставшихся задач для завершения.")
-            except RuntimeError as e:
-                 if "no running event loop" in str(e) or "loop is closed" in str(e):
-                      logger.warning(f"Не удалось собрать задачи, цикл уже закрыт: {e}")
-                 else:
-                      logger.error(f"Ошибка RuntimeError при завершении оставшихся задач: {e}")
-            except Exception as e:
-                 logger.error(f"Неожиданная ошибка при завершении оставшихся задач: {e}")
-            if not loop.is_closed():
-                 logger.info("Закрытие event loop...")
-                 loop.close()
-                 logger.info("Event loop закрыт.")
+                 current_task = asyncio.current_task(loop=loop)
+            except RuntimeError: # Может возникнуть, если цикл уже остановлен
+                 current_task = None
+
+            all_tasks = asyncio.all_tasks(loop=loop)
+            for task in all_tasks:
+                 # Не ждем текущую задачу и уже завершенные
+                 if task is not current_task and not task.done():
+                      tasks_to_await.append(task)
+
+            if tasks_to_await:
+                logger.info(f"Отмена и ожидание {len(tasks_to_await)} задач: {[t.get_name() for t in tasks_to_await]}")
+                for task in tasks_to_await:
+                    task.cancel()
+                # Собираем результаты отмены
+                results = loop.run_until_complete(asyncio.gather(*tasks_to_await, return_exceptions=True))
+                logger.info(f"Результаты gather отмененных задач: {results}")
+                logger.info("Оставшиеся задачи отменены/завершены.")
             else:
-                 logger.info("Event loop уже был закрыт.")
+                logger.info("Нет активных задач для отмены/ожидания.")
+
+            # Закрываем цикл
+            if not loop.is_closed():
+                logger.info("Закрытие event loop...")
+                loop.close()
+                logger.info("Event loop закрыт.")
+            else:
+                logger.info("Event loop уже был закрыт.")
+
             logger.info("Процесс завершен.")
+            # ************************************************
     else:
         logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x58 FULL CORRECTED main.py (ADD drop_pending_updates=True) ---
+# --- END OF REALLY x59 FULL CORRECTED main.py (ADD CATCH-ALL TypeHandler) ---
