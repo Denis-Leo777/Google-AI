@@ -10,6 +10,8 @@ import google.genai as genai
 import aiohttp.web
 import sys
 import secrets # Для генерации секретного пути
+from typing import Optional, Dict, Union, Any, List, Tuple # Возвращаем полный импорт
+import urllib.parse
 from urllib.parse import urljoin # Для создания URL вебхука
 
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
