@@ -1,4 +1,4 @@
-# --- START OF REALLY x50 FULL CORRECTED main.py (REVERT TO start/stop + FIX system_instruction handling) ---
+# --- START OF REALLY x51 FULL CORRECTED main.py (REVERT TO run_polling AS TASK) ---
 
 import logging
 import os
@@ -14,7 +14,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки из x49)
+# (Импорт и заглушки из x50)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -25,7 +25,7 @@ try:
     from google.genai import types as genai_types; logger.info("Импортирован модуль google.genai.types.")
     try: Tool = genai_types.Tool; logger.info("Найден genai_types.Tool")
     except AttributeError: logger.warning("genai_types.Tool не найден.")
-    try: GenerateContentConfig = genai_types.GenerateContentConfig; logger.info("Найден genai_types.GenerateContentConfig") # Оставляем импорт, вдруг пригодится для других опций
+    try: GenerateContentConfig = genai_types.GenerateContentConfig; logger.info("Найден genai_types.GenerateContentConfig")
     except AttributeError: logger.warning("genai_types.GenerateContentConfig не найден.")
     try: GoogleSearch = genai_types.GoogleSearch; logger.info("Найден genai_types.GoogleSearch")
     except AttributeError: logger.warning("genai_types.GoogleSearch не найден.")
@@ -69,6 +69,7 @@ DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
 # --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
+# (Без изменений из x50)
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
 if Tool is not None and GoogleSearch is not None:
@@ -87,7 +88,7 @@ else:
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 system_instruction_text = (
-    # (Текст системного промпта без изменений)
+    # (Текст системного промпта без изменений из x50)
     "Никогда не сокращай текст, код и прочее, пиши всё полностью."
     "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
     "Если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа, то отвечай в пределах 2000 знаков."
@@ -103,7 +104,7 @@ system_instruction_text = (
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
 def extract_response_text(response) -> Optional[str]:
-    # (Код extract_response_text без изменений из x49)
+    # (Код extract_response_text без изменений из x50)
     try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
@@ -130,18 +131,17 @@ def extract_response_text(response) -> Optional[str]:
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код start без изменений из x49)
+    # (Код start без изменений из x50, только версия в тексте)
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
     if chat_id in chat_histories: del chat_histories[chat_id]
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    # Обновим версию в сообщении
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v50." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v51." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_command без изменений из x49)
+    # (Код select_model_command без изменений из x50)
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
     for alias in AVAILABLE_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
     if not keyboard: await update.message.reply_text("Нет моделей."); return
@@ -149,7 +149,7 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_callback без изменений из x49)
+    # (Код select_model_callback без изменений из x50)
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     if selected_alias not in AVAILABLE_MODELS:
@@ -172,6 +172,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # (Код handle_message без изменений из x50)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.info(f"Сообщение от {user.id} ({len(user_message)}): '{user_message[:80].replace(chr(10), ' ')}...'")
@@ -187,33 +188,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Запрос к '{model_id}'. История: {len(current_history)} сообщ.")
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-        # *** ИСПРАВЛЕНИЕ: Убираем подготовку system_instruction для config ***
         tools_list = [google_search_tool] if google_search_tool else None
-        generation_config_for_api = {} # Пустой словарь для других параметров config (если понадобятся)
+        generation_config_for_api = {}
 
-        # Получаем объект модели
         model_obj = gemini_client.get_model(model_id)
         if not model_obj:
             raise ValueError(f"Не удалось получить объект модели для {model_id}")
 
-        # Преобразуем и присваиваем system_instruction объекту модели
         if system_instruction_text:
             try:
-                 # Используем Content и Part если импортированы, иначе словари
                  system_instruction_content = Content(parts=[Part(text=system_instruction_text)]) if Content is not dict and Part is not dict else {'parts': [{'text': system_instruction_text}]}
                  model_obj.system_instruction = system_instruction_content
                  logger.debug("System instruction присвоен объекту модели.")
             except Exception as e:
                 logger.error(f"Ошибка создания/присвоения system_instruction Content: {e}")
-                # Продолжаем без system_instruction, если не вышло
 
-        # Вызов generate_content
         response = model_obj.generate_content(
              contents=api_contents,
-             generation_config=generation_config_for_api if generation_config_for_api else None, # Передаем только если не пуст
+             generation_config=generation_config_for_api if generation_config_for_api else None,
              tools=tools_list
         )
-        # *** КОНЕЦ ИСПРАВЛЕНИЯ ***
 
         processing_time = time.monotonic() - start_time; logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
         final_text = extract_response_text(response)
@@ -274,13 +268,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА ---
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    # (Код handle_ping без изменений из x49)
+    # (Код handle_ping без изменений из x50)
     peername = request.remote; host = request.headers.get('Host', 'N/A')
     logger.info(f"Получен HTTP пинг от {peername} к хосту {host}")
     return aiohttp.web.Response(text="OK", status=200)
 
 async def run_web_server(port: int, stop_event: asyncio.Event):
-    # (Код run_web_server без изменений из x49)
+    # (Код run_web_server без изменений из x50)
     app = aiohttp.web.Application(); app.router.add_get('/', handle_ping)
     runner = aiohttp.web.AppRunner(app); await runner.setup()
     site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
@@ -297,13 +291,13 @@ async def run_web_server(port: int, stop_event: asyncio.Event):
 
 # --- НОВЫЙ ОБРАБОТЧИК СИГНАЛОВ ---
 async def signal_handler(sig, stop_event: asyncio.Event):
-    # (Код signal_handler без изменений из x49)
+    # (Код signal_handler без изменений из x50)
     logger.info(f"Получен сигнал {sig.name}, устанавливаем stop_event...")
     if not stop_event.is_set():
         stop_event.set()
 
 
-# --- ОБНОВЛЕННАЯ АСИНХРОННАЯ ГЛАВНАЯ ФУНКЦИЯ (Возврат к start/stop) ---
+# --- ОБНОВЛЕННАЯ АСИНХРОННАЯ ГЛАВНАЯ ФУНКЦИЯ (Возврат к run_polling как задаче) ---
 async def main_async() -> None:
     if 'gemini_client' not in globals() or not gemini_client: logger.critical("ЗАПУСК НЕВОЗМОЖЕН: Клиент Gemini не создан."); return
     if not TELEGRAM_BOT_TOKEN: logger.critical("ЗАПУСК НЕВОЗМОЖЕН: Токен Telegram не найден."); return
@@ -311,7 +305,7 @@ async def main_async() -> None:
     search_status = "включен" if google_search_tool else "ОТКЛЮЧЕН"
     logger.info(f"Встроенный поиск Google ({search_tool_type_used}) глобально {search_status}.")
     logger.info("Инициализация приложения Telegram...")
-    # Используем таймауты из x49
+    # Используем таймауты из x50
     application = (Application.builder()
                    .token(TELEGRAM_BOT_TOKEN)
                    .read_timeout(30)
@@ -338,33 +332,47 @@ async def main_async() -> None:
     for s in sigs:
         loop.add_signal_handler(s, lambda s=s: asyncio.create_task(signal_handler(s, stop_event)))
 
+    # *** ИЗМЕНЕНИЕ: Запускаем run_polling как задачу ***
+    logger.info("Запуск обработки обновлений Telegram (run_polling как задача)...")
+    polling_task = None # Инициализируем переменную
     try:
-        # *** ИСПРАВЛЕНИЕ: Используем application.start() вместо run_polling ***
-        logger.info("Запуск обработки обновлений Telegram (application.start)...")
-        await application.start() # Запускаем поллинг в фоновом режиме
+        polling_task = asyncio.create_task(application.run_polling(
+            stop_signals=None # Управляем сигналами сами
+        ))
         logger.info("Бот и веб-сервер запущены. Ожидание сигнала остановки (Ctrl+C)...")
 
-        # Просто ждем сигнала остановки, пока поллинг и веб-сервер работают в фоне
+        # Ждем, пока не будет установлен stop_event (сигналом или ошибкой)
         await stop_event.wait()
         logger.info("Событие остановки получено.")
 
     except Exception as e:
-        logger.exception(f"Критическая ошибка во время работы или ожидания stop_event: {e}")
+        logger.exception(f"Критическая ошибка во время запуска run_polling или ожидания stop_event: {e}")
         if not stop_event.is_set():
             logger.info("Установка stop_event из-за ошибки...")
             stop_event.set() # Устанавливаем событие, чтобы остановить и веб-сервер
     finally:
         logger.info("Начало процедуры shutdown...")
 
-        # Сначала останавливаем Telegram бота
-        if application: # Проверяем, что application существует
-            # *** ИСПРАВЛЕНИЕ: Используем application.stop() ***
-            logger.info("Остановка Telegram Application (application.stop)...")
+        # *** ИЗМЕНЕНИЕ: Возвращаем остановку polling_task ***
+        logger.info("Остановка поллинга Telegram...")
+        if polling_task and not polling_task.done():
+            application.stop_polling() # Сигнализируем PTB об остановке
             try:
-                await application.stop() # Останавливаем фоновый поллинг
-                logger.info("Telegram Application остановлен (stop).")
+                await asyncio.wait_for(polling_task, timeout=5.0)
+                logger.info("Задача поллинга успешно завершилась.")
+            except asyncio.TimeoutError:
+                logger.warning("Поллинг не остановился за 5 секунд, отменяем задачу...")
+                polling_task.cancel()
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                 logger.info("Задача поллинга была отменена во время ожидания.")
             except Exception as e:
-                 logger.error(f"Ошибка при вызове application.stop(): {e}")
+                logger.error(f"Ошибка при ожидании остановки поллинга: {e}")
+        elif polling_task and polling_task.done():
+            logger.info("Задача поллинга уже была завершена (возможно, с ошибкой).")
+        else:
+             logger.info("Задача поллинга не была создана или уже None.")
+        logger.info("Поллинг остановлен (или была попытка остановки).")
 
         # Затем останавливаем веб-сервер (убедившись, что stop_event установлен)
         if not stop_event.is_set():
@@ -405,7 +413,7 @@ async def main_async() -> None:
 
 # --- ТОЧКА ВХОДА ---
 if __name__ == '__main__':
-    # (Код точки входа без изменений из x49)
+    # (Код точки входа без изменений из x50)
     if 'gemini_client' in globals() and gemini_client:
         logger.info("Клиент Gemini создан. Запускаем основной цикл asyncio.")
         try: asyncio.run(main_async())
@@ -414,4 +422,4 @@ if __name__ == '__main__':
         finally: logger.info("Процесс завершен.")
     else: logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x50 FULL CORRECTED main.py (REVERT TO start/stop + FIX system_instruction handling) ---
+# --- END OF REALLY x51 FULL CORRECTED main.py (REVERT TO run_polling AS TASK) ---
