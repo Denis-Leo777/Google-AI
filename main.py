@@ -1,4 +1,4 @@
-# --- START OF REALLY x47 FULL CORRECTED main.py (FULL x44 + REVERT SEARCH CHECK) ---
+# --- START OF REALLY x48 FULL CORRECTED main.py (FIX POLLING + WEBSERVER COEXISTENCE) ---
 
 import logging
 import os
@@ -14,7 +14,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки из x44)
+# (Импорт и заглушки из x47)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -68,10 +68,9 @@ if not AVAILABLE_MODELS: exit("Нет моделей в AVAILABLE_MODELS!")
 DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
-# --- ВОЗВРАЩЕНА ПРОВЕРКА ИМПОРТА ПОИСКА ИЗ x44/x38 ---
+# --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
-# Эта проверка ДОЛЖНА работать, если импорт выше прошел успешно
 if Tool is not None and GoogleSearch is not None:
     try:
         google_search_tool = Tool(google_search=GoogleSearch())
@@ -81,32 +80,29 @@ if Tool is not None and GoogleSearch is not None:
         google_search_tool = None
         search_tool_type_used = "N/A (creation error)"
 else:
-    # Этот блок НЕ должен выполняться, если Tool и GoogleSearch были найдены при импорте
     logger.error(f"!!! Классы 'Tool' или 'GoogleSearch' НЕ были импортированы (None). Поиск недоступен.")
     google_search_tool = None
     search_tool_type_used = "N/A (import error)"
-# --- КОНЕЦ ВОЗВРАЩЕННОЙ ПРОВЕРКИ ---
 
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 system_instruction_text = (
-    # ... (Твой длинный системный промпт с мета-инструкциями) ...
-    "Никогда не сокращай текст, код и прочее, пиши всё полностью." 
-    "Обязательно используй поиск в интернете для сверки с новой информацией по теме." 
-    "Если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа, то отвечай в пределах 2000 знаков." 
-    "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку." 
-    "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение." 
-    "Активно применяй юмор: несоответствие ожиданиям, культурные и бытовые отсылки, шутки об актуальных в интернете темах, жизненный абсурд и абсурдные решения проблем, псевдомудрость, разрушение идиом, безобидная ирония и самоирония, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, тонкие и интимные намёки, редукционизм, пост-модерн и интернет-юмор." 
-    "При создании уникальной работы не допускай признаков ИИ, избегай копирования или близкого пересказа существующих текстов, включай гипотетические ситуации для иллюстрации понятий, применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи, варьируй структуру предложений, естественно включай разговорные выражения, идиомы и фигуры речи, используй живые стилистические решения, свойственные людям, вставляй региональные выражения или культурно специфичные ссылки, где это уместно, добавляй остроумие." 
-    "При исправлении ошибки, указанной пользователем по логам, идентифицируй конкретную строку(и) и конкретную причину ошибки. Бери за основу последнюю ПОЛНУЮ версию кода, предоставленную пользователем или сгенерированную тобой и подтвержденную как шаг вперед (даже если она упала с другой ошибкой). Внеси только минимально необходимые изменения для исправления указанной ошибки. НЕ переписывай смежные блоки, НЕ удаляй код, НЕ меняй форматирование в других частях без явного запроса." 
-    "В диалогах, связанных с разработкой или итеративным исправлением, всегда явно ссылайся на номер версии или предыдущее сообщение, которое берется за основу. Поддерживай четкое понимание, какая версия кода является 'последней рабочей' или 'последней предоставленной'." 
-    "При возникновении сомнений, уточни у пользователя, какую версию кода использовать как базу. Если в ходе диалога выявляется повторяющаяся ошибка, добавь это в 'красный список' для данной сессии. Перед отправкой любого кода, содержащего подобные конструкции, выполни целенаправленную проверку именно этих 'болевых точек'." 
+    "Никогда не сокращай текст, код и прочее, пиши всё полностью."
+    "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
+    "Если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, или другая, требующая объема работа, то отвечай в пределах 2000 знаков."
+    "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку."
+    "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение."
+    "Активно применяй юмор: несоответствие ожиданиям, культурные и бытовые отсылки, шутки об актуальных в интернете темах, жизненный абсурд и абсурдные решения проблем, псевдомудрость, разрушение идиом, безобидная ирония и самоирония, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, тонкие и интимные намёки, редукционизм, пост-модерн и интернет-юмор."
+    "При создании уникальной работы не допускай признаков ИИ, избегай копирования или близкого пересказа существующих текстов, включай гипотетические ситуации для иллюстрации понятий, применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи, варьируй структуру предложений, естественно включай разговорные выражения, идиомы и фигуры речи, используй живые стилистические решения, свойственные людям, вставляй региональные выражения или культурно специфичные ссылки, где это уместно, добавляй остроумие."
+    "При исправлении ошибки, указанной пользователем по логам, идентифицируй конкретную строку(и) и конкретную причину ошибки. Бери за основу последнюю ПОЛНУЮ версию кода, предоставленную пользователем или сгенерированную тобой и подтвержденную как шаг вперед (даже если она упала с другой ошибкой). Внеси только минимально необходимые изменения для исправления указанной ошибки. НЕ переписывай смежные блоки, НЕ удаляй код, НЕ меняй форматирование в других частях без явного запроса."
+    "В диалогах, связанных с разработкой или итеративным исправлением, всегда явно ссылайся на номер версии или предыдущее сообщение, которое берется за основу. Поддерживай четкое понимание, какая версия кода является 'последней рабочей' или 'последней предоставленной'."
+    "При возникновении сомнений, уточни у пользователя, какую версию кода использовать как базу. Если в ходе диалога выявляется повторяющаяся ошибка, добавь это в 'красный список' для данной сессии. Перед отправкой любого кода, содержащего подобные конструкции, выполни целенаправленную проверку именно этих 'болевых точек'."
     "Если пользователь предоставляет свой полный код как основу, используй именно этот код. Не пытайся 'улучшить' или 'переформатировать' его части, не относящиеся к запросу на исправление, если только пользователь явно об этом не попросил."
 )
 
-# Функция extract_response_text (из x44)
+# --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
 def extract_response_text(response) -> Optional[str]:
-    """Извлекает текст из ответа client.models.generate_content."""
+    # (Код extract_response_text без изменений из x47)
     try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
@@ -133,17 +129,17 @@ def extract_response_text(response) -> Optional[str]:
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код start без изменений)
+    # (Код start без изменений из x47)
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
     if chat_id in chat_histories: del chat_histories[chat_id]
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v47." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v48." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_command без изменений)
+    # (Код select_model_command без изменений из x47)
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
     for alias in AVAILABLE_MODELS.keys(): keyboard.append([InlineKeyboardButton(f"✅ {alias}" if alias == current_alias else alias, callback_data=alias)])
     if not keyboard: await update.message.reply_text("Нет моделей."); return
@@ -151,7 +147,7 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код select_model_callback без изменений)
+    # (Код select_model_callback без изменений из x47)
     query = update.callback_query; await query.answer(); selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     if selected_alias not in AVAILABLE_MODELS:
@@ -174,7 +170,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код handle_message без изменений)
+    # (Код handle_message без изменений из x47)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.info(f"Сообщение от {user.id} ({len(user_message)}): '{user_message[:80].replace(chr(10), ' ')}...'")
@@ -194,7 +190,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              if GenerateContentConfig is not None: config_obj = GenerateContentConfig(system_instruction=system_instruction_text, tools=tools_list); logger.debug("GenerateContentConfig создан.")
              else: logger.warning("GenerateContentConfig не импортирован.")
         except Exception as e: logger.error(f"Ошибка создания GenerateContentConfig: {e}")
-        response = gemini_client.models.generate_content(model=model_id, contents=api_contents, config=config_obj)
+        # Важно: используем gemini_client.get_model для получения объекта модели
+        model_obj = gemini_client.get_model(model_id)
+        if not model_obj: # Доп. проверка на всякий случай
+            raise ValueError(f"Не удалось получить объект модели для {model_id}")
+        # Передаем объект модели в generate_content
+        response = model_obj.generate_content(contents=api_contents, generation_config=config_obj, tools=tools_list) # Используем model_obj и generation_config/tools
         processing_time = time.monotonic() - start_time; logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
         final_text = extract_response_text(response)
         if final_text and not final_text.startswith("⚠️"):
@@ -254,69 +255,173 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА ---
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    # (Код без изменений)
+    # (Код handle_ping без изменений из x47)
     peername = request.remote; host = request.headers.get('Host', 'N/A')
     logger.info(f"Получен HTTP пинг от {peername} к хосту {host}")
     return aiohttp.web.Response(text="OK", status=200)
 
 async def run_web_server(port: int, stop_event: asyncio.Event):
-    # (Код без изменений)
+    # (Код run_web_server без изменений из x47)
     app = aiohttp.web.Application(); app.router.add_get('/', handle_ping)
     runner = aiohttp.web.AppRunner(app); await runner.setup()
     site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
     try:
         await site.start(); logger.info(f"Веб-сервер для пинга запущен на http://0.0.0.0:{port}")
-        await stop_event.wait()
+        await stop_event.wait() # Ожидаем события остановки
     except asyncio.CancelledError: logger.info("Задача веб-сервера отменена.")
     except Exception as e: logger.exception(f"Ошибка в работе веб-сервера: {e}")
-    finally: await runner.cleanup(); logger.info("Веб-сервер остановлен.")
+    finally:
+        logger.info("Начинаем остановку веб-сервера...")
+        await runner.cleanup()
+        logger.info("Веб-сервер остановлен.")
 
-# --- АСИНХРОННАЯ ГЛАВНАЯ ФУНКЦИЯ ---
+
+# --- НОВЫЙ ОБРАБОТЧИК СИГНАЛОВ ---
+async def signal_handler(sig, stop_event: asyncio.Event):
+    """Просто устанавливает событие остановки при получении сигнала."""
+    logger.info(f"Получен сигнал {sig.name}, устанавливаем stop_event...")
+    if not stop_event.is_set():
+        stop_event.set()
+
+
+# --- ОБНОВЛЕННАЯ АСИНХРОННАЯ ГЛАВНАЯ ФУНКЦИЯ ---
 async def main_async() -> None:
-    # (Код без изменений)
     if 'gemini_client' not in globals() or not gemini_client: logger.critical("ЗАПУСК НЕВОЗМОЖЕН: Клиент Gemini не создан."); return
     if not TELEGRAM_BOT_TOKEN: logger.critical("ЗАПУСК НЕВОЗМОЖЕН: Токен Telegram не найден."); return
     if not GOOGLE_API_KEY: logger.critical("ЗАПУСК НЕВОЗМОЖЕН: Ключ Google API не найден."); return
     search_status = "включен" if google_search_tool else "ОТКЛЮЧЕН"
     logger.info(f"Встроенный поиск Google ({search_tool_type_used}) глобально {search_status}.")
     logger.info("Инициализация приложения Telegram...")
-    application = (Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(30).get_updates_read_timeout(30).build())
+    # Увеличиваем таймауты на всякий случай, особенно для поллинга
+    application = (Application.builder()
+                   .token(TELEGRAM_BOT_TOKEN)
+                   .read_timeout(30) # Таймаут для обычных запросов (getMe, sendMessage...)
+                   .get_updates_read_timeout(40) # Таймаут для одного запроса getUpdates
+                   .connect_timeout(30) # Таймаут на установление соединения
+                   .pool_timeout(60) # Таймаут ожидания свободного соединения из пула
+                   .build())
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("model", select_model_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(select_model_callback))
     port = int(os.environ.get("PORT", 8080)); logger.info(f"Порт для веб-сервера: {port}")
     stop_event = asyncio.Event()
-    async with application:
-        logger.info("Инициализация Telegram Application...")
-        await application.initialize()
-        logger.info("Запуск веб-сервера...")
-        web_server_task = asyncio.create_task(run_web_server(port, stop_event))
-        logger.info("Запуск обработки обновлений Telegram...")
-        await application.start()
-        logger.info("Бот и веб-сервер запущены. Нажмите Ctrl+C для остановки.")
-        loop = asyncio.get_running_loop()
-        sigs = (signal.SIGINT, signal.SIGTERM)
-        for s in sigs: loop.add_signal_handler(s, lambda s=s: asyncio.create_task(shutdown(s, loop, stop_event, application)))
-        await stop_event.wait()
-        if not web_server_task.done(): logger.info("Ожидание завершения веб-сервера...")
 
-# --- ОБРАБОТЧИК СИГНАЛОВ ---
-async def shutdown(signal, loop, stop_event: asyncio.Event, application: Application):
-    # (Код без изменений)
-    logger.info(f"Получен сигнал выхода {signal.name}, начинаем остановку...")
-    if not stop_event.is_set(): stop_event.set()
-    if application._is_running:
-        logger.info("Остановка Telegram Application...")
-        await application.stop()
-        logger.info("Остановка обработки обновлений Telegram...")
-        await application.shutdown()
-        logger.info("Telegram Application остановлен.")
-    logger.info("Остановка завершена.")
+    logger.info("Инициализация Telegram Application...")
+    await application.initialize() # Инициализируем приложение
+
+    logger.info("Запуск веб-сервера...")
+    web_server_task = asyncio.create_task(run_web_server(port, stop_event)) # Запускаем веб-сервер как задачу
+
+    # --- Настройка обработчиков сигналов ---
+    loop = asyncio.get_running_loop()
+    sigs = (signal.SIGINT, signal.SIGTERM)
+    # Используем новую функцию signal_handler
+    for s in sigs:
+        loop.add_signal_handler(s, lambda s=s: asyncio.create_task(signal_handler(s, stop_event)))
+
+    logger.info("Запуск обработки обновлений Telegram (run_polling)...")
+    polling_task = None # Инициализируем переменную
+    try:
+        # Запускаем поллинг в отдельной задаче
+        # Передаем таймауты явно и отключаем встроенные сигналы PTB, т.к. управляем сами
+        polling_task = asyncio.create_task(application.run_polling(
+            stop_signals=None,
+            read_timeout=30, # Таймаут для одного запроса getUpdates внутри run_polling
+            # get_updates_read_timeout=40 # Этот параметр не используется напрямую в run_polling, он берется из builder'а
+            connect_timeout=30,
+            pool_timeout=60
+        ))
+        logger.info("Бот и веб-сервер запущены. Ожидание сигнала остановки (Ctrl+C)...")
+
+        # Ждем, пока не будет установлен stop_event (сигналом или ошибкой)
+        await stop_event.wait()
+        logger.info("Событие остановки получено.")
+
+        # Начинаем остановку поллинга
+        logger.info("Остановка поллинга Telegram...")
+        if polling_task and not polling_task.done():
+            application.stop_polling() # Сигнализируем PTB об остановке
+            # Даем время на завершение текущего запроса getUpdates и самой задачи
+            try:
+                await asyncio.wait_for(polling_task, timeout=5.0)
+                logger.info("Задача поллинга успешно завершилась.")
+            except asyncio.TimeoutError:
+                logger.warning("Поллинг не остановился за 5 секунд, отменяем задачу...")
+                polling_task.cancel()
+                await asyncio.sleep(0.1) # Даем время на обработку отмены
+            except asyncio.CancelledError:
+                 logger.info("Задача поллинга была отменена во время ожидания.")
+            except Exception as e:
+                logger.error(f"Ошибка при ожидании остановки поллинга: {e}")
+        elif polling_task and polling_task.done():
+            logger.info("Задача поллинга уже была завершена (возможно, с ошибкой).")
+        else:
+             logger.info("Задача поллинга не была создана или уже None.")
+        logger.info("Поллинг остановлен (или была попытка остановки).")
+
+    except Exception as e:
+        logger.exception(f"Критическая ошибка во время работы run_polling или ожидания stop_event: {e}")
+        if polling_task and not polling_task.done():
+             logger.info("Отмена задачи поллинга из-за ошибки...")
+             polling_task.cancel()
+             await asyncio.sleep(0.1) # Пауза
+        if not stop_event.is_set():
+            logger.info("Установка stop_event из-за ошибки...")
+            stop_event.set() # Устанавливаем событие, чтобы остановить и веб-сервер
+    finally:
+        logger.info("Начало процедуры shutdown...")
+
+        # Останавливаем веб-сервер (если он еще работает)
+        # Убедимся, что stop_event установлен, чтобы run_web_server вышел из ожидания
+        if not stop_event.is_set():
+            logger.warning("Stop_event не был установлен перед остановкой веб-сервера, устанавливаю принудительно.")
+            stop_event.set()
+
+        if web_server_task and not web_server_task.done():
+            logger.info("Ожидание завершения веб-сервера...")
+            try:
+                 # Не ждем бесконечно, даем таймаут
+                 await asyncio.wait_for(web_server_task, timeout=5.0)
+                 logger.info("Веб-сервер успешно остановлен.")
+            except asyncio.TimeoutError:
+                 logger.warning("Веб-сервер не остановился за 5 секунд, отменяем задачу...")
+                 web_server_task.cancel()
+                 await asyncio.sleep(0.1) # Пауза для обработки отмены
+            except asyncio.CancelledError:
+                 logger.info("Задача веб-сервера была отменена.")
+            except Exception as e:
+                 logger.exception(f"Ошибка при ожидании остановки веб-сервера: {e}")
+        elif web_server_task and web_server_task.done():
+             logger.info("Веб-сервер уже был остановлен (возможно, с ошибкой).")
+        else:
+             logger.info("Веб-сервер не был запущен или уже None.")
+
+        # Корректное завершение работы application должно быть последним шагом
+        if application and application.initialized:
+            logger.info("Окончательное завершение работы Telegram Application (shutdown)...")
+            await application.shutdown()
+            logger.info("Telegram Application shutdown завершен.")
+        else:
+            logger.info("Telegram Application не был инициализирован или уже завершен.")
+
+
+# --- СТАРУЮ ФУНКЦИЮ shutdown МОЖНО УДАЛИТЬ ИЛИ ЗАКОММЕНТИРОВАТЬ ---
+# async def shutdown(signal, loop, stop_event: asyncio.Event, application: Application):
+#    # (старый код)
+#    logger.info(f"Получен сигнал выхода {signal.name}, начинаем остановку...")
+#    if not stop_event.is_set(): stop_event.set()
+#    if application._is_running: # Эта проверка может быть ненадёжной
+#        logger.info("Остановка Telegram Application...")
+#        await application.stop() # Этот метод не рекомендуется использовать напрямую
+#        logger.info("Остановка обработки обновлений Telegram...")
+#        await application.shutdown()
+#        logger.info("Telegram Application остановлен.")
+#    logger.info("Остановка завершена.")
 
 # --- ТОЧКА ВХОДА ---
 if __name__ == '__main__':
-    # (Код без изменений)
+    # (Код точки входа без изменений из x47)
     if 'gemini_client' in globals() and gemini_client:
         logger.info("Клиент Gemini создан. Запускаем основной цикл asyncio.")
         try: asyncio.run(main_async())
@@ -325,4 +430,4 @@ if __name__ == '__main__':
         finally: logger.info("Процесс завершен.")
     else: logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x47 FULL CORRECTED main.py (FINAL FINAL FINAL INDENTATION FIX + FULL CODE) ---
+# --- END OF REALLY x48 FULL CORRECTED main.py (FIX POLLING + WEBSERVER COEXISTENCE) ---
