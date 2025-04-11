@@ -120,7 +120,7 @@ if not GOOGLE_API_KEY:
     logger.critical("Ключ Google API не задан!")
     exit("Google API ключ не задан")
 
-# В данном варианте вместо переменной WEBHOOK_URL используется жестко заданный URL:
+# Жёстко заданный базовый URL вебхука:
 WEBHOOK_BASE_URL = "https://google-ai-ugl9.onrender.com"
 logger.info(f"Используем базовый URL вебхука: {WEBHOOK_BASE_URL}")
 
@@ -333,20 +333,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         tools_list = [google_search_tool] if google_search_tool else None
         generation_config_for_api = {}
-
-        model_obj = gemini_client.model(model_id)
-        if not model_obj:
-            raise ValueError(f"Не удалось получить объект модели для {model_id}")
-
+        # Передаём системную инструкцию в generation_config, если она задана:
         if system_instruction_text:
-            try:
-                system_instruction_content = Content(parts=[Part(text=system_instruction_text)]) if Content is not dict and Part is not dict else {'parts': [{'text': system_instruction_text}]}
-                model_obj.system_instruction = system_instruction_content
-                logger.debug("System instruction присвоен объекту модели.")
-            except Exception as e:
-                logger.error(f"Ошибка создания/присвоения system_instruction Content: {e}")
-
-        response = model_obj.generate_content(
+            generation_config_for_api['system_instruction'] = (Content(parts=[Part(text=system_instruction_text)])
+                if Content is not dict and Part is not dict
+                else {'parts': [{'text': system_instruction_text}]})
+        # Генерируем ответ напрямую через клиента:
+        response = gemini_client.generate_content(
+            model=model_id,
             contents=api_contents,
             generation_config=generation_config_for_api if generation_config_for_api else None,
             tools=tools_list
@@ -512,3 +506,4 @@ if __name__ == '__main__':
         logger.exception("Критическая ошибка в главном потоке!")
     finally:
         logger.info("Процесс завершен.")
+
