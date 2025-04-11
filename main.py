@@ -113,17 +113,16 @@ except ImportError:
 # --- ЧТЕНИЕ СЕКРЕТНЫХ ПЕРЕМЕННЫХ ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Пример: "https://google-ai-lu0c.onrender.com"
 if not TELEGRAM_BOT_TOKEN:
     logger.critical("Telegram токен не задан!")
     exit("Telegram токен не задан")
 if not GOOGLE_API_KEY:
     logger.critical("Ключ Google API не задан!")
     exit("Google API ключ не задан")
-if not WEBHOOK_URL:
-    logger.critical("WEBHOOK_URL не задан! Добавьте его в секреты Render и укажите внешний HTTPS URL вашего приложения.")
-    exit("WEBHOOK_URL не задан")
-logger.info(f"WEBHOOK_URL: {repr(WEBHOOK_URL)}")
+
+# В данном варианте вместо переменной WEBHOOK_URL используется жестко заданный URL:
+WEBHOOK_BASE_URL = "https://google-ai-ugl9.onrender.com"
+logger.info(f"Используем базовый URL вебхука: {WEBHOOK_BASE_URL}")
 
 try:
     gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -489,7 +488,7 @@ async def setup_bot() -> Optional[Application]:
 
 # --- ТОЧКА ВХОДА (ВЕБХУКИ) ---
 if __name__ == '__main__':
-    # Для вебхуков используется встроенный сервер telegram.ext, поэтому отдельный воркер не нужен.
+    # Для вебхуков используется встроенный сервер telegram.ext.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -497,10 +496,10 @@ if __name__ == '__main__':
         if not app:
             raise RuntimeError("Application не был создан в setup_bot.")
         port = int(os.environ.get("PORT", 8080))
-        # Формируем полный URL вебхука из переменной WEBHOOK_URL и добавляем путь равный TELEGRAM_BOT_TOKEN:
-        webhook_full_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_BOT_TOKEN}"
+        # Формируем полный URL вебхука: базовый URL + '/' + TELEGRAM_BOT_TOKEN
+        webhook_full_url = f"{WEBHOOK_BASE_URL.rstrip('/')}/{TELEGRAM_BOT_TOKEN}"
         logger.info(f"Настройка вебхука: слушаем на 0.0.0.0:{port}, URL вебхука: {webhook_full_url}")
-        # Запускаем встроенный сервер для вебхуков, который блокирует выполнение:
+        # Запускаем встроенный сервер для вебхуков:
         app.run_webhook(
             listen="0.0.0.0",
             port=port,
@@ -513,5 +512,3 @@ if __name__ == '__main__':
         logger.exception("Критическая ошибка в главном потоке!")
     finally:
         logger.info("Процесс завершен.")
-
-
