@@ -1,4 +1,4 @@
-# --- START OF REALLY x44 FULL CORRECTED main.py (x38 + SINGLE INDENTATION FIX) ---
+# --- START OF REALLY x47 FULL CORRECTED main.py (FULL x44 + REVERT SEARCH CHECK) ---
 
 import logging
 import os
@@ -14,7 +14,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки из x38)
+# (Импорт и заглушки из x44)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -25,7 +25,18 @@ try:
     from google.genai import types as genai_types; logger.info("Импортирован модуль google.genai.types.")
     try: Tool = genai_types.Tool; logger.info("Найден genai_types.Tool")
     except AttributeError: logger.warning("genai_types.Tool не найден.")
-    # ... (остальные импорты типов) ...
+    try: GenerateContentConfig = genai_types.GenerateContentConfig; logger.info("Найден genai_types.GenerateContentConfig")
+    except AttributeError: logger.warning("genai_types.GenerateContentConfig не найден.")
+    try: GoogleSearch = genai_types.GoogleSearch; logger.info("Найден genai_types.GoogleSearch")
+    except AttributeError: logger.warning("genai_types.GoogleSearch не найден.")
+    try: Content = genai_types.Content; logger.info("Найден genai_types.Content")
+    except AttributeError: logger.warning("genai_types.Content не найден, используется dict.")
+    try: Part = genai_types.Part; logger.info("Найден genai_types.Part")
+    except AttributeError: logger.warning("genai_types.Part не найден, используется dict.")
+    try: FinishReason = genai_types.FinishReason; logger.info("Найден genai_types.FinishReason")
+    except AttributeError: logger.warning("genai_types.FinishReason не найден, используется заглушка.")
+    try: HarmCategory = genai_types.HarmCategory; logger.info("Найден genai_types.HarmCategory")
+    except AttributeError: logger.warning("genai_types.HarmCategory не найден, используется заглушка.")
     try: HarmProbability = genai_types.HarmProbability; logger.info("Найден genai_types.HarmProbability")
     except AttributeError: logger.warning("genai_types.HarmProbability не найден, используется заглушка.")
 except ImportError as e: logger.error(f"!!! НЕ удалось импортировать модуль google.genai.types: {e}. Используются заглушки.")
@@ -57,11 +68,24 @@ if not AVAILABLE_MODELS: exit("Нет моделей в AVAILABLE_MODELS!")
 DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
-google_search_tool = None; search_tool_type_used = "GoogleSearch (for 2.0+)"
+# --- ВОЗВРАЩЕНА ПРОВЕРКА ИМПОРТА ПОИСКА ИЗ x44/x38 ---
+google_search_tool = None
+search_tool_type_used = "GoogleSearch (for 2.0+)"
+# Эта проверка ДОЛЖНА работать, если импорт выше прошел успешно
 if Tool is not None and GoogleSearch is not None:
-    try: google_search_tool = Tool(google_search=GoogleSearch()); logger.info(f"Инструмент поиска '{search_tool_type_used}' сконфигурирован.")
-    except Exception as e: logger.exception(f"!!! Ошибка создания инструмента поиска: {e}"); google_search_tool = None; search_tool_type_used = "N/A (creation error)"
-else: logger.error(f"!!! Классы 'Tool' или 'GoogleSearch' не импортированы. Поиск недоступен."); google_search_tool = None; search_tool_type_used = "N/A (import error)"
+    try:
+        google_search_tool = Tool(google_search=GoogleSearch())
+        logger.info(f"Инструмент поиска '{search_tool_type_used}' сконфигурирован.")
+    except Exception as e:
+        logger.exception(f"!!! Ошибка при создании объекта Tool/GoogleSearch: {e}")
+        google_search_tool = None
+        search_tool_type_used = "N/A (creation error)"
+else:
+    # Этот блок НЕ должен выполняться, если Tool и GoogleSearch были найдены при импорте
+    logger.error(f"!!! Классы 'Tool' или 'GoogleSearch' НЕ были импортированы (None). Поиск недоступен.")
+    google_search_tool = None
+    search_tool_type_used = "N/A (import error)"
+# --- КОНЕЦ ВОЗВРАЩЕННОЙ ПРОВЕРКИ ---
 
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
@@ -70,15 +94,13 @@ system_instruction_text = (
      "Если пользователь предоставляет свой полный код как основу, используй именно этот код. Не пытайся 'улучшить' или 'переформатировать' его части, не относящиеся к запросу на исправление, если только пользователь явно об этом не попросил."
 )
 
-# --- ИСПРАВЛЕННАЯ extract_response_text ---
+# Функция extract_response_text (из x44)
 def extract_response_text(response) -> Optional[str]:
     """Извлекает текст из ответа client.models.generate_content."""
-    try:
-        return response.text
+    try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
         try:
-            # (Код обработки ValueError без изменений)
             if response.candidates:
                  candidate = response.candidates[0]; finish_reason = getattr(candidate, 'finish_reason', None); safety_ratings = getattr(candidate, 'safety_ratings', []); error_parts = []
                  finish_map = getattr(FinishReason, '_enum_map', {}); harm_cat_map = getattr(HarmCategory, '_enum_map', {}); harm_prob_map = getattr(HarmProbability, '_enum_map', {})
@@ -92,23 +114,12 @@ def extract_response_text(response) -> Optional[str]:
             return None
         except (AttributeError, IndexError, Exception) as e_details: logger.warning(f"Ошибка при получении деталей ошибки: {e_details}"); return None
     except AttributeError:
-        # --- БЛОК С ИСПРАВЛЕННЫМ ОТСТУПОМ (ИЗ v40/x32) ---
         logger.warning("Ответ не имеет атрибута .text. Попытка извлечь из parts.")
-        # Код ниже ТЕПЕРЬ с правильным отступом
         try:
-            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                parts_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text'))
-                return parts_text.strip() if parts_text and parts_text.strip() else None
-            else:
-                logger.warning("Не найдено candidates или parts для извлечения текста.")
-                return None
-        except (AttributeError, IndexError, Exception) as e_inner:
-            logger.error(f"Ошибка при сборке текста из parts: {e_inner}")
-            return None
-        # --- КОНЕЦ БЛОКА ---
-    except Exception as e:
-        logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}")
-        return None
+            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts: parts_text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, 'text')); return parts_text.strip() if parts_text and parts_text.strip() else None
+            else: logger.warning("Не найдено candidates или parts для извлечения текста."); return None
+        except (AttributeError, IndexError, Exception) as e_inner: logger.error(f"Ошибка при сборке текста из parts: {e_inner}"); return None
+    except Exception as e: logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}"); return None
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -119,7 +130,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v44." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v47." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # (Код select_model_command без изменений)
@@ -153,7 +164,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # (Код handle_message с корректными except блоками)
+    # (Код handle_message без изменений)
     if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
     user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
     logger.info(f"Сообщение от {user.id} ({len(user_message)}): '{user_message[:80].replace(chr(10), ' ')}...'")
@@ -230,6 +241,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try: await update.message.reply_text("Модель вернула пустой ответ без ошибок. 🤷", reply_to_message_id=message_id)
         except Exception as e: logger.error(f"Не удалось отправить fallback ответ: {e}")
 
+
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА ---
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
     # (Код без изменений)
@@ -303,4 +315,4 @@ if __name__ == '__main__':
         finally: logger.info("Процесс завершен.")
     else: logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x44 FULL CORRECTED main.py (FINAL FINAL FINAL INDENTATION FIX) ---
+# --- END OF REALLY x47 FULL CORRECTED main.py (FINAL FINAL FINAL INDENTATION FIX + FULL CODE) ---
