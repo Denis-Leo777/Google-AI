@@ -76,7 +76,6 @@ if not GOOGLE_API_KEY: logger.critical("Ключ Google API не найден!")
 if not WEBHOOK_HOST: logger.critical("WEBHOOK_HOST не указан (URL сервиса Render)!"); exit("WEBHOOK_HOST не указан")
 else: logger.info(f"WEBHOOK_HOST={WEBHOOK_HOST}")
 
-# Используем Client для инициализации (как в x68)
 try:
     gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
     logger.info("Клиент google.genai.Client создан.")
@@ -89,7 +88,6 @@ DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
 # --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
-# (Без изменений из x68)
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
 if Tool is not None and GoogleSearch is not None:
@@ -108,7 +106,7 @@ else:
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 system_instruction_text = (
-    # (Текст системного промпта без изменений из x68)
+    # (Текст системного промпта без изменений)
     "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку."
     "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение."
     "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
@@ -122,8 +120,8 @@ system_instruction_text = (
 )
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
-# (Код extract_response_text без изменений из x68)
 def extract_response_text(response) -> Optional[str]:
+    # (Код extract_response_text без изменений)
     try: return response.text
     except ValueError as e_val:
         logger.warning(f"ValueError при извлечении response.text: {e_val}")
@@ -149,7 +147,7 @@ def extract_response_text(response) -> Optional[str]:
     except Exception as e: logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}"); return None
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
-# (Код start, select_model_command, select_model_callback без изменений из x68)
+# (Код start, select_model_command, select_model_callback без изменений)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
@@ -210,7 +208,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             tools_list = [google_search_tool] if google_search_tool else None
             generation_config_for_api = {}
 
-            # Используем genai.GenerativeModel(model_name=...)
             model_obj = genai.GenerativeModel(model_name=model_id)
             if not model_obj:
                 raise ValueError(f"Не удалось получить объект модели для {model_id}")
@@ -362,8 +359,7 @@ async def run_web_server(port: int, stop_event: asyncio.Event, application: Appl
 
 
 # --- НОВЫЕ ФУНКЦИИ ДЛЯ РУЧНОГО УПРАВЛЕНИЯ ЦИКЛОМ (ВЕБХУК-ВЕРСИЯ) ---
-# (Код shutdown_sequence, handle_signal без изменений из x68)
-# *** ИЗМЕНЕНИЕ: ОТКЛЮЧАЕМ УДАЛЕНИЕ ВЕБХУКА ДЛЯ ТЕСТА ***
+# *** ВАЖНО: УДАЛЕНИЕ ВЕБХУКА ОТКЛЮЧЕНО ДЛЯ ТЕСТА ***
 async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task]):
     logger.info("Последовательность остановки (вебхук-версия) запущена...")
     if not stop_event.is_set():
@@ -407,6 +403,7 @@ async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio
 # *********************************************************************
 
 def handle_signal(sig, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task]):
+    # (Код handle_signal без изменений из x68)
     logger.info(f"Получен сигнал {sig.name}. Запуск последовательности остановки.")
     if application:
         asyncio.ensure_future(shutdown_sequence(loop, stop_event, application, web_server_task), loop=loop)
@@ -417,7 +414,7 @@ def handle_signal(sig, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Even
 
 
 # --- ФУНКЦИЯ НАСТРОЙКИ БОТА И СЕРВЕРА (ВЕБХУК-ВЕРСИЯ) ---
-# (Код setup_bot_and_server без изменений из x68, но с таймаутами)
+# (Код setup_bot_and_server без изменений из x69)
 async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Application], Optional[asyncio.Future]]:
     application: Optional[Application] = None
     web_server_coro: Optional[asyncio.Future] = None
@@ -432,9 +429,9 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
 
         application = (Application.builder()
                        .token(TELEGRAM_BOT_TOKEN)
-                       .connect_timeout(40) # Добавлено
-                       .read_timeout(40)    # Добавлено
-                       .pool_timeout(60)    # Добавлено
+                       .connect_timeout(40)
+                       .read_timeout(40)
+                       .pool_timeout(60)
                        .build())
         logger.info("Application создан с увеличенными таймаутами.")
 
@@ -446,7 +443,7 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
         port = int(os.environ.get("PORT", 8080)); logger.info(f"Порт для веб-сервера: {port}")
 
         logger.info("Инициализация Telegram Application (initialize)...")
-        await application.initialize() # Важно для process_update
+        await application.initialize()
 
         webhook_path = f"/{WEBHOOK_SECRET_PATH}"
         webhook_url = urljoin(WEBHOOK_HOST, webhook_path)
@@ -474,7 +471,7 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
 
 
 # --- ТОЧКА ВХОДА (С РУЧНЫМ УПРАВЛЕНИЕМ ЦИКЛОМ - ВЕБХУК) ---
-# (Код точки входа без изменений из x68)
+# (Код точки входа без изменений из x69)
 if __name__ == '__main__':
     if 'gemini_client' in globals() and gemini_client:
         logger.info("Клиент Gemini создан. Настройка и запуск event loop (Webhook).")
@@ -525,7 +522,7 @@ if __name__ == '__main__':
                 else:
                      loop.stop()
         finally:
-            # (Код finally без изменений из x68)
+            # (Код finally без изменений из x69)
             logger.info("Блок finally erreicht.")
             if loop.is_running():
                 logger.warning("Цикл все еще работает в блоке finally! Принудительная остановка.")
