@@ -1,4 +1,4 @@
-# --- START OF REALLY x67 FULL CORRECTED main.py (FIX SyntaxError in handle_message) ---
+# --- START OF REALLY x68 FULL CORRECTED main.py (REVERT Client init + fix GenerativeModel call) ---
 
 import logging
 import os
@@ -6,7 +6,7 @@ import asyncio
 import signal
 import time
 import random
-import google.genai as genai
+import google.genai as genai # Импортируем сам модуль
 import aiohttp.web
 import sys
 import secrets
@@ -24,7 +24,7 @@ logging.getLogger("aiohttp.web").setLevel(logging.DEBUG)
 # *************************
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки из x66)
+# (Импорт и заглушки из x67)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
@@ -76,11 +76,13 @@ if not GOOGLE_API_KEY: logger.critical("Ключ Google API не найден!")
 if not WEBHOOK_HOST: logger.critical("WEBHOOK_HOST не указан (URL сервиса Render)!"); exit("WEBHOOK_HOST не указан")
 else: logger.info(f"WEBHOOK_HOST={WEBHOOK_HOST}")
 
+# *** ИЗМЕНЕНИЕ: Возвращаем создание объекта Client ***
 try:
-    genai.configure(api_key=GOOGLE_API_KEY)
-    logger.info("Клиент google.genai сконфигурирован.")
+    gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+    logger.info("Клиент google.genai.Client создан.")
 except Exception as e:
-    logger.exception("!!! КРИТ. ОШИБКА конфигурации google.genai!"); exit("Ошибка конфигурации Gemini.")
+    logger.exception("!!! КРИТ. ОШИБКА создания google.genai.Client!"); exit("Ошибка создания клиента Gemini.")
+# ****************************************************
 
 AVAILABLE_MODELS = {'⚡ Flash 2.0': 'models/gemini-2.0-flash-001', '✨ Pro 2.5': 'models/gemini-2.5-pro-exp-03-25'}
 if not AVAILABLE_MODELS: exit("Нет моделей в AVAILABLE_MODELS!")
@@ -88,7 +90,7 @@ DEFAULT_MODEL_ALIAS = '✨ Pro 2.5'
 if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS: DEFAULT_MODEL_ALIAS = next(iter(AVAILABLE_MODELS)); logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
 # --- ПРОВЕРКА ИМПОРТА ПОИСКА ---
-# (Без изменений из x66)
+# (Без изменений из x67)
 google_search_tool = None
 search_tool_type_used = "GoogleSearch (for 2.0+)"
 if Tool is not None and GoogleSearch is not None:
@@ -107,7 +109,7 @@ else:
 user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[str, Any]]] = {}
 
 system_instruction_text = (
-    # (Текст системного промпта без изменений из x66)
+    # (Текст системного промпта без изменений из x67)
     "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку."
     "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение."
     "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
@@ -121,7 +123,7 @@ system_instruction_text = (
 )
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
-# (Код extract_response_text без изменений из x66)
+# (Код extract_response_text без изменений из x67)
 def extract_response_text(response) -> Optional[str]:
     try: return response.text
     except ValueError as e_val:
@@ -148,7 +150,7 @@ def extract_response_text(response) -> Optional[str]:
     except Exception as e: logger.exception(f"Неожиданная ошибка при извлечении текста ответа: {e}"); return None
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
-# (Код start, select_model_command, select_model_callback без изменений из x66)
+# (Код start, select_model_command, select_model_callback без изменений из x67)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user; chat_id = update.effective_chat.id
     if chat_id in user_selected_model: del user_selected_model[chat_id]
@@ -156,7 +158,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v67 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v68 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
@@ -187,8 +189,9 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     try: await query.edit_message_text(text=f"✅ Модель: *{selected_alias}*!{reset_message}\n\nНачните чат:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # *** Внешний try ***
+    # *** Внешний try сохранен ***
     try:
         if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
         user_message = update.message.text; user = update.effective_user; chat_id = update.effective_chat.id; message_id = update.message.message_id
@@ -199,7 +202,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not model_id: logger.error(f"Крит. ошибка: Не найден ID для '{selected_alias}'"); await update.message.reply_text("Ошибка конфига.", reply_to_message_id=message_id); return
         final_text: Optional[str] = None; search_suggestions: List[str] = []; error_message: Optional[str] = None; start_time = time.monotonic()
 
-        # *** Внутренний try для Gemini API ***
+        # *** Внутренний try для Gemini API сохранен ***
         try:
             current_history = chat_histories.get(chat_id, [])
             api_contents = []
@@ -211,9 +214,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             tools_list = [google_search_tool] if google_search_tool else None
             generation_config_for_api = {}
 
-            model_obj = genai.GenerativeModel(model_id)
-            if not model_obj:
+            # *** ИСПРАВЛЕНИЕ: Используем genai.GenerativeModel(model_name=...) ***
+            model_obj = genai.GenerativeModel(model_name=model_id) # Добавлен model_name=
+            # *******************************************************************
+            if not model_obj: # Эта проверка все еще полезна
                 raise ValueError(f"Не удалось получить объект модели для {model_id}")
+
 
             if system_instruction_text:
                 try:
@@ -232,16 +238,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             processing_time = time.monotonic() - start_time; logger.info(f"Ответ от '{model_id}' получен за {processing_time:.2f} сек.")
             final_text = extract_response_text(response)
 
-            # *** ИСПРАВЛЕННАЯ СТРОКА 244 ***
             if final_text and not final_text.startswith("⚠️"):
                  try: model_part = Part(text=final_text) if Part is not dict else {'text': final_text}; history_to_update = chat_histories.get(chat_id, [])[:]; history_to_update.append({'role': 'user', 'parts': api_contents[-1]['parts']}); history_to_update.append({'role': 'model', 'parts': [model_part]}); chat_histories[chat_id] = history_to_update
                  except Exception as e: logger.error(f"Ошибка обновления истории: {e}")
                  logger.info(f"История чата {chat_id} обновлена, теперь {len(chat_histories[chat_id])} сообщений.")
-            elif final_text and final_text.startswith("⚠️"): error_message = final_text; final_text = None; logger.warning(f"Ответ был ошибкой, история не обновлена.") # <-- Исправлено здесь
+            elif final_text and final_text.startswith("⚠️"): error_message = final_text; final_text = None; logger.warning(f"Ответ был ошибкой, история не обновлена.") # Строка 244, исправлена
             else:
                 if not error_message: error_message = "⚠️ Получен пустой или некорректный ответ."
                 logger.warning(f"Не удалось извлечь текст, история не обновлена.")
-            # **********************************
+
 
             if hasattr(response, 'candidates') and response.candidates:
                  try:
@@ -299,7 +304,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              logger.error(f"Не удалось отправить сообщение об ошибке в handle_message: {e_reply}")
 
 # --- ФУНКЦИИ ВЕБ-СЕРВЕРА ---
-# (Код handle_ping, handle_telegram_webhook, run_web_server без изменений из x66)
+# (Код handle_ping, handle_telegram_webhook, run_web_server без изменений из x67)
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
     peername = request.remote; host = request.headers.get('Host', 'N/A')
     logger.info(f"Получен HTTP пинг от {peername} к хосту {host}")
@@ -364,7 +369,7 @@ async def run_web_server(port: int, stop_event: asyncio.Event, application: Appl
 
 
 # --- НОВЫЕ ФУНКЦИИ ДЛЯ РУЧНОГО УПРАВЛЕНИЯ ЦИКЛОМ (ВЕБХУК-ВЕРСИЯ) ---
-# (Код shutdown_sequence, handle_signal без изменений из x66)
+# (Код shutdown_sequence, handle_signal без изменений из x67)
 async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task]):
     logger.info("Последовательность остановки (вебхук-версия) запущена...")
     if not stop_event.is_set():
@@ -416,12 +421,13 @@ def handle_signal(sig, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Even
 
 
 # --- ФУНКЦИЯ НАСТРОЙКИ БОТА И СЕРВЕРА (ВЕБХУК-ВЕРСИЯ) ---
-# (Код setup_bot_and_server без изменений из x66)
+# (Код setup_bot_and_server без изменений из x67)
 async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Application], Optional[asyncio.Future]]:
     application: Optional[Application] = None
     web_server_coro: Optional[asyncio.Future] = None
     try:
-        if not genai.api_key: raise RuntimeError("Ключ Google API не был установлен через genai.configure().")
+        # *** ИЗМЕНЕНИЕ: Проверяем наличие созданного gemini_client ***
+        if 'gemini_client' not in globals() or not gemini_client: raise RuntimeError("Клиент Gemini не создан.")
         if not TELEGRAM_BOT_TOKEN: raise RuntimeError("Токен Telegram не найден.")
         if not WEBHOOK_HOST: raise RuntimeError("WEBHOOK_HOST не указан!")
 
@@ -470,10 +476,10 @@ async def setup_bot_and_server(stop_event: asyncio.Event) -> tuple[Optional[Appl
 
 
 # --- ТОЧКА ВХОДА (С РУЧНЫМ УПРАВЛЕНИЕМ ЦИКЛОМ - ВЕБХУК) ---
-# (Код точки входа без изменений из x66)
 if __name__ == '__main__':
-    if genai.api_key:
-        logger.info("Клиент Gemini сконфигурирован. Настройка и запуск event loop (Webhook).")
+    # *** ИЗМЕНЕНИЕ: Возвращаем проверку на gemini_client ***
+    if 'gemini_client' in globals() and gemini_client:
+        logger.info("Клиент Gemini создан. Настройка и запуск event loop (Webhook).")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         stop_event = asyncio.Event()
@@ -557,6 +563,6 @@ if __name__ == '__main__':
                  logger.info("Event loop уже был закрыт.")
             logger.info("Процесс завершен.")
     else:
-        logger.critical("Завершение работы, так как клиент Gemini не был сконфигурирован.")
+        logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x67 FULL CORRECTED main.py (FIX SyntaxError in handle_message) ---
+# --- END OF REALLY x68 FULL CORRECTED main.py (REVERT Client init + fix GenerativeModel call) ---
