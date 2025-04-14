@@ -285,32 +285,59 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
 
     return application, asyncio.create_task(run_web_server(application, stop_event)) # Возвращаем задачу для ожидания
 
+# Определяем application в глобальной области видимости
+application: Application | None = None
+
+async def main(stop_event: asyncio.Event):
+    global application # Используем global для изменения глобальной переменной
+    application, web_server_task = await setup_bot_and_server(stop_event)
+    await web_server_task # Ждем завершения веб-сервера
+
 if __name__ == '__main__':
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     stop_event = asyncio.Event()
 
-    application = None # Инициализируем здесь, чтобы быть доступным в finally
-
-    async def main():
-        nonlocal application
-        application, web_server_task = await setup_bot_and_server(stop_event)
-        await web_server_task # Ждем завершения веб-сервера
-
     try:
         for s in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(s, lambda: stop_event.set())
-        loop.run_until_complete(main())
+        # Запускаем main внутри run_until_complete
+        loop.run_until_complete(main(stop_event))
     except Exception as e:
         logger.exception("Критическая ошибка в главном потоке.")
     finally:
         logger.info("Начинаем процедуру остановки...")
+        # Проверяем глобальную application
         if application:
              logger.info("Остановка приложения Telegram...")
-             # Запускаем асинхронную функцию shutdown в текущем цикле событий
-             loop.run_until_complete(application.shutdown())
-             logger.info("Приложение Telegram остановлено.")
-        # Даем немного времени на завершение задач
-        loop.run_until_complete(asyncio.sleep(1))
-        loop.close()
-        logger.info("Цикл событий закрыт. Сервер полностью остановлен.")
+             # Убедимся, что цикл событий доступен для shutdown
+             if not loop.is_closed():
+                 loop.run_until_complete(application.shutdown())
+                 logger.info("Приложение Telegram остановлено.")
+             else:
+                 logger.warning("Цикл событий уже закрыт, не могу остановить приложение Telegram.")
+
+        # Даем немного времени на завершение задач и закрываем цикл
+        if not loop.is_closed():
+            try:
+                # Проверим, есть ли еще запущенные задачи
+                tasks = asyncio.all_tasks(loop)
+                if tasks:
+                    logger.info(f"Ожидание завершения {len(tasks)} задач...")
+                    # Дадим им шанс завершиться, но не бесконечно
+                    _, pending = loop.run_until_complete(asyncio.wait(tasks, timeout=2.0))
+                    if pending:
+                        logger.warning(f"{len(pending)} задач не завершились и будут отменены.")
+                        for task in pending:
+                            task.cancel()
+                        # Дать время на обработку отмены
+                        loop.run_until_complete(asyncio.sleep(0.1))
+
+                loop.run_until_complete(asyncio.sleep(0.5)) # Небольшая пауза перед закрытием
+            except RuntimeError as e:
+                 logger.warning(f"Ошибка при ожидании перед закрытием цикла: {e}")
+            finally:
+                 loop.close()
+                 logger.info("Цикл событий закрыт. Сервер полностью остановлен.")
+        else:
+            logger.info("Цикл событий уже был закрыт.")
