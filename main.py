@@ -228,9 +228,9 @@ async def handle_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_message = update.message.text.strip()
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
 
-if model_id != 'gemini-2.0-flash-exp-image-generation':
-    await handle_message(update, context)
-    return
+    if model_id != 'gemini-2.0-flash-exp-image-generation':
+        await handle_message(update, context)
+        return
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     try:
