@@ -43,8 +43,8 @@ genai.configure(api_key=GOOGLE_API_KEY)
 # --- МОДЕЛИ ---
 AVAILABLE_MODELS = {
     'gemini-2.5-pro-exp-03-25': '2.5 Pro exp',
-    'gemini-2.0-flash': '2.0 Flash',
-    'gemini-2.0-flash-exp-image-generation': '🖼️ 2.0 ImageGen'
+    'gemini-2.0-flash-001': '2.0 Flash',
+    'gemini-2.0-flash-exp': '🖼️ 2.0 ImageGen'
 }
 DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25'
 user_models = {}  # chat_id -> model_id
@@ -72,7 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_models[chat_id] = DEFAULT_MODEL
     await update.message.reply_text(
-    "Лучшая модель ИИ от Google - Google Gemini 2.5 Pro c Google-поиском и улучшенными настройками. Канал автора: https://t.me/denisobovsyom"
+    "Лучшая модель ИИ от Google - Gemini 2.5 Pro c Google-поиском и улучшенными настройками. Канал автора: https://t.me/denisobovsyom"
     )
 
 async def select_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
