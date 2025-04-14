@@ -275,5 +275,13 @@ async def main():
     app, server = await setup_bot_and_server(stop_event)
     await server
 
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    stop_event = asyncio.Event()
+    loop = asyncio.get_event_loop()
+    bot_app, server = loop.run_until_complete(setup_bot_and_server(stop_event))
+    try:
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
