@@ -3,17 +3,16 @@ import os
 import asyncio
 import signal
 import time
-import secrets
 import json
 from urllib.parse import urljoin
 
 import aiohttp.web
 import telegram.ext
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-import google.genai as genai  # новый API, GenerativeModel больше не используется
+import google.genai as genai  # Используем новый API (без класса GenerativeModel)
 
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -23,12 +22,17 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
+# Переменная для постоянного пути вебхука (должна быть задана в переменных окружения)
+geminiwebhook = os.getenv('geminiwebhook')
+
 if not TELEGRAM_BOT_TOKEN:
     logger.critical("Telegram токен не найден!"); exit("Telegram токен не найден")
 if not GOOGLE_API_KEY:
     logger.critical("Ключ Google API не найден!"); exit("Google API ключ не найден")
 if not WEBHOOK_HOST:
     logger.critical("WEBHOOK_HOST не указан!"); exit("WEBHOOK_HOST не указан")
+if not geminiwebhook:
+    logger.critical("Переменная geminiwebhook не задана!"); exit("geminiwebhook не задан")
 
 try:
     gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -48,7 +52,7 @@ if DEFAULT_MODEL_ALIAS not in AVAILABLE_MODELS:
     logger.warning(f"Дефолтная модель не найдена, установлена: {DEFAULT_MODEL_ALIAS}")
 
 user_selected_model = {}  # chat_id -> alias
-chat_histories = {}       # chat_id -> list сообщений
+chat_histories = {}       # chat_id -> список сообщений
 
 system_instruction_text = (
     "Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры." 
@@ -69,12 +73,14 @@ system_instruction_text = (
 
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user; chat_id = update.effective_chat.id
+    user = update.effective_user
+    chat_id = update.effective_chat.id
     user_selected_model.pop(chat_id, None)
     chat_histories.pop(chat_id, None)
-    search_status = "включен (если поддерживается)"  # упрощено
+    search_status = "включен (если поддерживается)"
     await update.message.reply_html(
-        f"Привет, {user.mention_html()}! Бот Gemini v70 (Webhook).\n\nМодель: <b>{DEFAULT_MODEL_ALIAS}</b>\n🔍 Поиск: <b>{search_status}</b>.\n\nИспользуй /model для смены, /start для сброса.\n\nСпрашивай!"
+        f"Привет, {user.mention_html()}! Бот Gemini v70 (Webhook).\n\nМодель: <b>{DEFAULT_MODEL_ALIAS}</b>\n"
+        f"🔍 Поиск: <b>{search_status}</b>.\n\nИспользуй /model для смены, /start для сброса.\n\nСпрашивай!"
     )
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -89,8 +95,11 @@ async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Текущая модель: *{current_alias}*\n\nВыберите:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query; await query.answer()
-    selected_alias = query.data; chat_id = query.message.chat_id; user_id = query.from_user.id
+    query = update.callback_query
+    await query.answer()
+    selected_alias = query.data
+    chat_id = query.message.chat_id
+    user_id = query.from_user.id
     current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS)
     if selected_alias not in AVAILABLE_MODELS:
         logger.error(f"Пользователь {user_id} выбрал неверный alias: {selected_alias}")
@@ -128,10 +137,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("Ошибка конфига.", reply_to_message_id=message_id)
             return
 
-        # Подготовка истории чата (если есть предыдущие сообщения)
+        # Подготовка истории чата
         current_history = chat_histories.get(chat_id, [])
         try:
-            # Формируем структуру для API: role и parts (текст)
             user_part = {'text': user_message}
             api_contents = current_history + [{'role': 'user', 'parts': [user_part]}]
         except Exception as e:
@@ -141,11 +149,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Запрос к модели '{model_id}', история: {len(current_history)} сообщений.")
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-        # Опционально: можно настроить инструменты, генеративную конфигурацию и т.п.
-        tools_list = None  # если нужен поиск или иные инструменты, их можно добавить
-        generation_config_for_api = {}  # можно добавить настройки вроде temperature, max_output_tokens, и т.д.
+        tools_list = None  # Если требуются инструменты (например, поиск) – добавить сюда список
+        generation_config_for_api = {}  # Дополнительные настройки генерации
 
-        # Если есть системный промпт, формируем его структуру
         system_instruction_content = {'parts': [{'text': system_instruction_text}]} if system_instruction_text else None
 
         # Генерация ответа через новый API
@@ -157,12 +163,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             system_instruction=system_instruction_content
         )
 
-        processing_time = time.monotonic() - time.monotonic()  # упрощённо, можно добавить замер времени
-        logger.info(f"Ответ от модели '{model_id}' получен за {processing_time:.2f} сек.")
-        final_text = response.text  # Quick accessor из нового объекта ответа
+        logger.info(f"Ответ от модели '{model_id}' получен.")
+        final_text = response.text  # Используем быстрый accessor нового ответа
 
         if final_text and not final_text.startswith("⚠️"):
-            # Обновляем историю чата
             try:
                 history_to_update = chat_histories.get(chat_id, []).copy()
                 history_to_update.append({'role': 'user', 'parts': [{'text': user_message}]})
@@ -175,7 +179,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.warning("Ответ содержит ошибку, история не обновлена.")
             final_text = None
 
-        # Формирование клавиатуры с ссылками (если есть предложения поиска)
         reply_markup = None
         if final_text:
             max_length = 4096
@@ -219,6 +222,7 @@ async def run_web_server(port: int, stop_event: asyncio.Event, application: Appl
     app = aiohttp.web.Application()
     app['bot_app'] = application
     app.router.add_get('/', handle_ping)
+    # Используем фиксированный путь из переменной geminiwebhook
     webhook_path = f"/{geminiwebhook}"
     app.router.add_post(webhook_path, handle_telegram_webhook)
     runner = aiohttp.web.AppRunner(app)
@@ -238,7 +242,8 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application.add_handler(CallbackQueryHandler(select_model_callback))
     port = int(os.environ.get("PORT", 8080))
     await application.initialize()
-    webhook_path = f"/{secrets.token_urlsafe(32)}"
+    # Используем фиксированный путь вебхука из переменной geminiwebhook
+    webhook_path = f"/{geminiwebhook}"
     webhook_url = urljoin(WEBHOOK_HOST, webhook_path)
     try:
         await application.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
@@ -266,5 +271,3 @@ if __name__ == '__main__':
         loop.run_until_complete(application.shutdown())
         loop.close()
         logger.info("Процесс завершён.")
-
-
