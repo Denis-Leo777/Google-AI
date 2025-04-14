@@ -1,7 +1,4 @@
-# Полный код будет заменён и адаптирован к новой версии библиотеки google-generativeai
-# и telegram.ext, с устранением ошибки generation_config.
-# Отредактируем файл main.py с использованием новой модели и актуального API.
-
+# Полный код будет адаптирован к новой версии библиотеки google-generativeai
 # ВНИМАНИЕ: этот код предполагает, что у вас заданы переменные окружения:
 # - TELEGRAM_BOT_TOKEN
 # - GOOGLE_API_KEY
@@ -51,7 +48,7 @@ for var, name in [
 
 # Настройка клиента Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-pro-exp-03-25")  # можно заменить на gemini-1.5-pro
+model = genai.GenerativeModel("gemini-2.5-pro-exp-03-25")
 
 # Память
 user_selected_model = {}
@@ -80,7 +77,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_selected_model.pop(chat_id, None)
     chat_histories.pop(chat_id, None)
-    await update.message.reply_text("Привет! Я бот на базе Gemini. Спроси что-нибудь!")
+    await update.message.reply_text("Лучшая модель ИИ от Google - Google Gemini 2.5 Pro c Google-поиском и улучшенными настройками. Спрашивай всё что хочешь!" 
+    "Авторский канал: https://t.me/denisobovsyom")
 
 # Обработка входящих сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
