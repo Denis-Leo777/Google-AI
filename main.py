@@ -90,7 +90,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_search_enabled[chat_id] = True
     user_temperature[chat_id] = 1.0
     await update.message.reply_text(
-        "Добро пожаловать! Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками, чтением изображений и текстовых файлов. /model — выбор модели создания изображений 'Image Gen', /clear — очистить историю. Канал автора: t.me/denisobovsyom"
+        "Добро пожаловать! Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками, чтением изображений и текстовых файлов."
+        "/model — выбор модели создания изображений 'Image Gen', /clear — очистить историю. Канал автора: t.me/denisobovsyom"
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,7 +188,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image = Image.open(io.BytesIO(file_bytes))
         extracted_text = pytesseract.image_to_string(image)
         if extracted_text.strip():
-            user_prompt = f"На изображении обнаружен следующий текст: {extracted_text} Проанализируй его."
+            user_prompt = f"На изображении обнаружен следующий текст:
+
+{extracted_text}
+
+Проанализируй его."
             update.message.text = user_prompt
             await handle_message(update, context)
             return
@@ -233,7 +238,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = file_bytes.decode("latin-1", errors="ignore")
 
     truncated = text[:15000]  # ограничим до разумного объёма
-    user_prompt = f"Вот текст из файла: {truncated} Что ты можешь сказать об этом?"
+    user_prompt = f"Вот текст из файла:
+
+{truncated}
+
+Что ты можешь сказать об этом?"
 
     update.message.text = user_prompt
     await handle_message(update, context)
@@ -271,3 +280,4 @@ async def run_web_server(application: Application, stop_event: asyncio.Event):
     await site.start()
     logger.info(f"Сервер запущен на порту {port}")
     await stop_event.wait()
+
