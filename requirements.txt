@@ -1,4 +1,5 @@
 python-telegram-bot[ext]>=20.0
+google-generativeai==1.11.0
 google-genai>=1.10.0
 google-api-core>=2.0.0
 protobuf>=4.0.0
