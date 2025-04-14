@@ -87,12 +87,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_search_enabled[chat_id] = True
     user_temperature[chat_id] = 1.0
     await update.message.reply_text(
-        "Добро пожаловать! Лучшая модель ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками от автора канала: t.me/denisobovsyom
-"
-        "/model — для создания изображений 'Image Gen'
-"
-        "/search_off — отключить поиск
-"
+        "Добро пожаловать! Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками от автора канала: t.me/denisobovsyom "
+        "Даже через этот чат модель читает изображения и текстовые файлы до 15 000 символов."
+        "/model — для создания изображений 'Image Gen'"
+        "/search_off — отключить поиск"
         "/clear — очистить историю"
     )
 
