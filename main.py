@@ -9,7 +9,8 @@ from urllib.parse import urljoin
 
 import aiohttp.web
 import telegram.ext
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, ChatAction
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatAction
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 import google.genai as genai  # новый API, GenerativeModel больше не используется
