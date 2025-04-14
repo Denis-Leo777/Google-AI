@@ -87,8 +87,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_search_enabled[chat_id] = True
     user_temperature[chat_id] = 1.0
     await update.message.reply_text(
-        "Добро пожаловать! Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками от автора канала: t.me/denisobovsyom "
-        "Даже через этот чат модель читает изображения и текстовые файлы до 15 000 символов."
+        "Добро пожаловать! Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками, чтением изображений и текстовых файлов." 
+        "Канал автора: t.me/denisobovsyom"
         "/model — для создания изображений 'Image Gen'"
         "/search_off — отключить поиск"
         "/clear — очистить историю"
@@ -222,11 +222,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = file_bytes.decode("latin-1", errors="ignore")
 
     truncated = text[:15000]  # ограничим до разумного объёма
-    user_prompt = f"Вот текст из файла:
-
-{truncated}
-
-Что ты можешь сказать об этом?"
+    user_prompt = f"Вот текст из файла: {truncated} Что ты можешь сказать об этом?"
 
     update.message.text = user_prompt
     await handle_message(update, context)
