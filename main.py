@@ -228,8 +228,9 @@ async def handle_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_message = update.message.text.strip()
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
 
-    if model_id != 'gemini-2.0-flash-exp-image-generation':
-        return
+if model_id != 'gemini-2.0-flash-exp-image-generation':
+    await handle_message(update, context)
+    return
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     try:
@@ -277,8 +278,8 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application.add_handler(CommandHandler("search_on", enable_search))
     application.add_handler(CommandHandler("search_off", disable_search))
     application.add_handler(CallbackQueryHandler(select_model_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
