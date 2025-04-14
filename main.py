@@ -38,7 +38,7 @@ for var, name in [
         logger.critical(f"Переменная окружения {name} не задана!")
         exit(1)
 
-genai.configure(api_key=GOOGLE_API_KEY)
+# Строка удалена: genai.configure(api_key=GOOGLE_API_KEY)
 
 AVAILABLE_MODELS = {
     'gemini-2.5-pro-exp-03-25': '2.5 Pro',
@@ -147,6 +147,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tools = [genai.tool_spec.google_search] if use_search else []
         model = genai.GenerativeModel(
             model_id,
+            api_key=GOOGLE_API_KEY,  # <-- Добавлено
             tools=tools,
             safety_settings=[],
             generation_config={"temperature": temperature}
@@ -170,7 +171,10 @@ async def handle_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_message = update.message.text.strip()
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     try:
-        model = genai.GenerativeModel(model_id)
+        model = genai.GenerativeModel(
+            model_id,
+            api_key=GOOGLE_API_KEY  # <-- Добавлено
+        )
         response = model.generate_content([{"role": "user", "parts": [{"text": user_message}]}])
         image_data = response.candidates[0].content.parts[0].inline_data.data
         image_bytes = base64.b64decode(image_data)
@@ -194,7 +198,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tools = [genai.tool_spec.google_search] if user_search_enabled.get(chat_id, True) else []
 
     try:
-        model = genai.GenerativeModel(model_id, tools=tools, safety_settings=[], generation_config={"temperature": temperature})
+        model = genai.GenerativeModel(
+            model_id,
+            api_key=GOOGLE_API_KEY,  # <-- Добавлено
+            tools=tools,
+            safety_settings=[],
+            generation_config={"temperature": temperature}
+        )
         response = model.generate_content([{"role": "user", "parts": parts}])
         reply = response.text or "🤖 Не удалось понять изображение."
     except Exception as e:
@@ -214,8 +224,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = file_bytes.decode("latin-1", errors="ignore")
 
     truncated = text[:15000]
-    update.message.text = f"Вот текст из файла: {truncated}"
-    await handle_message(update, context)
+    # Создаём новое "сообщение" чтобы передать текст документа в handle_message
+    # Это не самое элегантное решение, но работает в рамках текущей структуры
+    fake_message = update.message.copy()
+    fake_message.text = f"Вот текст из файла '{update.message.document.file_name}':\n\n{truncated}"
+    await handle_message(Update(update.update_id, fake_message), context) # Передаем копию Update с измененным текстом
 
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.Response(text="OK")
@@ -241,7 +254,10 @@ async def run_web_server(application: Application, stop_event: asyncio.Event):
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "10000")))
     await site.start()
+    logger.info(f"Сервер запущен на порту {os.getenv('PORT', '10000')}...")
     await stop_event.wait()
+    logger.info("Остановка сервера...")
+    await runner.cleanup()
 
 async def setup_bot_and_server(stop_event: asyncio.Event):
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -252,27 +268,49 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application.add_handler(CommandHandler("search_on", enable_search))
     application.add_handler(CommandHandler("search_off", disable_search))
     application.add_handler(CallbackQueryHandler(select_model_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
+    # Важно: Обработчик текста должен идти *после* команд, чтобы не перехватывать их
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt)) # Используем handle_image_prompt, т.к. он сам вызывает handle_message если модель не image gen
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     await application.initialize()
-    webhook_url = urljoin(WEBHOOK_HOST, GEMINI_WEBHOOK_PATH)
-    await application.bot.set_webhook(webhook_url, drop_pending_updates=True)
-    return application, run_web_server(application, stop_event)
+    webhook_url = urljoin(WEBHOOK_HOST, f"/{GEMINI_WEBHOOK_PATH}")
+    logger.info(f"Установка webhook на {webhook_url}")
+    try:
+        await application.bot.set_webhook(webhook_url, drop_pending_updates=True, secret_token=GEMINI_WEBHOOK_PATH[:32]) # Можно добавить секретный токен для безопасности
+        logger.info("Webhook успешно установлен.")
+    except Exception as e:
+        logger.exception(f"Не удалось установить webhook: {e}")
+        raise # Перевыбрасываем исключение, чтобы главный поток знал об ошибке
+
+    return application, asyncio.create_task(run_web_server(application, stop_event)) # Возвращаем задачу для ожидания
 
 if __name__ == '__main__':
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     stop_event = asyncio.Event()
+
+    application = None # Инициализируем здесь, чтобы быть доступным в finally
+
+    async def main():
+        nonlocal application
+        application, web_server_task = await setup_bot_and_server(stop_event)
+        await web_server_task # Ждем завершения веб-сервера
+
     try:
-        application, web_server_task = loop.run_until_complete(setup_bot_and_server(stop_event))
         for s in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(s, lambda: stop_event.set())
-        loop.run_until_complete(web_server_task)
+        loop.run_until_complete(main())
     except Exception as e:
-        logger.exception("Ошибка в главном потоке.")
+        logger.exception("Критическая ошибка в главном потоке.")
     finally:
-        loop.run_until_complete(application.shutdown())
+        logger.info("Начинаем процедуру остановки...")
+        if application:
+             logger.info("Остановка приложения Telegram...")
+             # Запускаем асинхронную функцию shutdown в текущем цикле событий
+             loop.run_until_complete(application.shutdown())
+             logger.info("Приложение Telegram остановлено.")
+        # Даем немного времени на завершение задач
+        loop.run_until_complete(asyncio.sleep(1))
         loop.close()
-        logger.info("Сервер остановлен.")
+        logger.info("Цикл событий закрыт. Сервер полностью остановлен.")
