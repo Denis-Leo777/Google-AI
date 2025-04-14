@@ -12,6 +12,9 @@ import asyncio
 import signal
 from urllib.parse import urljoin
 import base64
+import pytesseract
+from PIL import Image
+import io
 
 import aiohttp.web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -179,8 +182,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     photo_file = await update.message.photo[-1].get_file()
     file_bytes = await photo_file.download_as_bytearray()
-    b64_data = base64.b64encode(file_bytes).decode()
 
+    try:
+        image = Image.open(io.BytesIO(file_bytes))
+        extracted_text = pytesseract.image_to_string(image)
+        if extracted_text.strip():
+            user_prompt = f"На изображении обнаружен следующий текст: {extracted_text} Проанализируй его."
+            update.message.text = user_prompt
+            await handle_message(update, context)
+            return
+    except Exception as e:
+        logger.warning("OCR не удалось: %s", e)
+
+    # Если текста не извлеклось — передаём как изображение модели
+    b64_data = base64.b64encode(file_bytes).decode()
     prompt = "Что изображено на этом фото?"
     parts = [
         {"text": prompt},
@@ -223,51 +238,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update.message.text = user_prompt
     await handle_message(update, context)
 
-async def handle_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_message = update.message.text.strip()
-    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
-
-    if model_id != 'gemini-2.0-flash-exp-image-generation':
-        return
-
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    try:
-        model = genai.GenerativeModel(model_id)
-        response = model.generate_content([{"role": "user", "parts": [{"text": user_message}]}])
-        image_data = response.candidates[0].content.parts[0].inline_data.data
-        image_bytes = base64.b64decode(image_data)
-        await update.message.reply_photo(photo=image_bytes, caption="🖼️ Сгенерировано изображение")
-    except Exception as e:
-        logger.exception("Ошибка генерации изображения")
-        await update.message.reply_text("❌ Не удалось сгенерировать изображение.")
-
-async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    return aiohttp.web.Response(text="OK")
-
-async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    application = request.app.get('bot_app')
-    try:
-        data = await request.json()
-        update = Update.de_json(data, application.bot)
-        asyncio.create_task(application.process_update(update))
-        return aiohttp.web.Response(text="OK", status=200)
-    except Exception as e:
-        logger.error(f"Ошибка webhook: {e}")
-        return aiohttp.web.Response(status=500, text="Internal error")
-
-async def run_web_server(application: Application, stop_event: asyncio.Event):
-    app = aiohttp.web.Application()
-    app['bot_app'] = application
-    app.router.add_get('/', handle_ping)
-    app.router.add_post(f"/{GEMINI_WEBHOOK_PATH}", handle_telegram_webhook)
-
-    runner = aiohttp.web.AppRunner(app)
-    await runner.setup()
-    site = aiohttp.web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "10000")))
-    await site.start()
-    await stop_event.wait()
-
 async def setup_bot_and_server(stop_event: asyncio.Event):
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -277,29 +247,12 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application.add_handler(CommandHandler("search_on", enable_search))
     application.add_handler(CommandHandler("search_off", disable_search))
     application.add_handler(CallbackQueryHandler(select_model_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     await application.initialize()
     webhook_url = urljoin(WEBHOOK_HOST, GEMINI_WEBHOOK_PATH)
     await application.bot.set_webhook(webhook_url, drop_pending_updates=True)
     return application, run_web_server(application, stop_event)
-
-if __name__ == '__main__':
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    stop_event = asyncio.Event()
-
-    try:
-        application, web_server_task = loop.run_until_complete(setup_bot_and_server(stop_event))
-        for s in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(s, lambda: stop_event.set())
-        loop.run_until_complete(web_server_task)
-    except Exception as e:
-        logger.exception("Ошибка в главном потоке приложения.")
-    finally:
-        loop.run_until_complete(application.shutdown())
-        loop.close()
-        logger.info("Сервер остановлен.")
