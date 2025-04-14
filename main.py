@@ -285,3 +285,104 @@ if __name__ == '__main__':
         pass
     finally:
         stop_event.set()
+
+
+# Обработка обычных текстовых сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_message = update.message.text.strip()
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
+    logger.info(f"Запрос к модели {model_id}: {user_message}")
+
+    try:
+        model = genai.GenerativeModel(model_id)
+        response = model.generate_content([{"role": "user", "parts": [{"text": user_message}]}])
+        reply = response.text or "🤖 Нет ответа от модели."
+    except Exception as e:
+        logger.exception("Ошибка генерации ответа")
+        reply = "❌ Ошибка при обращении к модели."
+
+    await update.message.reply_text(reply)
+
+# Обработка генерации изображений по тексту
+async def handle_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_message = update.message.text.strip()
+    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
+
+    if model_id != 'gemini-2.0-flash-exp-image-generation':
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    try:
+        model = genai.GenerativeModel(model_id)
+        response = model.generate_content([{"role": "user", "parts": [{"text": user_message}]}])
+        image_data = response.candidates[0].content.parts[0].inline_data.data
+        import base64
+        image_bytes = base64.b64decode(image_data)
+        await update.message.reply_photo(photo=image_bytes, caption="🖼️ Сгенерировано изображение")
+    except Exception as e:
+        logger.exception("Ошибка генерации изображения")
+        await update.message.reply_text("❌ Не удалось сгенерировать изображение.")
+
+# Вебхук: пинг
+async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    return aiohttp.web.Response(text="OK")
+
+# Вебхук: Telegram POST запрос
+async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    application = request.app.get('bot_app')
+    try:
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        asyncio.create_task(application.process_update(update))
+        return aiohttp.web.Response(text="OK", status=200)
+    except Exception as e:
+        logger.error(f"Ошибка webhook: {e}")
+        return aiohttp.web.Response(status=500, text="Internal error")
+
+# Веб-сервер
+async def run_web_server(application: Application, stop_event: asyncio.Event):
+    app = aiohttp.web.Application()
+    app['bot_app'] = application
+    app.router.add_get('/', handle_ping)
+    app.router.add_post(f"/{GEMINI_WEBHOOK_PATH}", handle_telegram_webhook)
+
+    runner = aiohttp.web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp.web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "10000")))
+    await site.start()
+    await stop_event.wait()
+
+# Установка вебхука и запуск
+async def setup_bot_and_server(stop_event: asyncio.Event):
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("model", model_command))
+    application.add_handler(CallbackQueryHandler(select_model_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    await application.initialize()
+    webhook_url = urljoin(WEBHOOK_HOST, GEMINI_WEBHOOK_PATH)
+    await application.bot.set_webhook(webhook_url, drop_pending_updates=True)
+    return application, run_web_server(application, stop_event)
+
+# Запуск
+if __name__ == '__main__':
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    stop_event = asyncio.Event()
+
+    try:
+        application, web_server_task = loop.run_until_complete(setup_bot_and_server(stop_event))
+        for s in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(s, lambda: stop_event.set())
+        loop.run_until_complete(web_server_task)
+    except Exception as e:
+        logger.exception("Ошибка в главном потоке приложения.")
+    finally:
+        loop.run_until_complete(application.shutdown())
+        loop.close()
+        logger.info("Сервер остановлен.")
