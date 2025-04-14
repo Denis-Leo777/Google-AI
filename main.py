@@ -266,10 +266,6 @@ async def run_web_server(application: Application, stop_event: asyncio.Event):
 
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
-
-    port = int(os.getenv("PORT", "10000"))  # Render подставит свой PORT
-    site = aiohttp.web.TCPSite(runner, "0.0.0.0", port)
+    site = aiohttp.web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "10000")))
     await site.start()
-    logger.info(f"Сервер запущен на порту {port}")
     await stop_event.wait()
-
