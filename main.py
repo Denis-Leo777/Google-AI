@@ -1,11 +1,3 @@
-# Обновлённый main.py с:
-# - Контекстом 95 000 символов
-# - Включённым по умолчанию Google Search (можно выключить)
-# - Управлением температурой /temp 0.8
-# - Очисткой истории /clear
-# - Безопасностью: safety_settings=[] (цензура снята)
-# - Постоянной системной инструкцией
-
 import logging
 import os
 import asyncio
@@ -24,7 +16,7 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
-import google.generativeai as genai
+import google.genai as genai
 
 # Логгирование
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -46,7 +38,6 @@ for var, name in [
         logger.critical(f"Переменная окружения {name} не задана!")
         exit(1)
 
-# Настройка Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
 
 AVAILABLE_MODELS = {
@@ -59,10 +50,8 @@ DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25'
 user_selected_model = {}
 user_search_enabled = {}
 user_temperature = {}
-
 MAX_CONTEXT_CHARS = 95000
 
-# Инструкция системе
 system_instruction_text = (
 "Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры."
 "Подкрепляй ответы аргументами, фактами и логикой, избегая повторов."
@@ -86,9 +75,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_selected_model[chat_id] = DEFAULT_MODEL
     user_search_enabled[chat_id] = True
     user_temperature[chat_id] = 1.0
-    await update.message.reply_text(
-        "Добро пожаловать! Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками, чтением изображений и текстовых файлов. /model — выбор модели создания изображений 'Image Gen', /clear — очистить историю. Канал автора: t.me/denisobovsyom"
-    )
+    await update.message.reply_text("🎉 "Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками, чтением изображений и текстовых файлов. /model — выбор модели создания изображений 'Image Gen', /clear — очистить историю. Канал автора: t.me/denisobovsyom"
+    )")
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['history'] = [{"role": "system", "parts": [{"text": system_instruction_text}]}]
@@ -144,10 +132,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Модель: {model_id}, Темп: {temperature}, Поиск: {use_search}")
 
     chat_history = context.chat_data.setdefault("history", [])
-
     if not any(msg.get("role") == "system" for msg in chat_history):
         chat_history.insert(0, {"role": "system", "parts": [{"text": system_instruction_text}]})
-
     chat_history.append({"role": "user", "parts": [{"text": user_message}]})
 
     total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history)
@@ -175,32 +161,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply)
 
+async def handle_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
+    if model_id != 'gemini-2.0-flash-exp-image-generation':
+        await handle_message(update, context)
+        return
+
+    user_message = update.message.text.strip()
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    try:
+        model = genai.GenerativeModel(model_id)
+        response = model.generate_content([{"role": "user", "parts": [{"text": user_message}]}])
+        image_data = response.candidates[0].content.parts[0].inline_data.data
+        image_bytes = base64.b64decode(image_data)
+        await update.message.reply_photo(photo=image_bytes, caption="🖼️ Сгенерировано изображение")
+    except Exception as e:
+        logger.exception("Ошибка генерации изображения")
+        await update.message.reply_text("❌ Не удалось сгенерировать изображение.")
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     photo_file = await update.message.photo[-1].get_file()
     file_bytes = await photo_file.download_as_bytearray()
     b64_data = base64.b64encode(file_bytes).decode()
 
-    prompt = "Что изображено на этом фото?"
     parts = [
-        {"text": prompt},
+        {"text": "Что изображено на этом фото?"},
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_data}}
     ]
-
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
     temperature = user_temperature.get(chat_id, 1.0)
-    use_search = user_search_enabled.get(chat_id, True)
-    tools = [genai.tool_spec.google_search] if use_search else []
+    tools = [genai.tool_spec.google_search] if user_search_enabled.get(chat_id, True) else []
 
     try:
-        model = genai.GenerativeModel(
-            model_id,
-            tools=tools,
-            safety_settings=[],
-            generation_config={"temperature": temperature}
-        )
+        model = genai.GenerativeModel(model_id, tools=tools, safety_settings=[], generation_config={"temperature": temperature})
         response = model.generate_content([{"role": "user", "parts": parts}])
-        reply = response.text or "🤖 Не удалось понять, что на изображении."
+        reply = response.text or "🤖 Не удалось понять изображение."
     except Exception as e:
         logger.exception("Ошибка при анализе изображения")
         reply = "❌ Ошибка при анализе изображения."
@@ -217,31 +214,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except UnicodeDecodeError:
         text = file_bytes.decode("latin-1", errors="ignore")
 
-    truncated = text[:15000]  # ограничим до разумного объёма
-    user_prompt = f"Вот текст из файла: {truncated} Что ты можешь сказать об этом?"
-
-    update.message.text = user_prompt
+    truncated = text[:15000]
+    update.message.text = f"Вот текст из файла: {truncated}"
     await handle_message(update, context)
-
-async def handle_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_message = update.message.text.strip()
-    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
-
-    if model_id != 'gemini-2.0-flash-exp-image-generation':
-        await handle_message(update, context)
-        return
-
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    try:
-        model = genai.GenerativeModel(model_id)
-        response = model.generate_content([{"role": "user", "parts": [{"text": user_message}]}])
-        image_data = response.candidates[0].content.parts[0].inline_data.data
-        image_bytes = base64.b64decode(image_data)
-        await update.message.reply_photo(photo=image_bytes, caption="🖼️ Сгенерировано изображение")
-    except Exception as e:
-        logger.exception("Ошибка генерации изображения")
-        await update.message.reply_text("❌ Не удалось сгенерировать изображение.")
 
 async def handle_ping(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.Response(text="OK")
@@ -278,7 +253,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application.add_handler(CommandHandler("search_on", enable_search))
     application.add_handler(CommandHandler("search_off", disable_search))
     application.add_handler(CallbackQueryHandler(select_model_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -292,14 +266,13 @@ if __name__ == '__main__':
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     stop_event = asyncio.Event()
-
     try:
         application, web_server_task = loop.run_until_complete(setup_bot_and_server(stop_event))
         for s in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(s, lambda: stop_event.set())
         loop.run_until_complete(web_server_task)
     except Exception as e:
-        logger.exception("Ошибка в главном потоке приложения.")
+        logger.exception("Ошибка в главном потоке.")
     finally:
         loop.run_until_complete(application.shutdown())
         loop.close()
