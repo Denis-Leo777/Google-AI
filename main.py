@@ -269,3 +269,11 @@ async def run_web_server(application: Application, stop_event: asyncio.Event):
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "10000")))
     await site.start()
     await stop_event.wait()
+
+async def main():
+    stop_event = asyncio.Event()
+    app, server = await setup_bot_and_server(stop_event)
+    await server
+
+if __name__ == "__main__":
+    asyncio.run(main())
