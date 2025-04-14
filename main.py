@@ -256,3 +256,18 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     webhook_url = urljoin(WEBHOOK_HOST, GEMINI_WEBHOOK_PATH)
     await application.bot.set_webhook(webhook_url, drop_pending_updates=True)
     return application, run_web_server(application, stop_event)
+
+async def run_web_server(application: Application, stop_event: asyncio.Event):
+    app = aiohttp.web.Application()
+    app['bot_app'] = application
+    app.router.add_get('/', lambda request: aiohttp.web.Response(text="OK"))
+    app.router.add_post(f"/{GEMINI_WEBHOOK_PATH}", handle_telegram_webhook)
+
+    runner = aiohttp.web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.getenv("PORT", "10000"))  # Render подставит свой PORT
+    site = aiohttp.web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Сервер запущен на порту {port}")
+    await stop_event.wait()
