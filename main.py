@@ -37,13 +37,13 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
-GEMINI_WEBHOOK_PATH = os.getenv('geminiwebhook')
+GEMINI_WEBHOOK_PATH = os.getenv('GEMINI_WEBHOOK_PATH')
 
 for var, name in [
     (TELEGRAM_BOT_TOKEN, "TELEGRAM_BOT_TOKEN"),
     (GOOGLE_API_KEY, "GOOGLE_API_KEY"),
     (WEBHOOK_HOST, "WEBHOOK_HOST"),
-    (GEMINI_WEBHOOK_PATH, "geminiwebhook")
+    (GEMINI_WEBHOOK_PATH, "GEMINI_WEBHOOK_PATH")
 ]:
     if not var:
         logger.critical(f"Переменная окружения {name} не задана!")
