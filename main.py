@@ -188,11 +188,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image = Image.open(io.BytesIO(file_bytes))
         extracted_text = pytesseract.image_to_string(image)
         if extracted_text.strip():
-            user_prompt = f"На изображении обнаружен следующий текст:
-
-{extracted_text}
-
-Проанализируй его."
+            user_prompt = f"На изображении обнаружен следующий текст: {extracted_text} Проанализируй его."
             update.message.text = user_prompt
             await handle_message(update, context)
             return
@@ -238,11 +234,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = file_bytes.decode("latin-1", errors="ignore")
 
     truncated = text[:15000]  # ограничим до разумного объёма
-    user_prompt = f"Вот текст из файла:
-
-{truncated}
-
-Что ты можешь сказать об этом?"
+    user_prompt = f"Вот текст из файла: {truncated} Что ты можешь сказать об этом?"
 
     update.message.text = user_prompt
     await handle_message(update, context)
