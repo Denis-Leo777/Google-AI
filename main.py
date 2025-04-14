@@ -72,8 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_models[chat_id] = DEFAULT_MODEL
     await update.message.reply_text(
-    "Лучшая модель ИИ от Google - Google Gemini 2.5 Pro c Google-поиском и улучшенными настройками. Спрашивай всё что хочешь!" 
-    "Авторский канал: https://t.me/denisobovsyom"
+    "Лучшая модель ИИ от Google - Google Gemini 2.5 Pro c Google-поиском и улучшенными настройками. Канал автора: https://t.me/denisobovsyom"
     )
 
 async def select_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
