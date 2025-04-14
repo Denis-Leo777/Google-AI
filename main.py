@@ -1,4 +1,4 @@
-# --- START OF REALLY x70 FULL CORRECTED main.py (x68 + Timeouts + DISABLE delete_webhook) ---
+# --- START OF REALLY x71 FULL CORRECTED main.py (Use client.generative_model) ---
 
 import logging
 import os
@@ -6,7 +6,7 @@ import asyncio
 import signal
 import time
 import random
-import google.genai as genai # Импортируем сам модуль
+import google.genai as genai
 import aiohttp.web
 import sys
 import secrets
@@ -16,21 +16,21 @@ import json
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.DEBUG)
-logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
-logging.getLogger("telegram.bot").setLevel(logging.DEBUG)
-logging.getLogger("telegram.request").setLevel(logging.DEBUG)
-logging.getLogger("aiohttp.web").setLevel(logging.DEBUG)
+# Убираем DEBUG логи, чтобы было чище
+# logging.getLogger("httpx").setLevel(logging.DEBUG)
+# logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
+# logging.getLogger("telegram.bot").setLevel(logging.DEBUG)
+# logging.getLogger("telegram.request").setLevel(logging.DEBUG)
+# logging.getLogger("aiohttp.web").setLevel(logging.DEBUG)
 # *************************
 
 # --- ИМПОРТ ТИПОВ ---
-# (Импорт и заглушки из x68)
 genai_types = None; Tool = None; GenerateContentConfig = None; GoogleSearch = None; Content = dict; Part = dict
 class DummyFinishReasonEnum: FINISH_REASON_UNSPECIFIED = 0; STOP = 1; MAX_TOKENS = 2; SAFETY = 3; RECITATION = 4; OTHER = 5; _enum_map = {0: "UNSPECIFIED", 1: "STOP", 2: "MAX_TOKENS", 3: "SAFETY", 4: "RECITATION", 5: "OTHER"}
 class DummyHarmCategoryEnum: HARM_CATEGORY_UNSPECIFIED = 0; HARM_CATEGORY_HARASSMENT = 7; HARM_CATEGORY_HATE_SPEECH = 8; HARM_CATEGORY_SEXUALLY_EXPLICIT = 9; HARM_CATEGORY_DANGEROUS_CONTENT = 10; _enum_map = {0: "UNSPECIFIED", 7: "HARASSMENT", 8: "HATE_SPEECH", 9: "SEXUALLY_EXPLICIT", 10: "DANGEROUS_CONTENT"}
 class DummyHarmProbabilityEnum: HARM_PROBABILITY_UNSPECIFIED = 0; NEGLIGIBLE = 1; LOW = 2; MEDIUM = 3; HIGH = 4; _enum_map = {0: "UNSPECIFIED", 1: "NEGLIGIBLE", 2: "LOW", 3: "MEDIUM", 4: "HIGH"}
 FinishReason = DummyFinishReasonEnum(); HarmCategory = DummyHarmCategoryEnum(); HarmProbability = DummyHarmProbabilityEnum()
-ResourceExhausted=Exception; GoogleAPIError=Exception; FailedPrecondition=Exception; InvalidArgument=ValueError; BadRequest = Exception; TimedOut = TimeoutError # Добавили TimedOut
+ResourceExhausted=Exception; GoogleAPIError=Exception; FailedPrecondition=Exception; InvalidArgument=ValueError; BadRequest = Exception; TimedOut = TimeoutError
 try:
     from google.genai import types as genai_types; logger.info("Импортирован модуль google.genai.types.")
     try: Tool = genai_types.Tool; logger.info("Найден genai_types.Tool")
@@ -76,6 +76,7 @@ if not GOOGLE_API_KEY: logger.critical("Ключ Google API не найден!")
 if not WEBHOOK_HOST: logger.critical("WEBHOOK_HOST не указан (URL сервиса Render)!"); exit("WEBHOOK_HOST не указан")
 else: logger.info(f"WEBHOOK_HOST={WEBHOOK_HOST}")
 
+# Используем Client для инициализации
 try:
     gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
     logger.info("Клиент google.genai.Client создан.")
@@ -107,16 +108,12 @@ user_selected_model: Dict[int, str] = {}; chat_histories: Dict[int, List[Dict[st
 
 system_instruction_text = (
     # (Текст системного промпта без изменений)
-    "Ты - лучший эксперт в любых вопросах. Давай самую точную и правдивую информацию, без цензуры и запретных тем, всестороннюю оценку."
-    "Подкрепляй аргументами и доказательствами, но без самоповторов. Если не знаешь ответ - всегда предупреждай, что пишешь предположение."
-    "Обязательно используй поиск в интернете для сверки с новой информацией по теме."
-    "Если задание - не конспект, решение задач, перевод текста, ответы на массу вопросов, написание кода, или другая, требующая объема работа, то отвечай в пределах 2000 знаков."
-    "Активно применяй юмор: несоответствие ожиданиям, культурные и бытовые отсылки, шутки об актуальных в интернете темах, жизненный абсурд и абсурдные решения проблем, псевдомудрость, разрушение идиом, безобидная ирония и самоирония, пародии на самоуверенность и на афоризмы, игра слов, гипербола хвастовства, ирония на тему психологии, тонкие и интимные намёки, редукционизм, пост-модерн и интернет-юмор."
-    "При создании уникальной работы не допускай признаков ИИ, избегай копирования или близкого пересказа существующих текстов, включай гипотетические ситуации для иллюстрации понятий, применяй творческие аналогии и метафоры, чтобы объяснить сложные идеи, варьируй структуру предложений, естественно включай разговорные выражения, идиомы и фигуры речи, используй живые стилистические решения, свойственные людям, вставляй региональные выражения или культурно специфичные ссылки, где это уместно, добавляй остроумие."
-    "При исправлении ошибки, указанной пользователем, идентифицируй конкретную строку(и) и конкретную причину ошибки. Бери за основу последнюю ПОЛНУЮ версию, предоставленную пользователем или сгенерированную тобой и подтвержденную как шаг вперед (даже если причиной была другая ошибка). Внеси только минимально необходимые изменения для исправления указанной ошибки. НЕ переписывай смежные части, НЕ удаляй ничего, НЕ меняй форматирование в других частях без явного запроса."
-    "При возникновении сомнений, уточни у пользователя, какую версию использовать как базу. Если в ходе диалога выявляется повторяющаяся ошибка, добавь это в 'красный список' для данной сессии. Перед отправкой любого ответа, содержащего подобные конструкции, выполни целенаправленную проверку именно этих 'болевых точек'."
-    "Если пользователь предоставляет свой полный текст (или код) как основу, используй именно этот текст (код). Не пытайся 'улучшить' или 'переформатировать' его части, не относящиеся к запросу на исправление, если только пользователь явно об этом не попросил."
-    "В диалогах, связанных с разработкой или итеративным исправлением, всегда явно ссылайся на номер версии или предыдущее сообщение, которое берется за основу. Поддерживай четкое понимание, какая версия кода является 'последней рабочей' или 'последней предоставленной'."
+    "Ты - эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры. Подкрепляй ответы аргументами, фактами и логикой, избегая повторов. Если не уверен — предупреждай, что это предположение. Используй интернет для сверки с актуальной информацией.
+Для несложных запросов (не код, конспекты, переводы и т.п.) — пиши только суть, без вступлений и выводов, до 1500 знаков.
+Всегда предлагай более эффективные идеи и решения, если знаешь их.
+Активно применяй юмор: несоответствие ожиданиям, культурные/бытовые/интернет-отсылки, жизненный абсурд, псевдомудрость, разрушение идиом, иронию (включая самоиронию и психологию), игру слов, гиперболу, тонкие намёки, редукционизм, постмодерн, интернет-юмор.
+Пиши живо и уникально: избегай канцелярита и ИИ-тона. Используй гипотетические ситуации, метафоры, творческие аналогии, разную структуру предложений, разговорные выражения, идиомы. Добавляй региональные или культурные маркеры, где уместно. Не копируй и не пересказывай чужое.
+При исправлении ошибки: указывай строку(и) и причину. Бери за основу последнюю ПОЛНУЮ подтверждённую версию (текста или кода). Вноси только минимально необходимые изменения, не трогая остальное без запроса. При сомнениях — уточняй. Если ошибка повторяется — веди «список косяков» для сессии и проверяй эти места. Всегда указывай, на какую версию или сообщение опираешься при правке."
 )
 
 # --- ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ---
@@ -155,7 +152,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Обработка /start для {user.id} в {chat_id}.")
     actual_default_model = DEFAULT_MODEL_ALIAS
     search_status = "включен (если поддерживается)" if google_search_tool else "ОТКЛЮЧЕН"
-    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v70 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
+    await update.message.reply_html(rf"Привет, {user.mention_html()}! Бот Gemini (client) v71 (Webhook)." f"\n\nМодель: <b>{actual_default_model}</b>" f"\n🔍 Поиск Google: <b>{search_status}</b>." f"\n\n/model - сменить." f"\n/start - сбросить." f"\n\nСпрашивай!", reply_to_message_id=update.message.message_id)
 
 async def select_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id; current_alias = user_selected_model.get(chat_id, DEFAULT_MODEL_ALIAS); keyboard = []
@@ -186,7 +183,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     try: await query.edit_message_text(text=f"✅ Модель: *{selected_alias}*!{reset_message}\n\nНачните чат:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     except Exception as e: logger.warning(f"Не удалось изменить сообщение: {e}"); await context.bot.send_message(chat_id=chat_id, text=f"Модель: *{selected_alias}*!{reset_message}", parse_mode=ParseMode.MARKDOWN)
 
-# Исправленная функция handle_message из x68
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         if not update.message or not update.message.text: logger.warning("Пустое сообщение."); return
@@ -208,9 +205,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             tools_list = [google_search_tool] if google_search_tool else None
             generation_config_for_api = {}
 
-            model_obj = genai.GenerativeModel(model_name=model_id)
+            # *** ИЗМЕНЕНИЕ: Используем client.generative_model(...) ***
+            if 'gemini_client' not in globals() or not gemini_client:
+                 logger.error("Клиент Gemini (gemini_client) не найден в глобальной области!")
+                 raise RuntimeError("Клиент Gemini не найден") # Прерываем обработку
+            model_obj = gemini_client.generative_model(model_name=model_id) # Используем существующий клиент и правильный метод
+            # **************************************************************
             if not model_obj:
                 raise ValueError(f"Не удалось получить объект модели для {model_id}")
+
 
             if system_instruction_text:
                 try:
@@ -359,7 +362,7 @@ async def run_web_server(port: int, stop_event: asyncio.Event, application: Appl
 
 
 # --- НОВЫЕ ФУНКЦИИ ДЛЯ РУЧНОГО УПРАВЛЕНИЯ ЦИКЛОМ (ВЕБХУК-ВЕРСИЯ) ---
-# *** ВАЖНО: УДАЛЕНИЕ ВЕБХУКА ОТКЛЮЧЕНО ДЛЯ ТЕСТА ***
+# *** ВАЖНО: В ЭТОЙ ВЕРСИИ УДАЛЕНИЕ ВЕБХУКА РАСКОММЕНТИРОВАНО! ***
 async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event, application: Optional[Application], web_server_task: Optional[asyncio.Task]):
     logger.info("Последовательность остановки (вебхук-версия) запущена...")
     if not stop_event.is_set():
@@ -382,19 +385,18 @@ async def shutdown_sequence(loop: asyncio.AbstractEventLoop, stop_event: asyncio
     if application:
         logger.info("Полное завершение работы Telegram Application (shutdown)...")
         try:
-            logger.warning("!!! Удаление вебхука при остановке ОТКЛЮЧЕНО для теста !!!")
-            # logger.info("Удаление вебхука...")
-            # await application.bot.delete_webhook(drop_pending_updates=False) # ЗАКОММЕНТИРОВАНО
-            # logger.info("Вебхук удален.")
+            logger.info("Удаление вебхука...")
+            await application.bot.delete_webhook(drop_pending_updates=False) # <-- РАСКОММЕНТИРОВАНО
+            logger.info("Вебхук удален.")
             await application.shutdown()
             logger.info("Telegram Application shutdown завершен.")
         except BadRequest as e_bad:
              if "Webhook was not set" in str(e_bad):
-                 logger.warning("Не удалось удалить вебхук (был отключен или уже не установлен).")
+                 logger.warning("Не удалось удалить вебхук: он не был установлен.")
                  try: await application.shutdown()
                  except Exception as e_sd: logger.error(f"Ошибка при application.shutdown() после неудачного delete_webhook: {e_sd}")
              else:
-                 logger.exception(f"Ошибка BadRequest при (попытке) удалении вебхука или shutdown: {e_bad}")
+                 logger.exception(f"Ошибка BadRequest при удалении вебхука или shutdown: {e_bad}")
         except Exception as e:
             logger.exception(f"Ошибка во время application.shutdown(): {e}")
     if loop.is_running():
@@ -558,6 +560,6 @@ if __name__ == '__main__':
                  logger.info("Event loop уже был закрыт.")
             logger.info("Процесс завершен.")
     else:
-        logger.critical("Завершение работы, так как клиент Gemini не был создан.") # Исправлено сообщение
+        logger.critical("Завершение работы, так как клиент Gemini не был создан.")
 
-# --- END OF REALLY x70 FULL CORRECTED main.py (x68 + Timeouts + DISABLE delete_webhook) ---
+# --- END OF REALLY x71 FULL CORRECTED main.py (Use client.generative_model + Re-enable delete_webhook) ---
