@@ -57,7 +57,6 @@ genai.configure(api_key=GOOGLE_API_KEY)
 # Модели
 AVAILABLE_MODELS = {
     'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking (Exp)',
-    'gemini-2.5-pro-preview-03-25': '2.5 Pro Preview',
     'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
     'gemini-2.0-flash-001': '2.0 Flash',
 }
@@ -113,11 +112,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_temperature[chat_id] = 1.0
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"**{default_model_name}**."
-        f"\n + поиск в интернете, чтение изображений (OCR) и текстовых файлов."
+        f"**{default_model_name}**"
+        f"\n улучшенные настройки точности, логики и юмора, поиск в интернете, чтение изображений (OCR) и текстовых файлов"
         "\n/model — выбор модели"
-        "\n/clear — очистить историю"
         "\n/search_on  /search_off — вкл/выкл поиск"
+        "\n/clear — очистить историю"
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
 
@@ -201,10 +200,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if results:
                 search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
                 if search_snippets:
-                    search_context = "Контекст из поиска DuckDuckGo:\n" + "\n".join(search_snippets)
+                    search_context = "Актуальная информация из интернета (поиск DuckDuckGo), которая может помочь:\n" + "\n".join(search_snippets)
                     final_user_prompt = (
                         f"{search_context}\n\n"
-                        f"Используя приведенный выше контекст из поиска и свои знания, ответь на следующий вопрос пользователя:\n"
+                        f"Твои знания без интернета - устаревшие. Основываясь на этой свежей информации и своих знаниях, ответь на следующий вопрос пользователя:\n"
                         f"\"{original_user_message}\""
                     )
                     logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
