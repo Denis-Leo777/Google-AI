@@ -37,13 +37,13 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
-GEMINI_WEBHOOK_PATH = os.getenv('geminiwebhook')
+GEMINI_WEBHOOK_PATH = os.getenv('GEMINI_WEBHOOK_PATH')
 
 for var, name in [
     (TELEGRAM_BOT_TOKEN, "TELEGRAM_BOT_TOKEN"),
     (GOOGLE_API_KEY, "GOOGLE_API_KEY"),
     (WEBHOOK_HOST, "WEBHOOK_HOST"),
-    (GEMINI_WEBHOOK_PATH, "geminiwebhook")
+    (GEMINI_WEBHOOK_PATH, "GEMINI_WEBHOOK_PATH")
 ]:
     if not var:
         logger.critical(f"Переменная окружения {name} не задана!")
@@ -237,20 +237,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update.message.text = user_prompt
     await handle_message(update, context)
 
-async def run_web_server(application: Application, stop_event: asyncio.Event):
-    app = aiohttp.web.Application()
-    app['bot_app'] = application
-    app.router.add_get('/', lambda request: aiohttp.web.Response(text="OK"))
-    app.router.add_post(f"/{GEMINI_WEBHOOK_PATH}", handle_telegram_webhook)
 
-    runner = aiohttp.web.AppRunner(app)
-    await runner.setup()
-
-    port = int(os.getenv("PORT", "10000"))  # Render подставит свой PORT
-    site = aiohttp.web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"Сервер запущен на порту {port}")
-    await stop_event.wait()
 
 async def setup_bot_and_server(stop_event: asyncio.Event):
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -271,18 +258,5 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     await application.bot.set_webhook(webhook_url, drop_pending_updates=True)
     return application, run_web_server(application, stop_event)
 
-async def run_web_server(application: Application, stop_event: asyncio.Event):
-    app = aiohttp.web.Application()
-    app['bot_app'] = application
-    app.router.add_get('/', lambda request: aiohttp.web.Response(text="OK"))
-    app.router.add_post(f"/{GEMINI_WEBHOOK_PATH}", handle_telegram_webhook)
 
-    runner = aiohttp.web.AppRunner(app)
-    await runner.setup()
-
-    port = int(os.getenv("PORT", "10000"))  # Render подставит свой PORT
-    site = aiohttp.web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"Сервер запущен на порту {port}")
-    await stop_event.wait()
 
