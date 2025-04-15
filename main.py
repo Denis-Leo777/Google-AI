@@ -83,15 +83,23 @@ async def free_google_search(query: str) -> str:
         )
     }
     search_url = f"https://www.google.com/search?q={query}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(search_url, headers=headers) as response:
-            html = await response.text()
-            soup = BeautifulSoup(html, 'lxml')
-            snippet = soup.find('div', class_='BNeawe')
-            if snippet:
-                return snippet.get_text().strip()
-            else:
-                return "Результатов не найдено."
+    logger.info(f"Выполняем Google поиск: {search_url}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(search_url, headers=headers) as response:
+                html = await response.text()
+                soup = BeautifulSoup(html, 'lxml')
+                snippet = soup.find('div', class_='BNeawe')
+                if snippet:
+                    result = snippet.get_text().strip()
+                    logger.info(f"Результат поиска: {result}")
+                    return result
+                else:
+                    logger.info("Результатов не найдено")
+                    return "Результатов не найдено."
+    except Exception as e:
+        logger.exception("Ошибка во free_google_search")
+        return "Ошибка при поиске."
 
 # Команды и обработчики Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -157,7 +165,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     temperature = user_temperature.get(chat_id, 1.0)
     use_search = user_search_enabled.get(chat_id, True)
 
-    logger.info(f"Модель: {model_id}, Темп: {temperature}, Поиск: {use_search}")
+    logger.info(f"Получено сообщение: {user_message}. Модель: {model_id}, Темп: {temperature}, Поиск: {use_search}")
 
     chat_history = context.chat_data.setdefault("history", [])
     if not any(msg.get("role") == "system" for msg in chat_history):
@@ -169,7 +177,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search_result = await free_google_search(user_message)
         chat_history.append({"role": "system", "parts": [{"text": f"Google поиск: {search_result}"}]})
 
+    # Отладочный лог для проверки общего размера контекста
     total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history)
+    logger.info(f"Общий размер контекста: {total_chars} символов")
+    
     while total_chars > MAX_CONTEXT_CHARS and len(chat_history) > 1:
         if chat_history[1].get("role") == "system":
             chat_history.pop(2)
@@ -178,12 +189,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history)
 
     try:
+        logger.info("Перед вызовом модели. История чата: " + str(chat_history))
         model = genai.GenerativeModel(
             model_id,
             safety_settings=[],
             generation_config={"temperature": temperature}
         )
         response = model.generate_content(chat_history)
+        logger.info("Ответ от модели: " + str(response))
         reply = response.text or "🤖 Нет ответа от модели."
         chat_history.append({"role": "model", "parts": [{"text": reply}]})
     except Exception as e:
