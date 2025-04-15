@@ -24,10 +24,10 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+
 import google.generativeai as genai
-from google.generativeai.tools import HarmCategory, HarmBlockThreshold
-# ===== Добавляем импорт инструмента Google Search =====
-from google.generativeai.tools import GoogleSearchRetrieval
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google.generativeai.retrieval import GoogleSearchRetrieval
 
 # Переменные окружения (проверка не меняется)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
