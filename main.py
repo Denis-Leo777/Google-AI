@@ -237,6 +237,21 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update.message.text = user_prompt
     await handle_message(update, context)
 
+async def run_web_server(application: Application, stop_event: asyncio.Event):
+    app = aiohttp.web.Application()
+    app['bot_app'] = application
+    app.router.add_get('/', lambda request: aiohttp.web.Response(text="OK"))
+    app.router.add_post(f"/{GEMINI_WEBHOOK_PATH}", handle_telegram_webhook)
+
+    runner = aiohttp.web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.getenv("PORT", "10000"))  # Render подставит свой PORT
+    site = aiohttp.web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Сервер запущен на порту {port}")
+    await stop_event.wait()
+
 async def setup_bot_and_server(stop_event: asyncio.Event):
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -270,5 +285,4 @@ async def run_web_server(application: Application, stop_event: asyncio.Event):
     await site.start()
     logger.info(f"Сервер запущен на порту {port}")
     await stop_event.wait()
-
 
