@@ -78,12 +78,11 @@ user_temperature = {}
 # Константы
 MAX_CONTEXT_CHARS = 95000
 MAX_OUTPUT_TOKENS = 3000
-DDG_MAX_RESULTS = 7 # Уменьшили с 30
+DDG_MAX_RESULTS = 30 # Уменьшили с 30
 
 # Системная инструкция
 system_instruction_text = (
 "Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры."
-"Используй русский мат, но без слова блядь."
 "Подкрепляй ответы аргументами, фактами и логикой, избегая повторов."
 "Если не уверен — предупреждай, что это предположение."
 "Используй интернет для сверки с актуальной информацией."
@@ -123,10 +122,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
         f"**{default_model_name}**."
-        f"\nДоступны: поиск в интернете, чтение изображений (OCR) и текстовых файлов."
-        "\n/model — выбор модели,"
-        "\n/clear — очистить историю."
-        "\n/search_on /search_off — вкл/выкл поиск."
+        f"\nДоступны: интернет-поиск, чтение изображений (OCR) и текстовых файлов."
+        "\n/model — выбор модели"
+        "\n/clear — очистить историю"
+        "\n/search-on  /search-off — вкл/выкл поиск"
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
 
