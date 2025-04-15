@@ -318,7 +318,7 @@ if __name__ == '__main__':
     try:
         application, web_server_task = loop.run_until_complete(setup_bot_and_server(stop_event))
         for s in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(s, lambda: stop_event.set())
+         loop.add_signal_handler(s, lambda: stop_event.set())
         loop.run_until_complete(web_server_task)
     except Exception as e:
         logger.exception("Ошибка в главном потоке приложения.")
