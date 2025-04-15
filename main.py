@@ -115,7 +115,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"**{default_model_name}** с юморными настройками."
+        f"**{default_model_name}** без интернета (знания на авг.2024), но с юморными настройками ;)"
         f"\nДоступны: чтение изображений (OCR) и текстовых файлов."
         "\n/clear — очистить историю."
     )
