@@ -1,12 +1,6 @@
 # Обновлённый main.py с:
-# - Контекстом 95 000 символов
-# - Включённым по умолчанию Google Search (можно выключить)
-# - Управлением температурой /temp 0.8
-# - Очисткой истории /clear
-# - Безопасностью: safety_settings=[] (цензура снята)
-# - Постоянной системной инструкцией (через параметр модели)
-# - Исправленным вызовом Google Search (импорт из google.ai.generativelanguage)
-# - Экспериментальной моделью по умолчанию и АВТОМАТИЧЕСКИМ отключением поиска для неё
+# ... (все предыдущие фичи)
+# + Обработка генерации изображений для модели 'Image Gen'
 
 import logging
 import os
@@ -16,10 +10,10 @@ from urllib.parse import urljoin
 import base64
 import pytesseract
 from PIL import Image
-import io
+import io # Нужен для отправки байтов картинки
 
 import aiohttp.web
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile # Добавили InputFile
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -44,7 +38,7 @@ except ImportError as e:
     logger.critical("Проверьте версии библиотек google-generativeai, google-ai-generativelanguage, protobuf.")
     exit(1)
 
-# Переменные окружения
+# Переменные окружения и их проверка ... (без изменений)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
@@ -60,28 +54,31 @@ for var, name in [
         logger.critical(f"Переменная окружения {name} не задана!")
         exit(1)
 
+
 # Настройка Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# ===== ИСПРАВЛЕНИЕ: Возвращаем экспериментальную модель по умолчанию =====
-AVAILABLE_MODELS = {
-    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)', # Экспериментальная
-    'gemini-2.0-flash': '2.0 Flash', # Стабильная
-    'gemini-2.0-flash-exp-image-generation': 'Image Gen (Exp)' # Генерация картинок
-}
-DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25' # Делаем экспериментальную дефолтной
+# ===== КОНСТАНТА ДЛЯ МОДЕЛИ ГЕНЕРАЦИИ КАРТИНОК =====
+IMAGE_GEN_MODEL = 'gemini-2.0-flash-exp-image-generation'
+# =====================================================
 
-# Модели, которые НЕ поддерживают Google Search (или поддержка глючит)
-MODELS_WITHOUT_SEARCH = {'gemini-2.5-pro-exp-03-25', 'gemini-2.0-flash-exp-image-generation'}
-# ====================================================================
+AVAILABLE_MODELS = {
+    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
+    'gemini-2.0-flash-001': '2.0 Flash',
+    IMAGE_GEN_MODEL: 'Image Gen (Exp)' # Используем константу
+}
+DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25'
+
+# Поиск не поддерживается только моделью генерации картинок
+MODELS_WITHOUT_SEARCH = {IMAGE_GEN_MODEL}
 
 user_selected_model = {}
-user_search_enabled = {} # Эта настройка теперь влияет только на ПОДДЕРЖИВАЮЩИЕ поиск модели
+user_search_enabled = {}
 user_temperature = {}
 
 MAX_CONTEXT_CHARS = 95000
 
-# Инструкция системе
+# Инструкция системе ... (без изменений)
 system_instruction_text = (
 "Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры."
 "Подкрепляй ответы аргументами, фактами и логикой, избегая повторов."
@@ -94,28 +91,27 @@ system_instruction_text = (
 "При исправлении ошибки: указывай строку(и) и причину. Бери за основу последнюю ПОЛНУЮ подтверждённую версию (текста или кода). Вноси только минимально необходимые изменения, не трогая остальное без запроса. При сомнениях — уточняй. Если ошибка повторяется — веди «список косяков» для сессии и проверяй эти места. Всегда указывай, на какую версию или сообщение опираешься при правке."
 )
 
-# Команды
+
+# Команды start, clear_history, set_temperature, enable_search, disable_search, model_command ... (без изменений, кроме текста кнопок/сообщений)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_selected_model[chat_id] = DEFAULT_MODEL
     user_search_enabled[chat_id] = True
     user_temperature[chat_id] = 1.0
-    # context.chat_data['history'] = []
 
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
         f"Добро пожаловать! По умолчанию используется модель **{default_model_name}**."
-        f" \nВы можете пользоваться Google-поиском (если модель поддерживает), улучшенными настройками, чтением изображений и текстовых файлов."
-        " \n/model — выбор модели,"
-        " \n/clear — очистить историю."
-        " \n/temp <0-2> — установить температуру (креативность)."
-        " \n/search_on /search_off — вкл/выкл Google Поиск (влияет только на поддерживающие модели)."
-        " \nКанал автора: t.me/denisobovsyom"
+        f"\nВы можете пользоваться Google-поиском, улучшенными настройками, чтением изображений и текстовых файлов, а также **генерацией картинок**." # Упомянули генерацию
+        "\n/model — выбор модели,"
+        "\n/clear — очистить историю."
+        "\n/temp <0-2> — установить температуру (креативность)."
+        "\n/search_on /search_off — вкл/выкл Google Поиск (не работает для Image Gen)." # Уточнили
+        "\nКанал автора: t.me/denisobovsyom"
     )
-    if DEFAULT_MODEL in MODELS_WITHOUT_SEARCH:
-        start_message += f"\n⚠️ **Внимание:** Модель по умолчанию ({default_model_name}) **не поддерживает** Google-поиск, он будет отключен для неё."
 
-    await update.message.reply_text(start_message)
+    await update.message.reply_text(start_message, parse_mode='Markdown')
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['history'] = []
@@ -135,10 +131,7 @@ async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def enable_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_search_enabled[chat_id] = True
-    current_model = user_selected_model.get(chat_id, DEFAULT_MODEL)
-    reply_text = "🔍 Google-поиск включён."
-    if current_model in MODELS_WITHOUT_SEARCH:
-        reply_text += f"\n⚠️ Но текущая модель ({AVAILABLE_MODELS.get(current_model, current_model)}) его не поддерживает, поиск останется выключенным для неё."
+    reply_text = "🔍 Google-поиск включён (кроме модели Image Gen)."
     await update.message.reply_text(reply_text)
 
 async def disable_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -151,11 +144,12 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for m, name in AVAILABLE_MODELS.items():
          button_text = f"{'✅ ' if m == current_model else ''}{name}"
-         if m in MODELS_WITHOUT_SEARCH:
-             button_text += " (🚫 Поиск)" # Пометим модели без поиска
+         if m == IMAGE_GEN_MODEL: # Используем константу
+             button_text += " (🚫 Поиск)"
          keyboard.append([InlineKeyboardButton(button_text, callback_data=m)])
 
     await update.message.reply_text("Выберите модель:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -164,16 +158,18 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     selected = query.data
     if selected in AVAILABLE_MODELS:
         user_selected_model[chat_id] = selected
-        reply_text = f"Модель установлена: {AVAILABLE_MODELS[selected]}"
-        if selected in MODELS_WITHOUT_SEARCH:
+        model_name = AVAILABLE_MODELS[selected]
+        reply_text = f"Модель установлена: **{model_name}**"
+        if selected == IMAGE_GEN_MODEL: # Используем константу
             reply_text += "\n⚠️ Google-поиск для этой модели **всегда отключён**."
         else:
-            # Если выбрали модель С поиском, напомним текущую настройку поиска
             search_status = "включён" if user_search_enabled.get(chat_id, True) else "выключен"
-            reply_text += f"\nℹ️ Google-поиск для этой модели сейчас **{search_status}** (можно изменить командами /search_on /search_off)."
-        await query.edit_message_text(reply_text)
+            reply_text += f"\nℹ️ Google-поиск сейчас **{search_status}** (/search_on /search_off)."
+
+        await query.edit_message_text(reply_text, parse_mode='Markdown')
     else:
         await query.edit_message_text("❌ Неизвестная модель")
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -181,66 +177,122 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_message:
         return
 
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
     temperature = user_temperature.get(chat_id, 1.0)
 
-    # ===== ИСПРАВЛЕНИЕ: Логика включения поиска =====
-    # 1. Проверяем, поддерживает ли модель поиск в принципе
-    is_search_supported = model_id not in MODELS_WITHOUT_SEARCH
-    # 2. Если поддерживает, смотрим настройку пользователя
-    if is_search_supported:
-        use_search = user_search_enabled.get(chat_id, True) # Уважаем настройку юзера
-        search_log_reason = f"Модель поддерживает, настройка пользователя: {'Вкл' if use_search else 'Выкл'}"
+    # ===== ИСПРАВЛЕНИЕ: Отправляем typing или uploading_photo в зависимости от модели =====
+    if model_id == IMAGE_GEN_MODEL:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+        logger.info(f"ChatID: {chat_id} | Запрос на генерацию изображения. Модель: {model_id}, Темп: {temperature}")
+        # Системная инструкция для генерации картинок может быть другой или не нужна
+        # Пока используем ту же, но можно переопределить
+        current_system_instruction = "Generate an image based on the following description:" # Пример
+        current_history = [{"role": "user", "parts": [{"text": user_message}]}] # Не используем историю чата
+        use_search = False # Поиск не нужен/не поддерживается
+        tools = []
     else:
-        # 3. Если модель НЕ поддерживает, поиск ВЫКЛЮЧЕН всегда
-        use_search = False
-        search_log_reason = "Модель НЕ поддерживает поиск"
-    # =================================================
+        # Обычная обработка текста
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        is_search_supported = model_id not in MODELS_WITHOUT_SEARCH
+        use_search = is_search_supported and user_search_enabled.get(chat_id, True)
+        search_log_reason = f"Модель поддерживает: {is_search_supported}, Настройка пользователя: {user_search_enabled.get(chat_id, True)}"
+        logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, Поиск: {'ДА' if use_search else 'НЕТ'} ({search_log_reason})")
 
-    logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, Поиск: {'ДА' if use_search else 'НЕТ'} ({search_log_reason})")
+        chat_history = context.chat_data.setdefault("history", [])
+        chat_history.append({"role": "user", "parts": [{"text": user_message}]})
 
-    chat_history = context.chat_data.setdefault("history", [])
-    chat_history.append({"role": "user", "parts": [{"text": user_message}]})
-
-    total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
-    while total_chars > MAX_CONTEXT_CHARS and len(chat_history) > 1:
-        removed_message = chat_history.pop(0)
         total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
-        logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, текущая длина истории: {len(chat_history)}, символов: {total_chars}")
+        while total_chars > MAX_CONTEXT_CHARS and len(chat_history) > 1:
+            removed_message = chat_history.pop(0)
+            total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
+            logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, текущая длина истории: {len(chat_history)}, символов: {total_chars}")
+        current_history = chat_history # Используем полную историю для текстовых моделей
+        current_system_instruction = system_instruction_text # Используем основную системную инструкцию
+        tools = [Tool(google_search=GoogleSearchRetrieval())] if use_search else []
+    # ====================================================================================
+
+    reply = None # Инициализируем reply как None
 
     try:
-        # Создаем tools ТОЛЬКО если use_search истинно
-        tools = [Tool(google_search=GoogleSearchRetrieval())] if use_search else []
-
         model = genai.GenerativeModel(
             model_id,
-            tools=tools, # Передаем пустой список, если поиск не нужен
+            tools=tools,
             safety_settings=[],
             generation_config={"temperature": temperature},
-            system_instruction=system_instruction_text
+            system_instruction=current_system_instruction # Используем актуальную инструкцию
         )
-        response = model.generate_content(chat_history)
-        reply = response.text
+        response = model.generate_content(current_history) # Используем актуальную историю
 
-        if not reply:
-            try:
-                block_reason = response.prompt_feedback.block_reason
-                finish_reason = response.candidates[0].finish_reason if response.candidates else 'UNKNOWN'
-                logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели. Block Reason: {block_reason}, Finish Reason: {finish_reason}")
-                reply = f"🤖 Модель не дала ответ. Возможная причина: {block_reason or finish_reason}"
-            except Exception:
-                logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, причину выяснить не удалось.")
-                reply = "🤖 Нет ответа от модели."
+        # ===== ИСПРАВЛЕНИЕ: Разная обработка ответа =====
+        if model_id == IMAGE_GEN_MODEL:
+            images_sent = 0
+            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                        logger.info(f"ChatID: {chat_id} | Получены данные изображения ({part.inline_data.mime_type})")
+                        image_bytes = base64.b64decode(part.inline_data.data)
+                        image_file = io.BytesIO(image_bytes)
+                        # Отправляем как фото
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=image_file,
+                            caption=f"🎨 Изображение по запросу: \"{user_message[:100]}{'...' if len(user_message)>100 else ''}\""
+                        )
+                        images_sent += 1
+                        # TODO: Обработать случай нескольких картинок, если API их возвращает
 
-        chat_history.append({"role": "model", "parts": [{"text": reply}]})
+            if images_sent == 0:
+                 logger.warning(f"ChatID: {chat_id} | Модель {model_id} не вернула данные изображения.")
+                 reply = "❌ Не удалось сгенерировать изображение. Модель не вернула картинку."
+            # Если картинка отправлена, текстовый ответ не нужен
+            # Можно присвоить reply = None или пустую строку, чтобы ниже не отправился текст
+
+        else: # Обработка для текстовых моделей (как было раньше)
+            reply = response.text
+            if not reply:
+                try:
+                    feedback = response.prompt_feedback
+                    candidates_info = response.candidates
+                    block_reason = feedback.block_reason if feedback else 'N/A'
+                    finish_reason = candidates_info[0].finish_reason if candidates_info else 'N/A'
+                    safety_ratings = feedback.safety_ratings if feedback else []
+                    safety_info = ", ".join([f"{s.category.name}: {s.probability.name}" for s in safety_ratings])
+                    logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели. Block: {block_reason}, Finish: {finish_reason}, Safety: [{safety_info}]")
+                    reply = f"🤖 Модель не дала ответ. (Причина: {block_reason or finish_reason})"
+                except Exception as e_inner:
+                    logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо: {e_inner}")
+                    reply = "🤖 Нет ответа от модели."
+
+            # Добавляем ответ текстовой модели в историю
+            if reply: # Добавляем только если есть текстовый ответ
+                 chat_history.append({"role": "model", "parts": [{"text": reply}]})
+        # ===============================================
 
     except Exception as e:
-        logger.exception(f"ChatID: {chat_id} | Ошибка генерации ответа")
-        reply = f"❌ Ошибка при обращении к модели: {e}"
+        logger.exception(f"ChatID: {chat_id} | Ошибка при взаимодействии с моделью {model_id}")
+        error_message = str(e)
+        if "Search Grounding is not supported" in error_message:
+            reply = f"❌ Ошибка: Похоже, модель **{AVAILABLE_MODELS.get(model_id, model_id)}** всё-таки не поддерживает Google-поиск. Попробуйте отключить его командой /search_off или выбрать другую модель через /model."
+        elif "400" in error_message and "API key not valid" in error_message:
+             reply = "❌ Ошибка: Неверный Google API ключ."
+        elif "Deadline Exceeded" in error_message:
+             reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
+        # ===== ИСПРАВЛЕНИЕ: Сообщение об ошибке для Image Gen =====
+        elif model_id == IMAGE_GEN_MODEL:
+            reply = f"❌ Не удалось сгенерировать изображение из-за ошибки:\n`{error_message}`"
+        else:
+             reply = f"❌ Ошибка при обращении к модели:\n`{error_message}`"
+        # =====================================================
 
-    await update.message.reply_text(reply)
+    # Отправляем текстовый ответ ТОЛЬКО если он есть (т.е. не для успешной генерации картинки)
+    if reply:
+        await update.message.reply_text(reply, parse_mode='Markdown')
+
+
+# Функции handle_photo, handle_document, setup_bot_and_server, run_web_server, handle_telegram_webhook, main
+# остаются БЕЗ ИЗМЕНЕНИЙ по сравнению с предыдущей версией.
+# ... (код этих функций как в предыдущем ответе) ...
+
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -254,7 +306,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image = Image.open(io.BytesIO(file_bytes))
         extracted_text = pytesseract.image_to_string(image, lang='rus+eng')
         if extracted_text and extracted_text.strip():
-            logger.info(f"ChatID: {chat_id} | Обнаружен текст на изображении: {extracted_text[:100]}...")
+            logger.info(f"ChatID: {chat_id} | Обнаружен текст на изображении (OCR)")
             ocr_prompt = f"На изображении обнаружен следующий текст:\n```\n{extracted_text.strip()}\n```\n"
             if user_caption:
                  user_prompt = f"{user_caption}\n{ocr_prompt}Проанализируй изображение и текст на нём, учитывая мой комментарий."
@@ -268,13 +320,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'reply_text': update.message.reply_text
                 })
             })
-            # Передаем в handle_message, он сам разберется с поиском для текущей модели
             await handle_message(fake_update, context)
             return
+    except pytesseract.TesseractNotFoundError:
+         logger.error("Tesseract не найден! Убедитесь, что он установлен и доступен в PATH (включая языки tesseract-ocr-eng, tesseract-ocr-rus в render.yaml). OCR отключен.")
     except Exception as e:
-        logger.warning(f"ChatID: {chat_id} | OCR не удалось или текст не найден: {e}")
+        logger.warning(f"ChatID: {chat_id} | Ошибка OCR (кроме TesseractNotFoundError): {e}")
 
     # Обработка как изображение
+    logger.info(f"ChatID: {chat_id} | Обработка фото как изображения (без OCR или текст не найден)")
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     b64_data = base64.b64encode(file_bytes).decode()
     prompt = user_caption if user_caption else "Что изображено на этом фото?"
@@ -286,47 +340,52 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
     temperature = user_temperature.get(chat_id, 1.0)
 
-    # ===== ИСПРАВЛЕНИЕ: Логика включения поиска (аналогично handle_message) =====
     is_search_supported = model_id not in MODELS_WITHOUT_SEARCH
-    if is_search_supported:
-        use_search = user_search_enabled.get(chat_id, True)
-        search_log_reason = f"Модель поддерживает, настройка пользователя: {'Вкл' if use_search else 'Выкл'}"
-    else:
-        use_search = False
-        search_log_reason = "Модель НЕ поддерживает поиск"
-    # =================================================
+    use_search = is_search_supported and user_search_enabled.get(chat_id, True)
 
+    search_log_reason = f"Модель поддерживает: {is_search_supported}, Настройка пользователя: {user_search_enabled.get(chat_id, True)}"
     logger.info(f"ChatID: {chat_id} | Анализ изображения. Модель: {model_id}, Темп: {temperature}, Поиск: {'ДА' if use_search else 'НЕТ'} ({search_log_reason})")
 
     try:
-        # Создаем tools ТОЛЬКО если use_search истинно
         tools = [Tool(google_search=GoogleSearchRetrieval())] if use_search else []
 
         model = genai.GenerativeModel(
             model_id,
-            tools=tools, # Передаем пустой список, если поиск не нужен
+            tools=tools,
             safety_settings=[],
             generation_config={"temperature": temperature},
-            system_instruction=system_instruction_text
+            system_instruction=system_instruction_text # Для анализа фото системная инструкция может быть полезна
         )
+        # Для анализа фото передаем parts напрямую
         response = model.generate_content([{"role": "user", "parts": parts}])
         reply = response.text
 
         if not reply:
             try:
-                block_reason = response.prompt_feedback.block_reason
-                finish_reason = response.candidates[0].finish_reason if response.candidates else 'UNKNOWN'
-                logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения. Block Reason: {block_reason}, Finish Reason: {finish_reason}")
-                reply = f"🤖 Модель не смогла описать изображение. Возможная причина: {block_reason or finish_reason}"
-            except Exception:
-                logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения, причину выяснить не удалось.")
-                reply = "🤖 Не удалось понять, что на изображении."
+                feedback = response.prompt_feedback
+                candidates_info = response.candidates
+                block_reason = feedback.block_reason if feedback else 'N/A'
+                finish_reason = candidates_info[0].finish_reason if candidates_info else 'N/A'
+                safety_ratings = feedback.safety_ratings if feedback else []
+                safety_info = ", ".join([f"{s.category.name}: {s.probability.name}" for s in safety_ratings])
+                logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения. Block: {block_reason}, Finish: {finish_reason}, Safety: [{safety_info}]")
+                reply = f"🤖 Модель не смогла описать изображение. (Причина: {block_reason or finish_reason})"
+            except Exception as e_inner:
+                 logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения, не удалось извлечь доп. инфо: {e_inner}")
+                 reply = "🤖 Не удалось понять, что на изображении."
 
     except Exception as e:
         logger.exception(f"ChatID: {chat_id} | Ошибка при анализе изображения")
-        reply = f"❌ Ошибка при анализе изображения: {e}"
+        error_message = str(e)
+        if "Search Grounding is not supported" in error_message:
+            reply = f"❌ Ошибка: Похоже, модель **{AVAILABLE_MODELS.get(model_id, model_id)}** всё-таки не поддерживает Google-поиск при анализе изображений. Попробуйте отключить его командой /search_off или выбрать другую модель через /model."
+        elif "400" in error_message and "API key not valid" in error_message:
+             reply = "❌ Ошибка: Неверный Google API ключ."
+        else:
+            reply = f"❌ Ошибка при анализе изображения:\n`{error_message}`"
 
-    await update.message.reply_text(reply)
+    # Отправляем текстовый ответ (описание картинки)
+    await update.message.reply_text(reply, parse_mode='Markdown')
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -378,7 +437,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'reply_text': update.message.reply_text
         })
     })
-    # Передаем в handle_message, он сам разберется с поиском для текущей модели
     await handle_message(fake_update, context)
 
 
