@@ -115,7 +115,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"GEMINI **{default_model_name}**"
         f"\n+ улучшенные настройки точности, логики и юмора, поиск в интернете, чтение изображений (OCR) и текстовых файлов."
         "\n/model — выбор модели"
-        "\n/search.on  /search.off — вкл/выкл поиск"
+        "\n/on  /off — вкл/выкл поиск"
         "\n/clear — очистить историю"
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
