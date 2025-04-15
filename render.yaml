@@ -18,3 +18,7 @@ services:
       apt:
         packages:
           - tesseract-ocr
+          # ===== ИСПРАВЛЕНИЕ: Добавляем языковые пакеты для Tesseract =====
+          - tesseract-ocr-eng
+          - tesseract-ocr-rus
+          # ================================================================
