@@ -56,8 +56,8 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 # Модели
 AVAILABLE_MODELS = {
-    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking (Exp)',
-    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
+    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking exp.',
+    'gemini-2.5-pro-exp-03-25': '2.5 Pro exp.',
     'gemini-2.0-flash-001': '2.0 Flash',
 }
 DEFAULT_MODEL = 'gemini-2.0-flash-thinking-exp-01-21'
@@ -115,7 +115,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"GEMINI **{default_model_name}**"
         f"\n+ улучшенные настройки точности, логики и юмора, поиск в интернете, чтение изображений (OCR) и текстовых файлов."
         "\n/model — выбор модели"
-        "\n/on  /off — вкл/выкл поиск"
+        "\n/search_on  /search_off — вкл/выкл поиск"
         "\n/clear — очистить историю"
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
@@ -200,10 +200,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if results:
                 search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
                 if search_snippets:
-                    search_context = "Перед ответом, проверяй текущую дату и сверяй с актуальной информацией из интернета:\n" + "\n".join(search_snippets)
+                    search_context = "Проверяй текущую дату только из интернета и сверяй с актуальной информацией:\n" + "\n".join(search_snippets)
                     final_user_prompt = (
                         f"{search_context}\n\n"
-                        f"Узнавай текущую дату в интернете, используй свои знания и свежую информацию из результатов поиска, чтобы ответить на вопрос:\n"
+                        f"Проверяй текущую дату только из интернета и сверяй с актуальной информацией, чтобы ответить на вопрос:\n"
                         f"\"{original_user_message}\""
                     )
                     logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
