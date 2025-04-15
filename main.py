@@ -249,8 +249,8 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application.add_handler(CallbackQueryHandler(select_model_callback))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
 
     await application.initialize()
     webhook_url = urljoin(WEBHOOK_HOST, GEMINI_WEBHOOK_PATH)
