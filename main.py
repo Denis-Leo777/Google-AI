@@ -285,9 +285,20 @@ async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.R
         logger.error(f"Ошибка webhook: {e}")
         return aiohttp.web.Response(status=500, text="Internal error")
 
+if __name__ == '__main__':
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    stop_event = asyncio.Event()
 
-
-
-
-
+    try:
+        application, web_server_task = loop.run_until_complete(setup_bot_and_server(stop_event))
+        for s in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(s, lambda: stop_event.set())
+        loop.run_until_complete(web_server_task)
+    except Exception as e:
+        logger.exception("Ошибка в главном потоке приложения.")
+    finally:
+        loop.run_until_complete(application.shutdown())
+        loop.close()
+        logger.info("Сервер остановлен.")
 
