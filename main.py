@@ -88,7 +88,8 @@ async def free_google_search(query: str) -> str:
         async with aiohttp.ClientSession() as session:
             async with session.get(search_url, headers=headers) as response:
                 html = await response.text()
-                soup = BeautifulSoup(html, 'lxml')
+                # Используем встроенный парсер html.parser
+                soup = BeautifulSoup(html, 'html.parser')
                 snippet = soup.find('div', class_='BNeawe')
                 if snippet:
                     result = snippet.get_text().strip()
@@ -115,7 +116,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.chat_data['history'] = [{"role": "system", "parts": [{"text": system_instruction_text}]}]
+    context.chat_data['history'] = [{"role": "user", "parts": [{"text": system_instruction_text}]}]
     await update.message.reply_text("🧹 История диалога очищена.")
 
 async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -167,35 +168,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Получено сообщение: {user_message}. Модель: {model_id}, Темп: {temperature}, Поиск: {use_search}")
 
+    # Если истории ещё нет, добавляем системную инструкцию с ролью user
     chat_history = context.chat_data.setdefault("history", [])
-    if not any(msg.get("role") == "system" for msg in chat_history):
-        chat_history.insert(0, {"role": "system", "parts": [{"text": system_instruction_text}]})
+    if not any(msg.get("role") == "user" for msg in chat_history):
+        chat_history.insert(0, {"role": "user", "parts": [{"text": system_instruction_text}]})
     chat_history.append({"role": "user", "parts": [{"text": user_message}]})
 
     # Если включён поиск, выполняем бесплатный Google поиск и добавляем результат в историю
     if use_search:
         search_result = await free_google_search(user_message)
-        chat_history.append({"role": "system", "parts": [{"text": f"Google поиск: {search_result}"}]})
+        chat_history.append({"role": "user", "parts": [{"text": f"Google поиск: {search_result}"}]})
 
-    # Отладочный лог для проверки общего размера контекста
     total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history)
     logger.info(f"Общий размер контекста: {total_chars} символов")
-    
     while total_chars > MAX_CONTEXT_CHARS and len(chat_history) > 1:
-        if chat_history[1].get("role") == "system":
-            chat_history.pop(2)
-        else:
-            chat_history.pop(1)
+        chat_history.pop(1)
         total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history)
 
     try:
         logger.info("Перед вызовом модели. История чата: " + str(chat_history))
+        # Приводим чат-историю к требуемым ролям: теперь допустимы только "user" и "model"
+        adjusted_history = []
+        for msg in chat_history:
+            new_msg = msg.copy()
+            if new_msg.get("role") not in ["user", "model"]:
+                new_msg["role"] = "user"
+            adjusted_history.append(new_msg)
         model = genai.GenerativeModel(
             model_id,
             safety_settings=[],
             generation_config={"temperature": temperature}
         )
-        response = model.generate_content(chat_history)
+        response = model.generate_content(adjusted_history)
         logger.info("Ответ от модели: " + str(response))
         reply = response.text or "🤖 Нет ответа от модели."
         chat_history.append({"role": "model", "parts": [{"text": reply}]})
@@ -311,4 +315,3 @@ if __name__ == '__main__':
             loop.run_until_complete(application.shutdown())
         loop.close()
         logger.info("Сервер остановлен.")
-
