@@ -112,10 +112,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_temperature[chat_id] = 1.0
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"**{default_model_name}**"
-        f"\n улучшенные настройки точности, логики и юмора, поиск в интернете, чтение изображений (OCR) и текстовых файлов"
+        f"GEMINI **{default_model_name}**"
+        f"\n+ улучшенные настройки точности, логики и юмора, поиск в интернете, чтение изображений (OCR) и текстовых файлов."
         "\n/model — выбор модели"
-        "\n/search_on  /search_off — вкл/выкл поиск"
+        "\n/search.on  /search.off — вкл/выкл поиск"
         "\n/clear — очистить историю"
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
@@ -203,7 +203,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     search_context = "Актуальная информация из интернета (поиск DuckDuckGo), которая может помочь:\n" + "\n".join(search_snippets)
                     final_user_prompt = (
                         f"{search_context}\n\n"
-                        f"Твои знания без интернета - устаревшие. Основываясь на этой свежей информации и своих знаниях, ответь на следующий вопрос пользователя:\n"
+                        f"Твои знания без интернета - устаревшие. Текущее актуальное время - из результатов поиска. Основываясь на свежей информации и своих знаниях, ответь на вопрос пользователя:\n"
                         f"\"{original_user_message}\""
                     )
                     logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
