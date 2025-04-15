@@ -69,8 +69,8 @@ user_temperature = {}
 
 # Константы
 MAX_CONTEXT_CHARS = 95000
-MAX_OUTPUT_TOKENS = 3000
-DDG_MAX_RESULTS = 30
+MAX_OUTPUT_TOKENS = 9000
+DDG_MAX_RESULTS = 10
 
 # Системная инструкция
 system_instruction_text = (
@@ -200,10 +200,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if results:
                 search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
                 if search_snippets:
-                    search_context = "Проверяй текущую дату только из интернета и сверяй с актуальной информацией:\n" + "\n".join(search_snippets)
+                    search_context = "Информация в интернете на вопрос пользователя:\n" + "\n".join(search_snippets)
                     final_user_prompt = (
                         f"{search_context}\n\n"
-                        f"Проверяй текущую дату только из интернета и сверяй с актуальной информацией, чтобы ответить на вопрос:\n"
+                        f"Сверяй собственные знания и актуальную информацию из интернета. Текущей считай информацию с самыми новыми датами:\n"
                         f"\"{original_user_message}\""
                     )
                     logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
