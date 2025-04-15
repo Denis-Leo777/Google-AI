@@ -115,12 +115,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"Добро пожаловать! Бот работает на модели **{default_model_name}**."
-        f"\nДоступны: чтение изображений (OCR) и текстовых файлов, управление температурой."
-        "\n/model — выбор модели,"
+        f"**{default_model_name}** с юморными настройками."
+        f"\nДоступны: чтение изображений (OCR) и текстовых файлов."
         "\n/clear — очистить историю."
-        "\n/temp <0-2> — установить температуру (креативность)."
-        "\nКанал автора: t.me/denisobovsyom"
     )
 
     await update.message.reply_text(start_message, parse_mode='Markdown')
