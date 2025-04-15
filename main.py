@@ -200,10 +200,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if results:
                 search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
                 if search_snippets:
-                    search_context = "Актуальная информация из интернета (поиск DuckDuckGo), которая может помочь:\n" + "\n".join(search_snippets)
+                    search_context = "Перед ответом, проверяй текущую дату и сверяй с актуальной информацией из интернета:\n" + "\n".join(search_snippets)
                     final_user_prompt = (
                         f"{search_context}\n\n"
-                        f"Твои знания без интернета - устаревшие. Текущее актуальное время - из результатов поиска. Основываясь на свежей информации и своих знаниях, ответь на вопрос пользователя:\n"
+                        f"Узнавай текущую дату в интернете, используй свои знания и свежую информацию из результатов поиска, чтобы ответить на вопрос:\n"
                         f"\"{original_user_message}\""
                     )
                     logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
