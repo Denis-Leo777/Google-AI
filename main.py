@@ -1,12 +1,5 @@
 # Обновлённый main.py:
-# - Поиск через DuckDuckGo (бесплатный)
-# - Обновлены модели и дефолтная
-# - Обновлена системная инструкция
-# - Без ссылок в ответе поиска
-# - OCR, обработка файлов и т.д. сохранены
-# - Обновлены константы MAX_CONTEXT_CHARS, MAX_OUTPUT_TOKENS, DDG_MAX_RESULTS
-# - Обновлен текст приветствия /start
-# + Исправлен вызов DDGS().atext() без async with
+# - Исправлен поиск DDG: используется AsyncDDGS и await atext
 
 import logging
 import os
@@ -19,11 +12,10 @@ from PIL import Image
 import io
 import pprint
 
-# Инициализируем логгер РАНЬШЕ
+# Инициализируем логгер
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Проверка Tesseract при использовании
 # ...
 
 import aiohttp.web
@@ -38,11 +30,12 @@ from telegram.ext import (
     filters
 )
 import google.generativeai as genai
-# Импорт DDGS и типов для safety_settings
-from duckduckgo_search import DDGS
+# ===== ИСПРАВЛЕНИЕ: Импортируем AsyncDDGS =====
+**from duckduckgo_search import AsyncDDGS # Используем асинхронный класс**
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+# ============================================
 
-# Переменные окружения и их проверка
+# Переменные окружения и их проверка ... (без изменений)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
@@ -58,15 +51,16 @@ for var, name in [
         logger.critical(f"Переменная окружения {name} не задана!")
         exit(1)
 
+
 # Настройка Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # Модели
 AVAILABLE_MODELS = {
-    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking (Exp)', # Новая дефолтная
-    'gemini-2.5-pro-preview-03-25': '2.5 Pro Preview',             # Новая
-    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',                 # Старая экспериментальная
-    'gemini-2.0-flash-001': '2.0 Flash',                         # Старый Flash
+    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking (Exp)',
+    'gemini-2.5-pro-preview-03-25': '2.5 Pro Preview',
+    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
+    'gemini-2.0-flash-001': '2.0 Flash',
 }
 DEFAULT_MODEL = 'gemini-2.0-flash-thinking-exp-01-21'
 
@@ -78,7 +72,7 @@ user_temperature = {}
 # Константы
 MAX_CONTEXT_CHARS = 95000
 MAX_OUTPUT_TOKENS = 3000
-DDG_MAX_RESULTS = 30 # Уменьшили с 30
+DDG_MAX_RESULTS = 30
 
 # Системная инструкция
 system_instruction_text = (
@@ -118,14 +112,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_selected_model[chat_id] = DEFAULT_MODEL
     user_search_enabled[chat_id] = True
     user_temperature[chat_id] = 1.0
-
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
         f"**{default_model_name}**."
         f"\nДоступны: интернет-поиск, чтение изображений (OCR) и текстовых файлов."
         "\n/model — выбор модели"
         "\n/clear — очистить историю"
-        "\n/search-on  /search-off — вкл/выкл поиск"
+        "\n/search_on  /search_off — вкл/выкл поиск"
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
 
@@ -193,11 +186,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if use_search:
         logger.info(f"ChatID: {chat_id} | Поиск DDG включен. Запрос: '{original_user_message[:50]}...'")
         try:
-            # ===== ИСПРАВЛЕНИЕ: Убираем async with, вызываем atext напрямую =====
-            ddgs = DDGS() # Просто создаем экземпляр
-            logger.debug(f"ChatID: {chat_id} | Запрос к DDGS().atext('{original_user_message}', region='ru-ru', max_results={DDG_MAX_RESULTS})")
-            results = await ddgs.atext(original_user_message, region='ru-ru', max_results=DDG_MAX_RESULTS)
-            # ===================================================================
+            # ===== ИСПРАВЛЕНИЕ: Используем AsyncDDGS =====
+            **ddgs = AsyncDDGS() # Создаем АСИНХРОННЫЙ экземпляр**
+            logger.debug(f"ChatID: {chat_id} | Запрос к AsyncDDGS().atext('{original_user_message}', region='ru-ru', max_results={DDG_MAX_RESULTS})")
+            # Теперь вызываем await ddgs.atext(...)
+            **results = await ddgs.atext(original_user_message, region='ru-ru', max_results=DDG_MAX_RESULTS)**
+            # ============================================
             logger.debug(f"ChatID: {chat_id} | Результаты DDG:\n{pprint.pformat(results)}")
 
             if results:
@@ -212,7 +206,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
                 else:
                     logger.info(f"ChatID: {chat_id} | Результаты DDG найдены, но не содержат текста (body).")
-
             else:
                 logger.info(f"ChatID: {chat_id} | Результаты DDG не найдены.")
         except Exception as e_ddg:
@@ -221,7 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"ChatID: {chat_id} | Поиск DDG отключен.")
 
     logger.debug(f"ChatID: {chat_id} | Финальный промпт для Gemini:\n{final_user_prompt}")
-    logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, Поиск DDG: {'ДА' if use_search else 'НЕТ'}")
+    logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, Поиск DDG: {'Контекст добавлен' if search_context else 'Контекст НЕ добавлен'}")
 
     chat_history = context.chat_data.setdefault("history", [])
     chat_history.append({"role": "user", "parts": [{"text": final_user_prompt}]})
@@ -234,7 +227,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, текущая длина истории: {len(chat_history)}, символов: {total_chars}")
     current_history = chat_history
     current_system_instruction = system_instruction_text
-    tools = [] # Поиск внешний
+    tools = []
 
     reply = None
 
@@ -305,7 +298,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
              else:
                   reply = f"❌ Ошибка при обращении к модели: {error_message}"
 
-
     if reply:
         await update.message.reply_text(reply)
 
@@ -366,7 +358,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     temperature = user_temperature.get(chat_id, 1.0)
 
     logger.info(f"ChatID: {chat_id} | Анализ изображения. Модель: {model_id}, Темп: {temperature}")
-    tools = [] # Поиск тут не нужен
+    tools = []
 
     reply = None
 
@@ -421,190 +413,4 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif "400" in error_message and "API key not valid" in error_message:
                  reply = "❌ Ошибка: Неверный Google API ключ."
             else:
-                reply = f"❌ Ошибка при анализе изображения: {error_message}"
-        except AttributeError:
-             logger.warning("genai.types не содержит BlockedPromptException/StopCandidateException, используем общую обработку.")
-             if "429" in error_message and "quota" in error_message:
-                  reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
-             elif "400" in error_message and "API key not valid" in error_message:
-                  reply = "❌ Ошибка: Неверный Google API ключ."
-             else:
-                 reply = f"❌ Ошибка при анализе изображения: {error_message}"
-
-
-    if reply:
-        await update.message.reply_text(reply)
-
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if not update.message.document:
-        return
-    doc = update.message.document
-    if not doc.mime_type or not doc.mime_type.startswith('text/'):
-        await update.message.reply_text("⚠️ Пока могу читать только текстовые файлы (.txt, .py, .csv и т.п.).")
-        logger.warning(f"ChatID: {chat_id} | Попытка загрузить нетекстовый файл: {doc.mime_type}")
-        return
-
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_DOCUMENT)
-    doc_file = await doc.get_file()
-    file_bytes = await doc_file.download_as_bytearray()
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-
-    try:
-        text = file_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        try:
-            text = file_bytes.decode("latin-1")
-            logger.warning(f"ChatID: {chat_id} | Файл не в UTF-8, использован latin-1.")
-        except Exception as e:
-            logger.error(f"ChatID: {chat_id} | Не удалось декодировать файл: {e}")
-            await update.message.reply_text("❌ Не удалось прочитать текстовое содержимое файла. Убедитесь, что это текстовый файл в кодировке UTF-8 или Latin-1.")
-            return
-
-    MAX_FILE_CHARS = 30000
-    if len(text) > MAX_FILE_CHARS:
-        truncated = text[:MAX_FILE_CHARS]
-        warning_msg = f"\n\n(⚠️ Текст файла был обрезан до {MAX_FILE_CHARS} символов)"
-        logger.warning(f"ChatID: {chat_id} | Текст файла '{doc.file_name}' обрезан до {MAX_FILE_CHARS} символов.")
-    else:
-        truncated = text
-        warning_msg = ""
-
-    user_caption = update.message.caption
-
-    if user_caption:
-        user_prompt = f"Проанализируй содержимое файла '{doc.file_name}', учитывая мой комментарий: \"{user_caption}\".\n\nСодержимое файла:\n```\n{truncated}\n```{warning_msg}"
-    else:
-        user_prompt = f"Вот текст из файла '{doc.file_name}'. Что ты можешь сказать об этом?\n\nСодержимое файла:\n```\n{truncated}\n```{warning_msg}"
-
-    fake_update = type('obj', (object,), {
-        'effective_chat': update.effective_chat,
-        'message': type('obj', (object,), {
-            'text': user_prompt,
-            'reply_text': update.message.reply_text
-        })
-    })
-    await handle_message(fake_update, context)
-
-
-async def setup_bot_and_server(stop_event: asyncio.Event):
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("model", model_command))
-    application.add_handler(CommandHandler("clear", clear_history))
-    application.add_handler(CommandHandler("temp", set_temperature))
-    application.add_handler(CommandHandler("search_on", enable_search))
-    application.add_handler(CommandHandler("search_off", disable_search))
-    application.add_handler(CallbackQueryHandler(select_model_callback))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.Document.TEXT, handle_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    await application.initialize()
-    webhook_url = urljoin(WEBHOOK_HOST, f"/{GEMINI_WEBHOOK_PATH}")
-    logger.info(f"Устанавливаю вебхук: {webhook_url}")
-    await application.bot.set_webhook(webhook_url, allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    return application, run_web_server(application, stop_event)
-
-
-async def run_web_server(application: Application, stop_event: asyncio.Event):
-    app = aiohttp.web.Application()
-    async def health_check(request):
-        return aiohttp.web.Response(text="OK")
-    app.router.add_get('/', health_check)
-
-    app['bot_app'] = application
-    webhook_path = f"/{GEMINI_WEBHOOK_PATH}"
-    app.router.add_post(webhook_path, handle_telegram_webhook)
-    logger.info(f"Вебхук слушает на пути: {webhook_path}")
-
-    runner = aiohttp.web.AppRunner(app)
-    await runner.setup()
-
-    port = int(os.getenv("PORT", "10000"))
-    site = aiohttp.web.TCPSite(runner, "0.0.0.0", port)
-    try:
-        await site.start()
-        logger.info(f"Сервер запущен на http://0.0.0.0:{port}")
-        await stop_event.wait()
-    finally:
-        logger.info("Останавливаю веб-сервер...")
-        await runner.cleanup()
-        logger.info("Веб-сервер остановлен.")
-
-
-async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    application = request.app.get('bot_app')
-    if not application:
-        logger.error("Объект приложения бота не найден в контексте aiohttp!")
-        return aiohttp.web.Response(status=500, text="Internal Server Error: Bot application not configured")
-
-    try:
-        data = await request.json()
-        update = Update.de_json(data, application.bot)
-        asyncio.create_task(application.process_update(update))
-        return aiohttp.web.Response(text="OK", status=200)
-    except Exception as e:
-        logger.error(f"Ошибка обработки вебхук-запроса: {e}", exc_info=True)
-        return aiohttp.web.Response(text="OK", status=200)
-
-
-async def main():
-    logging.getLogger('google.api_core').setLevel(logging.INFO)
-    logging.getLogger('google.generativeai').setLevel(logging.INFO)
-    # Уровень DEBUG для DDG, если нужно отлаживать поиск
-    # logging.getLogger('duckduckgo_search').setLevel(logging.DEBUG)
-
-    loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_event.set)
-
-    application = None
-    web_server_task = None
-    try:
-        logger.info("Запускаю настройку бота и сервера...")
-        application, web_server_coro = await setup_bot_and_server(stop_event)
-        web_server_task = asyncio.create_task(web_server_coro)
-        logger.info("Настройка завершена, жду сигналов остановки...")
-        await stop_event.wait()
-
-    except Exception as e:
-        logger.exception("Критическая ошибка в главном потоке приложения.")
-    finally:
-        logger.info("Начинаю процесс остановки...")
-        if web_server_task and not web_server_task.done():
-             logger.info("Ожидаю завершения веб-сервера...")
-             try:
-                 await asyncio.wait_for(web_server_task, timeout=10.0)
-             except asyncio.TimeoutError:
-                 logger.warning("Веб-сервер не завершился за 10 секунд, отменяю задачу...")
-                 web_server_task.cancel()
-                 try:
-                     await web_server_task
-                 except asyncio.CancelledError:
-                     logger.info("Задача веб-сервера успешно отменена.")
-                 except Exception as e:
-                     logger.error(f"Ошибка при ожидании отмены задачи веб-сервера: {e}")
-             except Exception as e:
-                 logger.error(f"Ошибка при ожидании/отмене задачи веб-сервера: {e}")
-
-        if application:
-            logger.info("Останавливаю приложение бота...")
-            await application.shutdown()
-            logger.info("Приложение бота остановлено.")
-        else:
-            logger.warning("Объект приложения бота не был создан или был потерян.")
-
-        logger.info("Приложение полностью остановлено.")
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Приложение прервано пользователем (Ctrl+C)")
-    except Exception as e:
-        logger.critical(f"Неперехваченная ошибка на верхнем уровне: {e}", exc_info=True)
+                reply = f"❌ Ошибка при анализе изображения: {erro
