@@ -289,6 +289,7 @@ if __name__ == '__main__':
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     stop_event = asyncio.Event()
+    application = None  # Инициализация переменной
 
     try:
         application, web_server_task = loop.run_until_complete(setup_bot_and_server(stop_event))
@@ -298,7 +299,10 @@ if __name__ == '__main__':
     except Exception as e:
         logger.exception("Ошибка в главном потоке приложения.")
     finally:
+        if application:
         loop.run_until_complete(application.shutdown())
         loop.close()
         logger.info("Сервер остановлен.")
+        
+            
 
