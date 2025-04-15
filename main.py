@@ -66,9 +66,7 @@ genai.configure(api_key=GOOGLE_API_KEY)
 # ===== ИСПРАВЛЕНИЕ: Возвращаем экспериментальную модель по умолчанию =====
 AVAILABLE_MODELS = {
     'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)', # Экспериментальная
-    'gemini-1.5-pro-latest': '1.5 Pro (Stable)', # Стабильная
-    'gemini-1.5-flash-latest': '1.5 Flash (Stable)', # Стабильный Flash
-    # 'gemini-2.0-flash': '2.0 Flash', # Старый Flash
+    'gemini-2.0-flash': '2.0 Flash', # Стабильная
     'gemini-2.0-flash-exp-image-generation': 'Image Gen (Exp)' # Генерация картинок
 }
 DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25' # Делаем экспериментальную дефолтной
@@ -107,12 +105,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
         f"Добро пожаловать! По умолчанию используется модель **{default_model_name}**."
-        f"\nВы можете пользоваться Google-поиском (если модель поддерживает), улучшенными настройками, чтением изображений и текстовых файлов."
-        "\n/model — выбор модели,"
-        "\n/clear — очистить историю."
-        "\n/temp <0-2> — установить температуру (креативность)."
-        "\n/search_on /search_off — вкл/выкл Google Поиск (влияет только на поддерживающие модели)."
-        "\nКанал автора: t.me/denisobovsyom"
+        f" \nВы можете пользоваться Google-поиском (если модель поддерживает), улучшенными настройками, чтением изображений и текстовых файлов."
+        " \n/model — выбор модели,"
+        " \n/clear — очистить историю."
+        " \n/temp <0-2> — установить температуру (креативность)."
+        " \n/search_on /search_off — вкл/выкл Google Поиск (влияет только на поддерживающие модели)."
+        " \nКанал автора: t.me/denisobovsyom"
     )
     if DEFAULT_MODEL in MODELS_WITHOUT_SEARCH:
         start_message += f"\n⚠️ **Внимание:** Модель по умолчанию ({default_model_name}) **не поддерживает** Google-поиск, он будет отключен для неё."
