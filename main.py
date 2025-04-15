@@ -1,3 +1,5 @@
+# Обновлённый main.py с исправлениями для новой версии Gemini API (0.8.4+)
+
 import logging
 import os
 import asyncio
@@ -20,7 +22,6 @@ from telegram.ext import (
     filters
 )
 import google.generativeai as genai
-import google.generativeai.protos  # Новый импорт для Google Search
 
 # Логгирование
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -46,9 +47,9 @@ for var, name in [
 genai.configure(api_key=GOOGLE_API_KEY)
 
 AVAILABLE_MODELS = {
-    'gemini-2.5-pro-exp-03-25': '2.5 Pro',
-    'gemini-2.0-flash': '2.0 Flash',
-    'gemini-2.0-flash-exp': 'ImageGen'
+    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
+    'gemini-2.0-flash-001': '2.0 Flash',
+    'gemini-2.0-flash-exp': 'Image Gen'
 }
 DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25'
 
@@ -77,17 +78,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_temperature[chat_id] = 1.0
     await update.message.reply_text(
         "Добро пожаловать! Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 1.5 Pro с Google-поиском и улучшенными настройками.\n"
-        " Команды:\n"
-        " /model - выбор модели\n"
-        " /clear - очистить историю\n"
-        " /temp [0-2] - установить температуру\n"
-        " /search_on - включить поиск\n"
-        " /search_off - выключить поиск\n\n"
-        " Канал автора: t.me/denisobovsyom"
+        "Команды:\n"
+        "/model - выбор модели\n"
+        "/clear - очистить историю\n"
+        "/temp [0-2] - установить температуру\n"
+        "/search_on - включить поиск\n"
+        "/search_off - выключить поиск\n\n"
+        "Канал автора: t.me/denisobovsyom"
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.chat_data['history'] = [{"role": "system", "parts": [{"text": system_instruction_text}]}]
+    context.chat_data['history'] = []
     await update.message.reply_text("🧹 История диалога очищена.")
 
 async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,13 +140,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Модель: {model_id}, Темп: {temperature}, Поиск: {use_search}")
 
-    chat_history = context.chat_data.setdefault("history", [{"role": "system", "parts": [{"text": system_instruction_text}]}])
+    chat_history = context.chat_data.setdefault("history", [])
 
     try:
         # Настройка инструментов поиска
         tools = [
-            genai.protos.Tool(
-                google_search_retrieval=genai.protos.GoogleSearchRetrieval()
+            genai.Tool(
+                function_declarations=[],
+                google_search_retrieval=genai.types.GoogleSearchRetrieval()  # Исправлено здесь
             )
         ] if use_search else None
 
@@ -166,21 +168,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             system_instruction=system_instruction_text
         )
 
-        # Создаём или продолжаем чат
+        # Создаем или продолжаем чат
         chat = model.start_chat(history=chat_history)
         response = chat.send_message(user_message)
-
-        reply = response.text[:1500] or "🤖 Нет текстового ответа от модели."
-        chat_history.extend([
-            {'role': 'user', 'parts': [{'text': user_message}]},
-            {'role': 'model', 'parts': [{'text': reply}]}
-        ])
+        
+        reply = response.text or "🤖 Нет текстового ответа от модели."
+        chat_history.extend([{'role': 'user', 'parts': [user_message]}, 
+                           {'role': 'model', 'parts': [reply]}])
 
         # Ограничение контекста
-        total_chars = sum(len(p['parts'][0]['text']) for p in chat_history)
+        total_chars = sum(len(p['parts'][0]) for p in chat_history)
         while total_chars > MAX_CONTEXT_CHARS and len(chat_history) > 2:
-            chat_history.pop(1)  # Удаляем старые сообщения кроме системного
-            total_chars = sum(len(p['parts'][0]['text']) for p in chat_history)
+            chat_history.pop(1)
+            total_chars = sum(len(p['parts'][0]) for p in chat_history)
 
     except Exception as e:
         logger.exception("Ошибка генерации ответа")
@@ -205,19 +205,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning("OCR ошибка: %s", e)
 
     # Анализ изображения моделью
-    b64_data = base64.b64encode(file_bytes).decode()
-    prompt = "Подробно опиши изображение. Если есть текст — переведи и объясни контекст."
-
     try:
-        model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
-        model = genai.GenerativeModel(model_id)
+        model = genai.GenerativeModel('gemini-pro-vision')
         response = model.generate_content([
-            {"role": "user", "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": "image/jpeg", "data": b64_data}}
-            ]}
+            "Подробно опиши изображение. Если есть текст — переведи и объясни контекст.",
+            genai.Image(data=file_bytes)
         ])
-        reply = response.text[:1500] or "🤖 Не удалось проанализировать изображение."
+        reply = response.text or "🤖 Не удалось проанализировать изображение."
     except Exception as e:
         logger.exception("Ошибка анализа изображения")
         reply = f"❌ Ошибка анализа: {str(e)}"
@@ -242,7 +236,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_bot_and_server(stop_event: asyncio.Event):
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
+    
     # Регистрация обработчиков
     handlers = [
         CommandHandler("start", start),
@@ -256,7 +250,7 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
         MessageHandler(filters.Document.ALL, handle_document),
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     ]
-
+    
     for handler in handlers:
         application.add_handler(handler)
 
@@ -277,7 +271,7 @@ async def run_web_server(application: Application, stop_event: asyncio.Event):
     port = int(os.getenv("PORT", "10000"))
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-
+    
     logger.info(f"Сервер запущен на порту {port}")
     await stop_event.wait()
 
@@ -305,7 +299,6 @@ if __name__ == '__main__':
     except Exception as e:
         logger.exception("Critical error")
     finally:
-        if 'application' in locals():
-            loop.run_until_complete(application.shutdown())
+        loop.run_until_complete(application.shutdown())
         loop.close()
         logger.info("Bot stopped")
