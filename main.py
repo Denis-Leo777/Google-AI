@@ -1,3 +1,10 @@
+# Обновлённый main.py:
+# - Поиск через DuckDuckGo (бесплатный)
+# - Обновлены модели и дефолтная
+# - Обновлена системная инструкция
+# - Без ссылок в ответе поиска
+# - OCR, обработка файлов и т.д. сохранены
+
 import logging
 import os
 import asyncio
@@ -13,6 +20,9 @@ import pprint
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Проверка Tesseract при использовании (убрана со старта)
+# ...
+
 import aiohttp.web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.constants import ChatAction
@@ -25,11 +35,12 @@ from telegram.ext import (
     filters
 )
 import google.generativeai as genai
+# ===== ИСПРАВЛЕНИЕ: Импорт DDGS и типов для safety_settings =====
+from duckduckgo_search import DDGS
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-# ===== Добавляем импорт инструмента Google Search =====
-from google.generativeai.types import GoogleSearchRetrieval
+# =============================================================
 
-# Переменные окружения (проверка не меняется)
+# Переменные окружения и их проверка ... (без изменений)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
@@ -48,31 +59,43 @@ for var, name in [
 # Настройка Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
 
+# ===== ИСПРАВЛЕНИЕ: Обновляем список моделей и дефолтную =====
 AVAILABLE_MODELS = {
-    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
-    'gemini-2.0-flash-001': '2.0 Flash',
+    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking (Exp)', # Новая дефолтная
+    'gemini-2.5-pro-preview-03-25': '2.5 Pro Preview',             # Новая
+    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',                 # Старая экспериментальная
+    'gemini-2.0-flash-001': '2.0 Flash',                         # Старый Flash
+    # Убрали Image Gen
 }
-DEFAULT_MODEL = 'gemini-2.0-flash-001'
+DEFAULT_MODEL = 'gemini-2.0-flash-thinking-exp-01-21'
+# ======================================================
 
+# ===== ВОЗВРАЩАЕМ: Переменная для статуса поиска =====
+user_search_enabled = {}
+# ====================================================
 user_selected_model = {}
 user_temperature = {}
 
 MAX_CONTEXT_CHARS = 95000
 MAX_OUTPUT_TOKENS = 3000
+# ===== КОНСТАНТА: Сколько результатов поиска брать =====
+DDG_MAX_RESULTS = 30
+# ====================================================
 
+# ===== ИСПРАВЛЕНИЕ: Новая системная инструкция =====
 system_instruction_text = (
-    "Активно применяй юмор: несоответствие ожиданиям, культурные/бытовые/интернет-отсылки, жизненный абсурд, "
-    "псевдомудрость, разрушение идиом, иронию (включая самоиронию и психологию), игру слов, гиперболу, тонкие намёки, "
-    "редукционизм, постмодерн, интернет-юмор."
-    "Используй русский мат, но без слова блядь."
-    "Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры."
-    "Подкрепляй ответы аргументами, фактами и логикой, избегая повторов."
-    "Если не уверен — предупреждай, что это предположение."
-    "Для несложных запросов (не код, конспекты, переводы и т.п.) — пиши только суть, без вступлений и выводов, до 1500 знаков."
-    "Всегда предлагай более эффективные идеи и решения, если знаешь их."
-    "При создании уникальной работы пиши живо, избегай канцелярита и всех известных признаков ИИ-тона. Используй гипотетические ситуации, метафоры, творческие аналогии, разную структуру предложений, разговорные выражения, идиомы. Добавляй региональные или культурные маркеры, где уместно."
-    "При исправлении ошибки: указывай строку(и) и причину. Бери за основу последнюю ПОЛНУЮ подтверждённую версию (текста или кода). Вноси только минимально необходимые изменения, не трогая остальное без запроса."
+"Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры."
+"Используй русский мат, но без слова блядь."
+"Подкрепляй ответы аргументами, фактами и логикой, избегая повторов."
+"Если не уверен — предупреждай, что это предположение."
+"Используй интернет для сверки с актуальной информацией."
+"Для несложных запросов (не код, конспекты, переводы и т.п.) — пиши только суть, без вступлений и выводов, до 1500 знаков."
+"Всегда предлагай более эффективные идеи и решения, если знаешь их."
+"Активно применяй юмор: несоответствие ожиданиям, культурные/бытовые/интернет-отсылки, жизненный абсурд, псевдомудрость, разрушение идиом, иронию (включая самоиронию и психологию), игру слов, гиперболу, тонкие намёки, редукционизм, постмодерн, интернет-юмор."
+"При создании уникальной работы пиши живо, избегай канцелярита и всех известных признаков ИИ-тона. Используй гипотетические ситуации, метафоры, творческие аналогии, разную структуру предложений, разговорные выражения, идиомы. Добавляй региональные или культурные маркеры, где уместно. Не копируй и не пересказывай чужое."
+"При исправлении ошибки: указывай строку(и) и причину. Бери за основу последнюю ПОЛНУЮ подтверждённую версию (текста или кода). Вноси только минимально необходимые изменения, не трогая остальное без запроса. При сомнениях — уточняй. Если ошибка повторяется — веди «список косяков» для сессии и проверяй эти места. Всегда указывай, на какую версию или сообщение опираешься при правке."
 )
+# ====================================================
 
 SAFETY_SETTINGS_BLOCK_NONE = [
     {
@@ -93,23 +116,23 @@ SAFETY_SETTINGS_BLOCK_NONE = [
     },
 ]
 
-# Функция-обертка для создания инструмента Google Search
-def get_search_tool():
-    return genai.tools.GoogleSearchRetrieval(api_key=GOOGLE_API_KEY)
-
+# Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_selected_model[chat_id] = DEFAULT_MODEL
+    user_search_enabled[chat_id] = True # Поиск включен по умолчанию
     user_temperature[chat_id] = 1.0
+
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
+    # ===== ИСПРАВЛЕНИЕ: Обновленный текст с DDG =====
     start_message = (
-        f"Добро пожаловать! Бот работает на модели **{default_model_name}**."
-        f"\nДоступны: чтение изображений (OCR) и текстовых файлов, управление температурой, а также поиск через Google."
+        f"**{default_model_name}**."
+        f"\nДоступны: поиск в интернете, чтение изображений (OCR) и текстовых файлов."
         "\n/model — выбор модели,"
         "\n/clear — очистить историю."
-        "\n/temp <0-2> — установить температуру (креативность)."
-        "\nКанал автора: t.me/denisobovsyom"
+        "\n/search_on /search_off — вкл/выкл DuckDuckGo Поиск." # Обновили текст
     )
+
     await update.message.reply_text(start_message, parse_mode='Markdown')
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -127,13 +150,25 @@ async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("⚠️ Укажите температуру от 0 до 2, например: /temp 1.0")
 
+# ===== ВОЗВРАЩАЕМ: Команды вкл/выкл поиска =====
+async def enable_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_search_enabled[update.effective_chat.id] = True
+    await update.message.reply_text("🦆 DuckDuckGo Поиск включён.") # Обновили текст
+
+async def disable_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_search_enabled[update.effective_chat.id] = False
+    await update.message.reply_text("🔇 DuckDuckGo Поиск отключён.")
+# ==============================================
+
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     current_model = user_selected_model.get(chat_id, DEFAULT_MODEL)
     keyboard = []
+    # Убрали пометки о поиске, т.к. он внешний
     for m, name in AVAILABLE_MODELS.items():
          button_text = f"{'✅ ' if m == current_model else ''}{name}"
          keyboard.append([InlineKeyboardButton(button_text, callback_data=m)])
+
     await update.message.reply_text("Выберите модель:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,50 +179,87 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if selected in AVAILABLE_MODELS:
         user_selected_model[chat_id] = selected
         model_name = AVAILABLE_MODELS[selected]
+        # Убрали упоминание поиска, т.к. он теперь всегда доступен (внешне)
         reply_text = f"Модель установлена: **{model_name}**"
         await query.edit_message_text(reply_text, parse_mode='Markdown')
     else:
         await query.edit_message_text("❌ Неизвестная модель")
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    user_message = update.message.text.strip()
-    if not user_message:
+    original_user_message = update.message.text.strip() # Сохраняем исходное сообщение
+    if not original_user_message:
         return
 
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
     temperature = user_temperature.get(chat_id, 1.0)
+    use_search = user_search_enabled.get(chat_id, True) # Проверяем настройку пользователя
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}")
+
+    search_context = ""
+    final_user_prompt = original_user_message # По умолчанию промпт = исходное сообщение
+
+    # ===== ИСПРАВЛЕНИЕ: Логика поиска DuckDuckGo =====
+    if use_search:
+        logger.info(f"ChatID: {chat_id} | Поиск DDG включен. Запрос: '{original_user_message[:50]}...'")
+        try:
+            # Используем aenter/aexit для асинхронного контекстного менеджера DDGS
+            async with DDGS() as ddgs:
+                # Асинхронный поиск текста
+                results = await ddgs.atext(original_user_message, max_results=DDG_MAX_RESULTS)
+
+            if results:
+                search_snippets = [f"- {r['body']}" for r in results]
+                search_context = "Результаты поиска DuckDuckGo:\n" + "\n".join(search_snippets)
+                # Формируем итоговый промпт для Gemini
+                final_user_prompt = f"{search_context}\n\nУчитывая результаты поиска, ответь на вопрос: {original_user_message}"
+                logger.info(f"ChatID: {chat_id} | Найдены результаты DDG: {len(results)}")
+            else:
+                logger.info(f"ChatID: {chat_id} | Результаты DDG не найдены.")
+                # Оставляем final_user_prompt = original_user_message
+        except Exception as e_ddg:
+            logger.error(f"ChatID: {chat_id} | Ошибка при поиске DuckDuckGo: {e_ddg}", exc_info=True)
+            # Оставляем final_user_prompt = original_user_message
+            # Можно уведомить пользователя об ошибке поиска, но лучше молча продолжить
+    else:
+        logger.info(f"ChatID: {chat_id} | Поиск DDG отключен.")
+    # =================================================
+
+    logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, Поиск DDG: {'ДА' if use_search else 'НЕТ'}")
 
     chat_history = context.chat_data.setdefault("history", [])
-    chat_history.append({"role": "user", "parts": [{"text": user_message}]})
+    # Добавляем в историю именно ИТОГОВЫЙ промпт (с результатами поиска или без)
+    chat_history.append({"role": "user", "parts": [{"text": final_user_prompt}]})
+
+    # Обрезка истории ... (без изменений)
     total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
     while total_chars > MAX_CONTEXT_CHARS and len(chat_history) > 1:
         removed_message = chat_history.pop(0)
         total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
-        logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, символов: {total_chars}")
+        logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, текущая длина истории: {len(chat_history)}, символов: {total_chars}")
     current_history = chat_history
     current_system_instruction = system_instruction_text
+    tools = [] # Убрали совсем, поиск внешний
 
-    # ===== Здесь добавляем Google Search tool вместо пустого списка tools =====
-    tools = [get_search_tool()]
     reply = None
 
     try:
-        generation_config = genai.GenerationConfig(
-            temperature=temperature,
-            max_output_tokens=MAX_OUTPUT_TOKENS
+        generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=MAX_OUTPUT_TOKENS
         )
         model = genai.GenerativeModel(
             model_id,
-            tools=tools,  # теперь здесь передаётся список инструментов
+            tools=tools, # Передаем пустой список
             safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
             generation_config=generation_config,
             system_instruction=current_system_instruction
         )
         response = model.generate_content(current_history)
+
+        # Обработка текстового ответа
         reply = response.text
         if not reply:
             try:
@@ -202,32 +274,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      reply = f"🤖 Модель не дала ответ. (Причина блокировки: {block_reason})"
                 else:
                      reply = f"🤖 Модель не дала ответ. (Причина: {finish_reason_val})"
+            except AttributeError:
+                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо (AttributeError).")
+                 reply = "🤖 Нет ответа от модели."
             except Exception as e_inner:
                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо: {e_inner}")
                 reply = "🤖 Нет ответа от модели."
+
         if reply:
+             # В историю добавляем ЧИСТЫЙ ответ модели, без поискового контекста
              chat_history.append({"role": "model", "parts": [{"text": reply}]})
+
     except Exception as e:
         logger.exception(f"ChatID: {chat_id} | Ошибка при взаимодействии с моделью {model_id}")
         error_message = str(e)
-        if "429" in error_message and "quota" in error_message:
-             reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
-        elif "400" in error_message and "API key not valid" in error_message:
-             reply = "❌ Ошибка: Неверный Google API ключ."
-        elif "Deadline Exceeded" in error_message:
-             reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
-        else:
-             reply = f"❌ Ошибка при обращении к модели: {error_message}"
+        # Обработка ошибок без Markdown
+        try:
+            if isinstance(e, genai.types.BlockedPromptException):
+                 reply = f"❌ Запрос заблокирован моделью. Причина: {e}"
+            elif isinstance(e, genai.types.StopCandidateException):
+                 reply = f"❌ Генерация остановлена моделью. Причина: {e}"
+            elif "429" in error_message and "quota" in error_message:
+                 reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
+            elif "400" in error_message and "API key not valid" in error_message:
+                 reply = "❌ Ошибка: Неверный Google API ключ."
+            elif "Deadline Exceeded" in error_message:
+                 reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
+            else:
+                 reply = f"❌ Ошибка при обращении к модели: {error_message}"
+        except AttributeError:
+             logger.warning("genai.types не содержит BlockedPromptException/StopCandidateException, используем общую обработку.")
+             if "429" in error_message and "quota" in error_message:
+                  reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
+             elif "400" in error_message and "API key not valid" in error_message:
+                  reply = "❌ Ошибка: Неверный Google API ключ."
+             elif "Deadline Exceeded" in error_message:
+                  reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
+             else:
+                  reply = f"❌ Ошибка при обращении к модели: {error_message}"
 
     if reply:
-        await update.message.reply_text(reply)
+        await update.message.reply_text(reply) # Отправляем без Markdown
+
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     tesseract_available = False
     try:
         if pytesseract.pytesseract.tesseract_cmd != 'tesseract':
-            pass
+             pass
         tesseract_available = True
     except Exception as e:
         logger.error(f"Проблема с доступом к Tesseract: {e}. OCR будет недоступен.")
@@ -244,42 +339,50 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if extracted_text and extracted_text.strip():
                 logger.info(f"ChatID: {chat_id} | Обнаружен текст на изображении (OCR)")
                 ocr_prompt = f"На изображении обнаружен следующий текст:\n```\n{extracted_text.strip()}\n```\n"
+                # ===== ИСПРАВЛЕНИЕ: Учитываем подпись при формировании промпта =====
                 if user_caption:
-                     user_prompt = f"{user_caption}\n{ocr_prompt}Проанализируй изображение и текст на нём, учитывая мой комментарий."
+                     user_prompt = f"{user_caption}\n{ocr_prompt}\nПроанализируй изображение и текст на нём, учитывая мой комментарий."
                 else:
-                     user_prompt = f"{ocr_prompt}Проанализируй изображение и текст на нём."
+                     user_prompt = f"{ocr_prompt}\nПроанализируй изображение и текст на нём."
+                # ================================================================
+
                 fake_update = type('obj', (object,), {
                     'effective_chat': update.effective_chat,
                     'message': type('obj', (object,), {
-                        'text': user_prompt,
+                        'text': user_prompt, # Передаем промпт с текстом OCR
                         'reply_text': update.message.reply_text
                     })
                 })
+                # Передаем в handle_message, который выполнит поиск, если надо
                 await handle_message(fake_update, context)
-                return
+                return # Выходим, если OCR сработал
         except pytesseract.TesseractNotFoundError:
              logger.error("Tesseract не найден при вызове image_to_string! OCR отключен.")
              tesseract_available = False
         except Exception as e:
             logger.warning(f"ChatID: {chat_id} | Ошибка OCR: {e}")
 
+    # Обработка как изображение (если OCR выключен или не нашел текст)
     logger.info(f"ChatID: {chat_id} | Обработка фото как изображения (OCR выключен или не нашел текст)")
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     b64_data = base64.b64encode(file_bytes).decode()
+    # Используем подпись как основной промпт, если есть
     prompt = user_caption if user_caption else "Что изображено на этом фото?"
     parts = [
         {"text": prompt},
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_data}}
     ]
+
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
     temperature = user_temperature.get(chat_id, 1.0)
+
     logger.info(f"ChatID: {chat_id} | Анализ изображения. Модель: {model_id}, Темп: {temperature}")
-    # ===== Передаем тот же Google Search tool =====
-    tools = [get_search_tool()]
+    tools = [] # Поиск тут не нужен
+
     reply = None
 
     try:
-        generation_config = genai.GenerationConfig(
+        generation_config=genai.GenerationConfig(
                 temperature=temperature,
                 max_output_tokens=MAX_OUTPUT_TOKENS
         )
@@ -288,10 +391,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tools=tools,
             safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
             generation_config=generation_config,
-            system_instruction=system_instruction_text
+            system_instruction=system_instruction_text # Оставляем системную инструкцию для анализа
         )
+        # Передаем parts напрямую для анализа изображения
         response = model.generate_content([{"role": "user", "parts": parts}])
         reply = response.text
+
         if not reply:
             try:
                 feedback = response.prompt_feedback
@@ -305,23 +410,41 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      reply = f"🤖 Модель не смогла описать изображение. (Причина блокировки: {block_reason})"
                 else:
                      reply = f"🤖 Модель не смогла описать изображение. (Причина: {finish_reason_val})"
-            except Exception as e_inner:
-                 logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения: {e_inner}")
+            except AttributeError:
+                 logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения, не удалось извлечь доп. инфо (AttributeError).")
                  reply = "🤖 Не удалось понять, что на изображении."
+            except Exception as e_inner:
+                 logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения, не удалось извлечь доп. инфо: {e_inner}")
+                 reply = "🤖 Не удалось понять, что на изображении."
+
     except Exception as e:
         logger.exception(f"ChatID: {chat_id} | Ошибка при анализе изображения")
         error_message = str(e)
-        if "429" in error_message and "quota" in error_message:
-             reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
-        elif "400" in error_message and "API key not valid" in error_message:
-             reply = "❌ Ошибка: Неверный Google API ключ."
-        else:
-             reply = f"❌ Ошибка при анализе изображения: {error_message}"
-    if reply:
-        await update.message.reply_text(reply)
+        # Обработка ошибок без Markdown
+        try:
+            if isinstance(e, genai.types.BlockedPromptException):
+                 reply = f"❌ Запрос на анализ изображения заблокирован моделью. Причина: {e}"
+            elif isinstance(e, genai.types.StopCandidateException):
+                 reply = f"❌ Анализ изображения остановлен моделью. Причина: {e}"
+            elif "429" in error_message and "quota" in error_message:
+                 reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
+            elif "400" in error_message and "API key not valid" in error_message:
+                 reply = "❌ Ошибка: Неверный Google API ключ."
+            else:
+                reply = f"❌ Ошибка при анализе изображения: {error_message}"
+        except AttributeError:
+             logger.warning("genai.types не содержит BlockedPromptException/StopCandidateException, используем общую обработку.")
+             if "429" in error_message and "quota" in error_message:
+                  reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
+             elif "400" in error_message and "API key not valid" in error_message:
+                  reply = "❌ Ошибка: Неверный Google API ключ."
+             else:
+                 reply = f"❌ Ошибка при анализе изображения: {error_message}"
 
-# Остальные функции (handle_document, setup_bot_and_server, run_web_server, handle_telegram_webhook, main)
-# остаются без изменений
+
+    if reply:
+        await update.message.reply_text(reply) # Отправляем без Markdown
+
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -359,6 +482,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         warning_msg = ""
 
     user_caption = update.message.caption
+
     if user_caption:
         user_prompt = f"Проанализируй содержимое файла '{doc.file_name}', учитывая мой комментарий: \"{user_caption}\".\n\nСодержимое файла:\n```\n{truncated}\n```{warning_msg}"
     else:
@@ -371,35 +495,49 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'reply_text': update.message.reply_text
         })
     })
+    # Передаем в handle_message, который выполнит поиск, если надо
     await handle_message(fake_update, context)
+
 
 async def setup_bot_and_server(stop_event: asyncio.Event):
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("model", model_command))
+    application.add_handler(CommandHandler("model", model_command)) # Вернули /model
     application.add_handler(CommandHandler("clear", clear_history))
     application.add_handler(CommandHandler("temp", set_temperature))
-    application.add_handler(CallbackQueryHandler(select_model_callback))
+    # ===== ВОЗВРАЩАЕМ: Хендлеры для поиска =====
+    application.add_handler(CommandHandler("search_on", enable_search))
+    application.add_handler(CommandHandler("search_off", disable_search))
+    # ==========================================
+    application.add_handler(CallbackQueryHandler(select_model_callback)) # Вернули колбэк
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     await application.initialize()
     webhook_url = urljoin(WEBHOOK_HOST, f"/{GEMINI_WEBHOOK_PATH}")
     logger.info(f"Устанавливаю вебхук: {webhook_url}")
     await application.bot.set_webhook(webhook_url, allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     return application, run_web_server(application, stop_event)
 
+
+# Остальные функции (run_web_server, handle_telegram_webhook, main) без изменений
+
 async def run_web_server(application: Application, stop_event: asyncio.Event):
     app = aiohttp.web.Application()
     async def health_check(request):
         return aiohttp.web.Response(text="OK")
     app.router.add_get('/', health_check)
+
     app['bot_app'] = application
     webhook_path = f"/{GEMINI_WEBHOOK_PATH}"
     app.router.add_post(webhook_path, handle_telegram_webhook)
     logger.info(f"Вебхук слушает на пути: {webhook_path}")
+
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
+
     port = int(os.getenv("PORT", "10000"))
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", port)
     try:
@@ -411,11 +549,13 @@ async def run_web_server(application: Application, stop_event: asyncio.Event):
         await runner.cleanup()
         logger.info("Веб-сервер остановлен.")
 
+
 async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
     application = request.app.get('bot_app')
     if not application:
-        logger.error("Объект приложения бота не найден!")
+        logger.error("Объект приложения бота не найден в контексте aiohttp!")
         return aiohttp.web.Response(status=500, text="Internal Server Error: Bot application not configured")
+
     try:
         data = await request.json()
         update = Update.de_json(data, application.bot)
@@ -425,13 +565,17 @@ async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.R
         logger.error(f"Ошибка обработки вебхук-запроса: {e}", exc_info=True)
         return aiohttp.web.Response(text="OK", status=200)
 
+
 async def main():
     logging.getLogger('google.api_core').setLevel(logging.INFO)
     logging.getLogger('google.generativeai').setLevel(logging.INFO)
+
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
+
     application = None
     web_server_task = None
     try:
@@ -440,22 +584,34 @@ async def main():
         web_server_task = asyncio.create_task(web_server_coro)
         logger.info("Настройка завершена, жду сигналов остановки...")
         await stop_event.wait()
+
     except Exception as e:
         logger.exception("Критическая ошибка в главном потоке приложения.")
     finally:
         logger.info("Начинаю процесс остановки...")
         if web_server_task and not web_server_task.done():
+             logger.info("Ожидаю завершения веб-сервера...")
              try:
                  await asyncio.wait_for(web_server_task, timeout=10.0)
              except asyncio.TimeoutError:
+                 logger.warning("Веб-сервер не завершился за 10 секунд, отменяю задачу...")
                  web_server_task.cancel()
                  try:
                      await web_server_task
                  except asyncio.CancelledError:
                      logger.info("Задача веб-сервера успешно отменена.")
+                 except Exception as e:
+                     logger.error(f"Ошибка при ожидании отмены задачи веб-сервера: {e}")
+             except Exception as e:
+                 logger.error(f"Ошибка при ожидании/отмене задачи веб-сервера: {e}")
+
         if application:
+            logger.info("Останавливаю приложение бота...")
             await application.shutdown()
             logger.info("Приложение бота остановлено.")
+        else:
+            logger.warning("Объект приложения бота не был создан или был потерян.")
+
         logger.info("Приложение полностью остановлено.")
 
 if __name__ == '__main__':
@@ -464,5 +620,5 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info("Приложение прервано пользователем (Ctrl+C)")
     except Exception as e:
-        logger.critical(f"Неперехваченная ошибка: {e}", exc_info=True)
+        logger.critical(f"Неперехваченная ошибка на верхнем уровне: {e}", exc_info=True)
 
