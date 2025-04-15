@@ -274,5 +274,20 @@ async def run_web_server(application: Application, stop_event: asyncio.Event):
     await stop_event.wait()
 
 
+async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    application = request.app.get('bot_app')
+    try:
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+        return aiohttp.web.Response(text="OK", status=200)
+    except Exception as e:
+        logger.error(f"Ошибка webhook: {e}")
+        return aiohttp.web.Response(status=500, text="Internal error")
+
+
+
+
+
 
 
