@@ -212,7 +212,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # Создаем tools ТОЛЬКО если use_search истинно
-        tools = [Tool(google_search_retrieval=GoogleSearchRetrieval())] if use_search else []
+        tools = [Tool(google_search=GoogleSearchRetrieval())] if use_search else []
 
         model = genai.GenerativeModel(
             model_id,
@@ -300,7 +300,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # Создаем tools ТОЛЬКО если use_search истинно
-        tools = [Tool(google_search_retrieval=GoogleSearchRetrieval())] if use_search else []
+        tools = [Tool(google_search=GoogleSearchRetrieval())] if use_search else []
 
         model = genai.GenerativeModel(
             model_id,
