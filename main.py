@@ -7,7 +7,7 @@ import base64
 import pytesseract
 from PIL import Image
 import io
-from duckduckgo_search import DDGS  # Для запасного поиска
+from duckduckgo_search import DDGS  # Для поиска
 
 import aiohttp.web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,6 +21,7 @@ from telegram.ext import (
     filters
 )
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 
 # Логгирование
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -47,10 +48,9 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 AVAILABLE_MODELS = {
     'gemini-2.5-pro-exp-03-25': '2.5 Pro',
-    'gemini-2.0-flash': '2.0 Flash',
-    'imagen-3.0-generate-002': 'Imagen 3'
+    'gemini-2.0-flash': '2.0 Flash'
 }
-DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25'
+DEFAULT_MODEL = 'gemini-2.0-flash'  # Flash, т.к. меньше лимитов
 
 user_selected_model = {}
 user_search_enabled = {}
@@ -58,15 +58,18 @@ user_temperature = {}
 
 MAX_CONTEXT_CHARS = 95000
 
-# Инструкция системе для текстовых моделей
+# Инструкция системе
 system_instruction_text = (
-    "Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры. "
-    "Подкрепляй ответы аргументами, фактами и логикой, избегая повторов. "
-    "Если не уверен — предупреждай, что это предположение. "
-    "Используй поиск для актуальных данных, если он включён. "
-    "Для простых запросов — только суть, до 1500 знаков. "
-    "В конце ответа добавляй ссылки на источники, если использовал поиск. "
-    "Шути: ирония, мемы, абсурд, игра слов, тонкие намёки, только не переборщи."
+"Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры."
+"Используй русский мат, но без слова блядь."
+"Подкрепляй ответы аргументами, фактами и логикой, избегая повторов."
+"Если не уверен — предупреждай, что это предположение."
+"Используй интернет для сверки с актуальной информацией."
+"Для несложных запросов (не код, конспекты, переводы и т.п.) — пиши только суть, без вступлений и выводов, до 1500 знаков."
+"Всегда предлагай более эффективные идеи и решения, если знаешь их."
+"Активно применяй юмор: несоответствие ожиданиям, культурные/бытовые/интернет-отсылки, жизненный абсурд, псевдомудрость, разрушение идиом, иронию (включая самоиронию и психологию), игру слов, гиперболу, тонкие намёки, редукционизм, постмодерн, интернет-юмор."
+"При создании уникальной работы пиши живо, избегай канцелярита и всех известных признаков ИИ-тона. Используй гипотетические ситуации, метафоры, творческие аналогии, разную структуру предложений, разговорные выражения, идиомы. Добавляй региональные или культурные маркеры, где уместно. Не копируй и не пересказывай чужое."
+"При исправлении ошибки: указывай строку(и) и причину. Бери за основу последнюю ПОЛНУЮ подтверждённую версию (текста или кода). Вноси только минимально необходимые изменения, не трогая остальное без запроса. При сомнениях — уточняй. Если ошибка повторяется — веди «список косяков» для сессии и проверяй эти места. Всегда указывай, на какую версию или сообщение опираешься при правке."
 )
 
 # DuckDuckGo поиск
@@ -88,15 +91,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_search_enabled[chat_id] = True
     user_temperature[chat_id] = 1.0
     await update.message.reply_text(
-        "Здарова! Это твой ИИ-гид на базе Gemini и Imagen. 2.5 Pro — для мощных ответов, 2.0 Flash — для скорости, Imagen 3 — для картинок.\n"
-        "Команды:\n"
-        "/model — выбери модель\n"
-        "/image — сгенерируй картинку (например, /image кот в шляпе)\n"
-        "/clear — обнули историю\n"
-        "/temp [0-2] — настрой креативность\n"
-        "/search_on — включи поиск\n"
-        "/search_off — выключи поиск\n\n"
-        "Канал автора: t.me/denisobovsyom"
+        "2.0 Flash с поиском в интернете и юмором.\n"
+        "Умеет читать изображения и текстовые файлы."
+        "/search_on — включить поиск\n"
+        "/search_off — выключить поиск\n\n"
+        "/clear — обнулить историю\n"
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,42 +140,12 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         await query.edit_message_text("❌ Это что за покемон?")
 
-async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if not context.args:
-        await update.message.reply_text("🖼️ Дай промпт для картинки, типа /image кот в шляпе")
-        return
-
-    prompt = " ".join(context.args)
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
-
-    try:
-        imagen = genai.ImageGenerationModel("imagen-3.0-generate-002")
-        result = imagen.generate_images(
-            prompt=prompt,
-            number_of_images=1,
-            aspect_ratio="1:1",
-            safety_filter_level="block_only_high",
-            person_generation="dont_allow"  # Без лиц, если нет доступа
-        )
-        image = result.images[0]
-        image_bytes = image._image_bytes
-        await context.bot.send_photo(chat_id=chat_id, photo=image_bytes)
-        logger.info(f"Картинка сгенерирована для промпта: {prompt}")
-    except Exception as e:
-        logger.error(f"Ошибка генерации картинки: {e}")
-        await update.message.reply_text(f"💥 Не вышло нарисовать: {str(e)}")
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_message = update.message.text.strip()
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
-    if model_id == 'imagen-3.0-generate-002':
-        await update.message.reply_text("🖼️ Imagen 3 — для картинок. Используй /image <промпт>.")
-        return
-
     temperature = user_temperature.get(chat_id, 1.0)
     use_search = user_search_enabled.get(chat_id, True)
 
@@ -185,13 +154,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_history = context.chat_data.setdefault("history", [])
 
     try:
-        # Поиск через Google
-        tools = [{'google_search': {}}] if use_search else None
+        # Поиск через DuckDuckGo
         sources = []
-
-        # Fallback на DuckDuckGo для 2.5 Pro
         ddg_snippets, ddg_links = [], []
-        if use_search and model_id == 'gemini-2.5-pro-exp-03-25':
+        if use_search:
             ddg_snippets, ddg_links = await duckduckgo_search(user_message)
             if ddg_snippets:
                 ddg_text = '\n'.join(ddg_snippets)
@@ -200,7 +166,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Создание модели
         model = genai.GenerativeModel(
             model_name=model_id,
-            tools=tools,
             safety_settings={
                 'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE',
                 'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
@@ -219,17 +184,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = chat.send_message(user_message)
 
         reply = response.text[:1500] or "🤖 Молчание — тоже ответ, но не сегодня."
-        if use_search:
-            # Google Search источники
-            if hasattr(response, 'citationMetadata'):
-                citations = getattr(response.citationMetadata, 'citations', [])
-                sources = [c.uri for c in citations if c.uri]
-            # DuckDuckGo источники, если Google не дал
-            if not sources and ddg_links:
-                sources = ddg_links
-                reply += "\n\n⚠️ Google Search не сработал, использовал DuckDuckGo."
-            if sources:
-                reply += "\n\n**Источники**:\n" + "\n".join(f"- {s}" for s in sources)
+        if use_search and ddg_links:
+            sources = ddg_links
+            reply += "\n\n**Источники**:\n" + "\n".join(f"- {s}" for s in sources)
 
         chat_history.extend([
             {'role': 'user', 'parts': [{'text': user_message}]},
@@ -242,39 +199,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_history.pop(0)
             total_chars = sum(len(p['parts'][0]['text']) for p in chat_history)
 
+    except ResourceExhausted as e:
+        logger.exception("Лимит API исчерпан")
+        reply = (
+            f"💥 Упс, лимит запросов к {model_id} кончился! "
+            "Попробуй другую модель через /model или загляни завтра. "
+            "Подробности: https://ai.google.dev/gemini-api/docs/rate-limits"
+        )
     except Exception as e:
         logger.exception("Ошибка генерации ответа")
         reply = f"💥 Бум! Ошибка: {str(e)}"
-        # Пробуем DuckDuckGo, если Google сломался
-        if use_search and "Search Grounding is not supported" in str(e):
-            ddg_snippets, ddg_links = await duckduckgo_search(user_message)
-            if ddg_snippets:
-                ddg_text = '\n'.join(ddg_snippets)
-                user_message = f"{user_message}\nКонтекст из поиска:\n{ddg_text}"
-                try:
-                    model = genai.GenerativeModel(
-                        model_name=model_id,
-                        safety_settings={
-                            'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE',
-                            'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
-                            'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
-                            'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'
-                        },
-                        generation_config=genai.GenerationConfig(
-                            temperature=temperature,
-                            max_output_tokens=8192
-                        ),
-                        system_instruction=system_instruction_text
-                    )
-                    chat = model.start_chat(history=chat_history)
-                    response = chat.send_message(user_message)
-                    reply = response.text[:1500] or "🤖 Всё равно что-то не то."
-                    reply += "\n\n⚠️ Google Search не сработал, использовал DuckDuckGo."
-                    if ddg_links:
-                        reply += "\n\n**Источники**:\n" + "\n".join(f"- {s}" for s in ddg_links)
-                except Exception as e2:
-                    logger.exception("DuckDuckGo тоже сломался")
-                    reply = f"💥 Дважды бум! Ошибка: {str(e2)}"
+        if use_search and ddg_links:
+            reply += "\n\n**Источники**:\n" + "\n".join(f"- {s}" for s in ddg_links)
 
     await update.message.reply_text(reply)
 
@@ -300,9 +236,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
-        if model_id == 'imagen-3.0-generate-002':
-            await update.message.reply_text("🖼️ Imagen 3 не анализирует фото. Используй /image для генерации.")
-            return
         model = genai.GenerativeModel(model_name=model_id)
         response = model.generate_content([
             {"role": "user", "parts": [
@@ -311,6 +244,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]}
         ])
         reply = response.text[:1500] or "🤖 Картинка — загадка, даже для меня."
+    except ResourceExhausted as e:
+        logger.exception("Лимит API исчерпан")
+        reply = (
+            f"💥 Лимит запросов к {model_id} кончился! "
+            "Попробуй другую модель через /model или загляни завтра."
+        )
     except Exception as e:
         logger.exception("Ошибка анализа фото")
         reply = f"❌ Не вижу: {str(e)}"
@@ -339,7 +278,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     handlers = [
         CommandHandler("start", start),
         CommandHandler("model", model_command),
-        CommandHandler("image", generate_image),
         CommandHandler("clear", clear_history),
         CommandHandler("temp", set_temperature),
         CommandHandler("search_on", enable_search),
