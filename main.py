@@ -1,7 +1,7 @@
-# Обновлённый main.py (Упрощённый, без 2.5 Pro):
-# - Модель по умолчанию: gemini-2.0-flash-001
-# - Модель 2.5 Pro Exp убрана из-за нереальных лимитов
-# - Поиск и Image Gen по-прежнему вырезаны
+# Обновлённый main.py (Упрощённый):
+# ... (предыдущие фичи)
+# + Явное отключение цензуры через safety_settings с enum'ами
+# + Добавлен max_output_tokens
 
 import logging
 import os
@@ -18,7 +18,7 @@ import pprint
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Убрали возню с Tesseract на старте
+# Проверка Tesseract при использовании
 # ...
 
 import aiohttp.web
@@ -33,9 +33,9 @@ from telegram.ext import (
     filters
 )
 import google.generativeai as genai
-
-# Убрали импорты Tool, GoogleSearchRetrieval, FinishReason
-# ...
+# ===== ИСПРАВЛЕНИЕ: Импортируем типы для safety_settings =====
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+# =============================================================
 
 # Переменные окружения и их проверка ... (без изменений)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -56,25 +56,26 @@ for var, name in [
 # Настройка Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# ===== ИСПРАВЛЕНИЕ: Оставляем только Flash модель =====
+# Только текстовые модели
 AVAILABLE_MODELS = {
+    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
     'gemini-2.0-flash-001': '2.0 Flash',
-    # 'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)', # Убрали из-за лимитов
-    # IMAGE_GEN_MODEL: 'Image Gen (Exp)' # Убрали ранее
 }
-DEFAULT_MODEL = 'gemini-2.0-flash-001' # Делаем Flash дефолтным
-# ======================================================
+DEFAULT_MODEL = 'gemini-2.0-flash-001' # Сделали Flash дефолтным
 
-# Убрали MODELS_WITHOUT_SEARCH
+# Убрали MODELS_WITHOUT_SEARCH, т.к. поиск вырезан
 user_selected_model = {}
 user_temperature = {}
 
 MAX_CONTEXT_CHARS = 95000
+# ===== КОНСТАНТА: Макс. выходных токенов =====
+MAX_OUTPUT_TOKENS = 3000
+# =============================================
 
-# Инструкция системе ... (без изменений, кроме упоминания интернета)
+# Инструкция системе ... (без изменений)
 system_instruction_text = (
 "Активно применяй юмор: несоответствие ожиданиям, культурные/бытовые/интернет-отсылки, жизненный абсурд, псевдомудрость, разрушение идиом, иронию (включая самоиронию и психологию), игру слов, гиперболу, тонкие намёки, редукционизм, постмодерн, интернет-юмор."
-"Используй русский мат. Запрещаю слово блядь"
+"Используй русский мат, но без слова блядь."
 "Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры."
 "Подкрепляй ответы аргументами, фактами и логикой, избегая повторов."
 "Если не уверен — предупреждай, что это предположение."
@@ -85,18 +86,38 @@ system_instruction_text = (
 "При исправлении ошибки: указывай строку(и) и причину. Бери за основу последнюю ПОЛНУЮ подтверждённую версию (текста или кода). Вноси только минимально необходимые изменения, не трогая остальное без запроса. При сомнениях — уточняй. Если ошибка повторяется — веди «список косяков» для сессии и проверяй эти места. Всегда указывай, на какую версию или сообщение опираешься при правке."
 )
 
-# Команды start, clear_history, set_temperature, model_command ...
+# ===== КОНСТАНТА: Настройки безопасности =====
+SAFETY_SETTINGS_BLOCK_NONE = [
+    {
+        "category": HarmCategory.HARM_CATEGORY_HARASSMENT,
+        "threshold": HarmBlockThreshold.BLOCK_NONE,
+    },
+    {
+        "category": HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        "threshold": HarmBlockThreshold.BLOCK_NONE,
+    },
+    {
+        "category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        "threshold": HarmBlockThreshold.BLOCK_NONE,
+    },
+    {
+        "category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+        "threshold": HarmBlockThreshold.BLOCK_NONE,
+    },
+]
+# ==========================================
+
+# Команды start, clear_history, set_temperature, model_command, select_model_callback ... (без изменений в логике)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_selected_model[chat_id] = DEFAULT_MODEL
     user_temperature[chat_id] = 1.0
 
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
-    # ===== ИСПРАВЛЕНИЕ: Обновленный текст для Flash модели =====
     start_message = (
         f"Добро пожаловать! Бот работает на модели **{default_model_name}**."
         f"\nДоступны: чтение изображений (OCR) и текстовых файлов, управление температурой."
-        # "\n/model — выбор модели," # Убираем, т.к. осталась одна модель
+        "\n/model — выбор модели,"
         "\n/clear — очистить историю."
         "\n/temp <0-2> — установить температуру (креативность)."
         "\nКанал автора: t.me/denisobovsyom"
@@ -119,7 +140,29 @@ async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("⚠️ Укажите температуру от 0 до 2, например: /temp 1.0")
 
-# Убрали model_command и select_model_callback, т.к. модель одна
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    current_model = user_selected_model.get(chat_id, DEFAULT_MODEL)
+    keyboard = []
+    for m, name in AVAILABLE_MODELS.items():
+         button_text = f"{'✅ ' if m == current_model else ''}{name}"
+         keyboard.append([InlineKeyboardButton(button_text, callback_data=m)])
+
+    await update.message.reply_text("Выберите модель:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    selected = query.data
+    if selected in AVAILABLE_MODELS:
+        user_selected_model[chat_id] = selected
+        model_name = AVAILABLE_MODELS[selected]
+        reply_text = f"Модель установлена: **{model_name}**"
+        await query.edit_message_text(reply_text, parse_mode='Markdown')
+    else:
+        await query.edit_message_text("❌ Неизвестная модель")
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -127,10 +170,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_message:
         return
 
-    # ===== ИСПРАВЛЕНИЕ: Модель всегда дефолтная =====
-    model_id = DEFAULT_MODEL # Всегда используем Flash
-    temperature = user_temperature.get(chat_id, 1.0) # Температуру оставляем
-    # ==============================================
+    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
+    temperature = user_temperature.get(chat_id, 1.0)
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}")
@@ -150,28 +191,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = None
 
     try:
-        generation_config = {"temperature": temperature}
+        # ===== ИСПРАВЛЕНИЕ: Обновляем generation_config и safety_settings =====
+        generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=MAX_OUTPUT_TOKENS # Используем константу
+        )
         model = genai.GenerativeModel(
             model_id,
             tools=tools,
-            safety_settings=[],
-            generation_config=generation_config,
+            safety_settings=SAFETY_SETTINGS_BLOCK_NONE, # Используем константу
+            generation_config=generation_config, # Передаем объект GenerationConfig
             system_instruction=current_system_instruction
         )
+        # ====================================================================
         response = model.generate_content(current_history)
 
-        # Обработка только текстового ответа
+        # Обработка текстового ответа
         reply = response.text
         if not reply:
             try:
                 feedback = response.prompt_feedback
                 candidates_info = response.candidates
+                # Проверяем наличие feedback перед доступом к block_reason
                 block_reason = feedback.block_reason if feedback else 'N/A'
+                # Проверяем наличие candidates перед доступом к finish_reason
                 finish_reason_val = candidates_info[0].finish_reason if candidates_info else 'N/A'
                 safety_ratings = feedback.safety_ratings if feedback else []
                 safety_info = ", ".join([f"{s.category.name}: {s.probability.name}" for s in safety_ratings])
                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели. Block: {block_reason}, Finish: {finish_reason_val}, Safety: [{safety_info}]")
-                reply = f"🤖 Модель не дала ответ. (Причина: {block_reason or finish_reason_val})"
+                # Даем более информативный ответ если заблокировано
+                if block_reason and block_reason != genai.types.BlockReason.UNSPECIFIED:
+                     reply = f"🤖 Модель не дала ответ. (Причина блокировки: {block_reason})"
+                else:
+                     reply = f"🤖 Модель не дала ответ. (Причина: {finish_reason_val})"
+
+            except AttributeError: # Если genai.types нет
+                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо (AttributeError).")
+                 reply = "🤖 Нет ответа от модели."
             except Exception as e_inner:
                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо: {e_inner}")
                 reply = "🤖 Нет ответа от модели."
@@ -182,13 +238,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.exception(f"ChatID: {chat_id} | Ошибка при взаимодействии с моделью {model_id}")
         error_message = str(e)
-        # Упрощенная обработка ошибок
+        # Обработка ошибок без Markdown
         try:
             if isinstance(e, genai.types.BlockedPromptException):
                  reply = f"❌ Запрос заблокирован моделью. Причина: {e}"
             elif isinstance(e, genai.types.StopCandidateException):
                  reply = f"❌ Генерация остановлена моделью. Причина: {e}"
-            elif "429" in error_message and "quota" in error_message: # Ловим ошибку квоты
+            elif "429" in error_message and "quota" in error_message:
                  reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
             elif "400" in error_message and "API key not valid" in error_message:
                  reply = "❌ Ошибка: Неверный Google API ключ."
@@ -202,8 +258,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
              elif "400" in error_message and "API key not valid" in error_message:
                   reply = "❌ Ошибка: Неверный Google API ключ."
-             elif "Deadline Exceeded" in error_message:
-                  reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
              else:
                   reply = f"❌ Ошибка при обращении к модели: {error_message}"
 
@@ -263,10 +317,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_data}}
     ]
 
-    # ===== ИСПРАВЛЕНИЕ: Модель всегда дефолтная =====
-    model_id = DEFAULT_MODEL
+    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
     temperature = user_temperature.get(chat_id, 1.0)
-    # ==============================================
 
     logger.info(f"ChatID: {chat_id} | Анализ изображения. Модель: {model_id}, Темп: {temperature}")
     tools = [] # Поиск выключен
@@ -274,13 +326,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = None
 
     try:
+        # ===== ИСПРАВЛЕНИЕ: Обновляем generation_config и safety_settings =====
+        generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=MAX_OUTPUT_TOKENS # Используем константу
+        )
         model = genai.GenerativeModel(
             model_id,
             tools=tools,
-            safety_settings=[],
-            generation_config={"temperature": temperature},
+            safety_settings=SAFETY_SETTINGS_BLOCK_NONE, # Используем константу
+            generation_config=generation_config, # Передаем объект GenerationConfig
             system_instruction=system_instruction_text
         )
+        # ====================================================================
         response = model.generate_content([{"role": "user", "parts": parts}])
         reply = response.text
 
@@ -293,7 +351,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 safety_ratings = feedback.safety_ratings if feedback else []
                 safety_info = ", ".join([f"{s.category.name}: {s.probability.name}" for s in safety_ratings])
                 logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения. Block: {block_reason}, Finish: {finish_reason_val}, Safety: [{safety_info}]")
-                reply = f"🤖 Модель не смогла описать изображение. (Причина: {block_reason or finish_reason_val})"
+                if block_reason and block_reason != genai.types.BlockReason.UNSPECIFIED:
+                     reply = f"🤖 Модель не смогла описать изображение. (Причина блокировки: {block_reason})"
+                else:
+                     reply = f"🤖 Модель не смогла описать изображение. (Причина: {finish_reason_val})"
+            except AttributeError:
+                 logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения, не удалось извлечь доп. инфо (AttributeError).")
+                 reply = "🤖 Не удалось понять, что на изображении."
             except Exception as e_inner:
                  logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения, не удалось извлечь доп. инфо: {e_inner}")
                  reply = "🤖 Не удалось понять, что на изображении."
@@ -321,7 +385,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   reply = "❌ Ошибка: Неверный Google API ключ."
              else:
                  reply = f"❌ Ошибка при анализе изображения: {error_message}"
-
 
     if reply:
         await update.message.reply_text(reply)
@@ -385,12 +448,10 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    # application.add_handler(CommandHandler("model", model_command)) # Убрали
+    application.add_handler(CommandHandler("model", model_command)) # Вернули /model
     application.add_handler(CommandHandler("clear", clear_history))
     application.add_handler(CommandHandler("temp", set_temperature))
-    # application.add_handler(CommandHandler("search_on", enable_search)) # Убрали
-    # application.add_handler(CommandHandler("search_off", disable_search)) # Убрали
-    # application.add_handler(CallbackQueryHandler(select_model_callback)) # Убрали
+    application.add_handler(CallbackQueryHandler(select_model_callback)) # Вернули колбэк
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
