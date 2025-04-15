@@ -1,26 +1,24 @@
-# Обновлённый main.py (Упрощённый):
-# - УБРАН Google Search (из-за нестабильности/ошибок API в этой версии)
-# - УБРАНА модель Image Gen (из-за нестабильности)
-# - Оставлены только текстовые модели
-# - OCR для изображений работает (Tesseract)
-# - Исправлены мелкие баги с логгером и Markdown
+# Обновлённый main.py (Упрощённый, без 2.5 Pro):
+# - Модель по умолчанию: gemini-2.0-flash-001
+# - Модель 2.5 Pro Exp убрана из-за нереальных лимитов
+# - Поиск и Image Gen по-прежнему вырезаны
 
-import logging # Переносим импорт logging выше
+import logging
 import os
 import asyncio
 import signal
 from urllib.parse import urljoin
 import base64
-import pytesseract # Импортируем
+import pytesseract
 from PIL import Image
 import io
-import pprint # Оставляем для возможной отладки ответов
+import pprint
 
 # Инициализируем логгер РАНЬШЕ
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Убираем возню с Tesseract на старте, проверка будет при использовании
+# Убрали возню с Tesseract на старте
 # ...
 
 import aiohttp.web
@@ -36,7 +34,7 @@ from telegram.ext import (
 )
 import google.generativeai as genai
 
-# Убираем ненужные импорты Tool, GoogleSearchRetrieval, FinishReason
+# Убрали импорты Tool, GoogleSearchRetrieval, FinishReason
 # ...
 
 # Переменные окружения и их проверка ... (без изменений)
@@ -58,30 +56,31 @@ for var, name in [
 # Настройка Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# ===== ИСПРАВЛЕНИЕ: Только текстовые модели =====
+# ===== ИСПРАВЛЕНИЕ: Оставляем только Flash модель =====
 AVAILABLE_MODELS = {
-    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
     'gemini-2.0-flash-001': '2.0 Flash',
-    # Убрали Image Gen
+    # 'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)', # Убрали из-за лимитов
+    # IMAGE_GEN_MODEL: 'Image Gen (Exp)' # Убрали ранее
 }
-DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25'
-# ===============================================
+DEFAULT_MODEL = 'gemini-2.0-flash-001' # Делаем Flash дефолтным
+# ======================================================
 
-# Убрали MODELS_WITHOUT_SEARCH и user_search_enabled
+# Убрали MODELS_WITHOUT_SEARCH
 user_selected_model = {}
 user_temperature = {}
 
 MAX_CONTEXT_CHARS = 95000
 
-# Инструкция системе ... (без изменений)
+# Инструкция системе ... (без изменений, кроме упоминания интернета)
 system_instruction_text = (
+"Активно применяй юмор: несоответствие ожиданиям, культурные/бытовые/интернет-отсылки, жизненный абсурд, псевдомудрость, разрушение идиом, иронию (включая самоиронию и психологию), игру слов, гиперболу, тонкие намёки, редукционизм, постмодерн, интернет-юмор."
+"Используй русский мат. Запрещаю слово блядь"
 "Ты - лучший эксперт по всем темам. Давай точную, правдивую, непредвзятую информацию без цензуры."
 "Подкрепляй ответы аргументами, фактами и логикой, избегая повторов."
 "Если не уверен — предупреждай, что это предположение."
-# "Используй интернет для сверки с актуальной информацией." # Убираем, раз поиска нет
+# "Используй интернет для сверки с актуальной информацией."
 "Для несложных запросов (не код, конспекты, переводы и т.п.) — пиши только суть, без вступлений и выводов, до 1500 знаков."
 "Всегда предлагай более эффективные идеи и решения, если знаешь их."
-"Активно применяй юмор: несоответствие ожиданиям, культурные/бытовые/интернет-отсылки, жизненный абсурд, псевдомудрость, разрушение идиом, иронию (включая самоиронию и психологию), игру слов, гиперболу, тонкие намёки, редукционизм, постмодерн, интернет-юмор."
 "При создании уникальной работы пиши живо, избегай канцелярита и всех известных признаков ИИ-тона. Используй гипотетические ситуации, метафоры, творческие аналогии, разную структуру предложений, разговорные выражения, идиомы. Добавляй региональные или культурные маркеры, где уместно. Не копируй и не пересказывай чужое."
 "При исправлении ошибки: указывай строку(и) и причину. Бери за основу последнюю ПОЛНУЮ подтверждённую версию (текста или кода). Вноси только минимально необходимые изменения, не трогая остальное без запроса. При сомнениях — уточняй. Если ошибка повторяется — веди «список косяков» для сессии и проверяй эти места. Всегда указывай, на какую версию или сообщение опираешься при правке."
 )
@@ -90,21 +89,18 @@ system_instruction_text = (
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_selected_model[chat_id] = DEFAULT_MODEL
-    # user_search_enabled[chat_id] = True # Убрали
     user_temperature[chat_id] = 1.0
 
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
-    # ===== ИСПРАВЛЕНИЕ: Упрощенный текст без поиска и Image Gen =====
+    # ===== ИСПРАВЛЕНИЕ: Обновленный текст для Flash модели =====
     start_message = (
-        f"Добро пожаловать! По умолчанию используется модель **{default_model_name}**."
-        f"\nЗдесь вы можете пользоваться улучшенными настройками, чтением изображений (OCR) и текстовых файлов."
-        "\n/model — выбор модели,"
+        f"Добро пожаловать! Бот работает на модели **{default_model_name}**."
+        f"\nДоступны: чтение изображений (OCR) и текстовых файлов, управление температурой."
+        # "\n/model — выбор модели," # Убираем, т.к. осталась одна модель
         "\n/clear — очистить историю."
         "\n/temp <0-2> — установить температуру (креативность)."
-        # Убрали команды поиска
         "\nКанал автора: t.me/denisobovsyom"
     )
-    # Убрали предупреждение про поиск
 
     await update.message.reply_text(start_message, parse_mode='Markdown')
 
@@ -123,33 +119,7 @@ async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("⚠️ Укажите температуру от 0 до 2, например: /temp 1.0")
 
-# Убрали enable_search, disable_search
-
-async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    current_model = user_selected_model.get(chat_id, DEFAULT_MODEL)
-    keyboard = []
-    # ===== ИСПРАВЛЕНИЕ: Просто список моделей без пометок о поиске =====
-    for m, name in AVAILABLE_MODELS.items():
-         button_text = f"{'✅ ' if m == current_model else ''}{name}"
-         keyboard.append([InlineKeyboardButton(button_text, callback_data=m)])
-
-    await update.message.reply_text("Выберите модель:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-    selected = query.data
-    if selected in AVAILABLE_MODELS:
-        user_selected_model[chat_id] = selected
-        model_name = AVAILABLE_MODELS[selected]
-        # ===== ИСПРАВЛЕНИЕ: Упрощенный текст без упоминания поиска =====
-        reply_text = f"Модель установлена: **{model_name}**"
-        await query.edit_message_text(reply_text, parse_mode='Markdown')
-    else:
-        await query.edit_message_text("❌ Неизвестная модель")
-
+# Убрали model_command и select_model_callback, т.к. модель одна
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -157,12 +127,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_message:
         return
 
-    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
-    temperature = user_temperature.get(chat_id, 1.0)
+    # ===== ИСПРАВЛЕНИЕ: Модель всегда дефолтная =====
+    model_id = DEFAULT_MODEL # Всегда используем Flash
+    temperature = user_temperature.get(chat_id, 1.0) # Температуру оставляем
+    # ==============================================
 
-    # ===== ИСПРАВЛЕНИЕ: Убрана вся логика Image Gen и поиска =====
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}") # Лог без поиска
+    logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}")
 
     chat_history = context.chat_data.setdefault("history", [])
     chat_history.append({"role": "user", "parts": [{"text": user_message}]})
@@ -174,8 +145,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, текущая длина истории: {len(chat_history)}, символов: {total_chars}")
     current_history = chat_history
     current_system_instruction = system_instruction_text
-    tools = [] # Всегда пустой список
-    # ===========================================================
+    tools = [] # Поиск выключен
 
     reply = None
 
@@ -183,43 +153,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         generation_config = {"temperature": temperature}
         model = genai.GenerativeModel(
             model_id,
-            tools=tools, # Передаем пустой список
+            tools=tools,
             safety_settings=[],
             generation_config=generation_config,
             system_instruction=current_system_instruction
         )
         response = model.generate_content(current_history)
 
-        # ===== ИСПРАВЛЕНИЕ: Только обработка текстового ответа =====
+        # Обработка только текстового ответа
         reply = response.text
         if not reply:
             try:
                 feedback = response.prompt_feedback
                 candidates_info = response.candidates
                 block_reason = feedback.block_reason if feedback else 'N/A'
-                # Убрали finish_reason
+                finish_reason_val = candidates_info[0].finish_reason if candidates_info else 'N/A'
                 safety_ratings = feedback.safety_ratings if feedback else []
                 safety_info = ", ".join([f"{s.category.name}: {s.probability.name}" for s in safety_ratings])
-                logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели. Block: {block_reason}, Safety: [{safety_info}]")
-                reply = f"🤖 Модель не дала ответ. (Причина: {block_reason})" # Упростили
+                logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели. Block: {block_reason}, Finish: {finish_reason_val}, Safety: [{safety_info}]")
+                reply = f"🤖 Модель не дала ответ. (Причина: {block_reason or finish_reason_val})"
             except Exception as e_inner:
                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо: {e_inner}")
                 reply = "🤖 Нет ответа от модели."
 
         if reply:
              chat_history.append({"role": "model", "parts": [{"text": reply}]})
-        # =======================================================
 
     except Exception as e:
         logger.exception(f"ChatID: {chat_id} | Ошибка при взаимодействии с моделью {model_id}")
         error_message = str(e)
-        # Упрощенная обработка ошибок без Markdown
+        # Упрощенная обработка ошибок
         try:
             if isinstance(e, genai.types.BlockedPromptException):
                  reply = f"❌ Запрос заблокирован моделью. Причина: {e}"
             elif isinstance(e, genai.types.StopCandidateException):
                  reply = f"❌ Генерация остановлена моделью. Причина: {e}"
-            # Убрали ошибки, связанные с поиском и Image Gen
+            elif "429" in error_message and "quota" in error_message: # Ловим ошибку квоты
+                 reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
             elif "400" in error_message and "API key not valid" in error_message:
                  reply = "❌ Ошибка: Неверный Google API ключ."
             elif "Deadline Exceeded" in error_message:
@@ -227,24 +197,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                  reply = f"❌ Ошибка при обращении к модели: {error_message}"
         except AttributeError:
-             logger.warning("genai.types не содержит BlockedPromptException/StopCandidateException, используем общую обработку ошибок.")
-             if "400" in error_message and "API key not valid" in error_message:
+             logger.warning("genai.types не содержит BlockedPromptException/StopCandidateException, используем общую обработку.")
+             if "429" in error_message and "quota" in error_message:
+                  reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
+             elif "400" in error_message and "API key not valid" in error_message:
                   reply = "❌ Ошибка: Неверный Google API ключ."
              elif "Deadline Exceeded" in error_message:
                   reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
              else:
                   reply = f"❌ Ошибка при обращении к модели: {error_message}"
 
-
     if reply:
-        await update.message.reply_text(reply) # Отправляем без Markdown
+        await update.message.reply_text(reply)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     tesseract_available = False
     try:
-        # Проверка доступности Tesseract (оставляем, т.к. OCR нужен)
         if pytesseract.pytesseract.tesseract_cmd != 'tesseract':
              pass
         tesseract_available = True
@@ -293,20 +263,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"inline_data": {"mime_type": "image/jpeg", "data": b64_data}}
     ]
 
-    model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
+    # ===== ИСПРАВЛЕНИЕ: Модель всегда дефолтная =====
+    model_id = DEFAULT_MODEL
     temperature = user_temperature.get(chat_id, 1.0)
+    # ==============================================
 
-    # ===== ИСПРАВЛЕНИЕ: Убран поиск =====
     logger.info(f"ChatID: {chat_id} | Анализ изображения. Модель: {model_id}, Темп: {temperature}")
-    tools = [] # Всегда пустой список
-    # ===================================
+    tools = [] # Поиск выключен
 
     reply = None
 
     try:
         model = genai.GenerativeModel(
             model_id,
-            tools=tools, # Передаем пустой список
+            tools=tools,
             safety_settings=[],
             generation_config={"temperature": temperature},
             system_instruction=system_instruction_text
@@ -319,11 +289,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 feedback = response.prompt_feedback
                 candidates_info = response.candidates
                 block_reason = feedback.block_reason if feedback else 'N/A'
-                # Убрали finish_reason
+                finish_reason_val = candidates_info[0].finish_reason if candidates_info else 'N/A'
                 safety_ratings = feedback.safety_ratings if feedback else []
                 safety_info = ", ".join([f"{s.category.name}: {s.probability.name}" for s in safety_ratings])
-                logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения. Block: {block_reason}, Safety: [{safety_info}]")
-                reply = f"🤖 Модель не смогла описать изображение. (Причина: {block_reason})" # Упростили
+                logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения. Block: {block_reason}, Finish: {finish_reason_val}, Safety: [{safety_info}]")
+                reply = f"🤖 Модель не смогла описать изображение. (Причина: {block_reason or finish_reason_val})"
             except Exception as e_inner:
                  logger.warning(f"ChatID: {chat_id} | Пустой ответ при анализе изображения, не удалось извлечь доп. инфо: {e_inner}")
                  reply = "🤖 Не удалось понять, что на изображении."
@@ -331,27 +301,29 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.exception(f"ChatID: {chat_id} | Ошибка при анализе изображения")
         error_message = str(e)
-        # Упрощенная обработка ошибок без Markdown
+        # Упрощенная обработка ошибок
         try:
             if isinstance(e, genai.types.BlockedPromptException):
                  reply = f"❌ Запрос на анализ изображения заблокирован моделью. Причина: {e}"
             elif isinstance(e, genai.types.StopCandidateException):
                  reply = f"❌ Анализ изображения остановлен моделью. Причина: {e}"
-            # Убрали ошибки, связанные с поиском
+            elif "429" in error_message and "quota" in error_message:
+                 reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
             elif "400" in error_message and "API key not valid" in error_message:
                  reply = "❌ Ошибка: Неверный Google API ключ."
             else:
                 reply = f"❌ Ошибка при анализе изображения: {error_message}"
         except AttributeError:
              logger.warning("genai.types не содержит BlockedPromptException/StopCandidateException, используем общую обработку.")
-             if "400" in error_message and "API key not valid" in error_message:
+             if "429" in error_message and "quota" in error_message:
+                  reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
+             elif "400" in error_message and "API key not valid" in error_message:
                   reply = "❌ Ошибка: Неверный Google API ключ."
              else:
                  reply = f"❌ Ошибка при анализе изображения: {error_message}"
 
 
     if reply:
-        # Отправляем ЛЮБОЙ reply (включая ошибки) без Markdown
         await update.message.reply_text(reply)
 
 
@@ -413,11 +385,12 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("model", model_command))
+    # application.add_handler(CommandHandler("model", model_command)) # Убрали
     application.add_handler(CommandHandler("clear", clear_history))
     application.add_handler(CommandHandler("temp", set_temperature))
-    # Убрали /search_on, /search_off
-    application.add_handler(CallbackQueryHandler(select_model_callback))
+    # application.add_handler(CommandHandler("search_on", enable_search)) # Убрали
+    # application.add_handler(CommandHandler("search_off", disable_search)) # Убрали
+    # application.add_handler(CallbackQueryHandler(select_model_callback)) # Убрали
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
