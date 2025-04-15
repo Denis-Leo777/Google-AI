@@ -5,7 +5,7 @@
 # - Очисткой истории /clear
 # - Безопасностью: safety_settings=[] (цензура снята)
 # - Постоянной системной инструкцией (через параметр модели)
-# - Исправленным вызовом Google Search для google-generativeai v0.8+
+# - Исправленным вызовом Google Search (импорт из google.ai.generativelanguage)
 
 import logging
 import os
@@ -29,13 +29,24 @@ from telegram.ext import (
     filters
 )
 import google.generativeai as genai
-# ===== ИСПРАВЛЕНИЕ: Добавляем нужные импорты для Tool =====
-from google.generativeai.types import Tool, GoogleSearchRetrieval
-# ==========================================================
 
 # Логгирование
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ===== ИСПРАВЛЕНИЕ: Импортируем Tool и GoogleSearchRetrieval из google.ai.generativelanguage =====
+try:
+    # Пытаемся импортировать из основного пути, который часто используется обёрткой
+    from google.ai.generativelanguage_v1beta.types import Tool, GoogleSearchRetrieval
+    logger.info("Успешно импортированы Tool и GoogleSearchRetrieval из google.ai.generativelanguage_v1beta.types")
+except ImportError as e:
+    logger.critical(f"Не удалось импортировать необходимые классы Tool и GoogleSearchRetrieval! Ошибка: {e}")
+    logger.critical("Проверьте версии библиотек google-generativeai, google-ai-generativelanguage, protobuf.")
+    logger.critical("Возможно, требуется обновление или фиксация версий в requirements.txt.")
+    # Выход, т.к. без этих классов поиск и работа с инструментами невозможны
+    exit(1)
+# ============================================================================================
+
 
 # Переменные окружения
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -89,19 +100,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_selected_model[chat_id] = DEFAULT_MODEL
     user_search_enabled[chat_id] = True
     user_temperature[chat_id] = 1.0
-    # ===== ИСПРАВЛЕНИЕ: Убираем инициализацию истории здесь, она будет создаваться по факту =====
-    # context.chat_data['history'] = [] # Не нужно инициализировать историю здесь
+    # Убираем инициализацию истории здесь, она будет создаваться по факту
+    # context.chat_data['history'] = []
     await update.message.reply_text(
         "Добро пожаловать! Здесь вы можете пользоваться самой продвинутой моделью ИИ от Google - Gemini 2.5 Pro с Google-поиском и улучшенными (точностью и юмором) настройками, чтением изображений и текстовых файлов."
-        " \n/model — выбор модели (включая генерацию картинок 'Image Gen')," # Добавил Image Gen в описание
+        " \n/model — выбор модели (включая генерацию картинок 'Image Gen'),"
         " \n/clear — очистить историю."
-        " \n/temp <0-2> — установить температуру (креативность)."
-        " \n/search_on /search_off — вкл/выкл Google Поиск." # Добавил команды поиска
-        " \nКанал автора: t.me/denisobovsyom" # Подправил немного текст
+        " \n/search_on /search_off — вкл/выкл Google Поиск."
+        " \nКанал автора: t.me/denisobovsyom"
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ===== ИСПРАВЛЕНИЕ: Просто очищаем историю, без системного промпта =====
+    # Просто очищаем историю, без системного промпта
     context.chat_data['history'] = []
     await update.message.reply_text("🧹 История диалога очищена.")
 
@@ -158,7 +168,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, Поиск: {use_search}")
 
-    # ===== ИСПРАВЛЕНИЕ: История без системного промпта, он будет в параметрах модели =====
+    # История без системного промпта, он будет в параметрах модели
     chat_history = context.chat_data.setdefault("history", [])
 
     # Добавляем текущее сообщение пользователя
@@ -173,10 +183,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, текущая длина истории: {len(chat_history)}, символов: {total_chars}")
 
     try:
-        # ===== ИСПРАВЛЕНИЕ: Новый способ определения tools =====
+        # Используем импортированные Tool и GoogleSearchRetrieval
         tools = [Tool(google_search_retrieval=GoogleSearchRetrieval())] if use_search else []
 
-        # ===== ИСПРАВЛЕНИЕ: Передаём system_instruction напрямую =====
+        # Передаём system_instruction напрямую
         model = genai.GenerativeModel(
             model_id,
             tools=tools,
@@ -229,7 +239,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  user_prompt = f"{ocr_prompt}Проанализируй изображение и текст на нём."
 
             # Создаём фейковое текстовое сообщение для передачи в handle_message
-            # Это немного костыльно, но позволяет использовать всю логику handle_message (история, обрезка и т.д.)
             fake_update = type('obj', (object,), {
                 'effective_chat': update.effective_chat,
                 'message': type('obj', (object,), {
@@ -258,15 +267,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     temperature = user_temperature.get(chat_id, 1.0)
     use_search = user_search_enabled.get(chat_id, True)
 
-    # ===== ИСПРАВЛЕНИЕ: Новый способ определения tools =====
+    # Используем импортированные Tool и GoogleSearchRetrieval
     tools = [Tool(google_search_retrieval=GoogleSearchRetrieval())] if use_search else []
 
     logger.info(f"ChatID: {chat_id} | Анализ изображения. Модель: {model_id}, Темп: {temperature}, Поиск: {use_search}")
 
     try:
-        # ===== ИСПРАВЛЕНИЕ: Передаём system_instruction напрямую =====
-        # Заметка: Не уверен, на 100%, как system_instruction влияет на анализ *самого* изображения,
-        # но он точно повлияет на *текстовый ответ* об изображении.
+        # Передаём system_instruction напрямую
         model = genai.GenerativeModel(
             model_id,
             tools=tools,
@@ -326,8 +333,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # Ограничим текст, чтобы не упереться в лимиты API и Telegram
-    # MAX_CONTEXT_CHARS здесь не совсем подходит, т.к. это лимит всего диалога.
-    # Установим разумный лимит на сам текст файла.
     MAX_FILE_CHARS = 30000 # Например, 30к символов
     if len(text) > MAX_FILE_CHARS:
         truncated = text[:MAX_FILE_CHARS]
@@ -372,8 +377,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_document)) # Явно только текстовые
     # Основной обработчик текста (должен быть последним из MessageHandler для текста)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # ===== УДАЛЕНО: Лишний хендлер handle_image_prompt, который вызывал ошибку =====
-    # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_image_prompt))
 
     await application.initialize()
     webhook_url = urljoin(WEBHOOK_HOST, f"/{GEMINI_WEBHOOK_PATH}") # Добавил / перед путем вебхука
@@ -422,14 +425,12 @@ async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.R
         # logger.debug(f"Получен апдейт: {data}") # Раскомментируй для детальной отладки вебхуков
         update = Update.de_json(data, application.bot)
         # Запускаем обработку апдейта в фоне, чтобы быстро ответить Telegram (200 OK)
-        # и избежать таймаутов, если обработка будет долгой
         asyncio.create_task(application.process_update(update))
         # Моментально отвечаем Telegram, что мы приняли запрос
         return aiohttp.web.Response(text="OK", status=200)
     except Exception as e:
         logger.error(f"Ошибка обработки вебхук-запроса: {e}", exc_info=True)
         # Не отвечаем ошибкой Telegram, т.к. он может начать спамить повторами
-        # Просто логируем и возвращаем OK, раз уж мы приняли запрос
         return aiohttp.web.Response(text="OK", status=200) # Отвечаем ОК даже при ошибке обработки
 
 
@@ -457,15 +458,21 @@ async def main():
     finally:
         logger.info("Начинаю процесс остановки...")
         if web_server_task and not web_server_task.done():
-             # Даем серверу сигнал остановиться (если он ждет stop_event)
-             # stop_event уже должен быть установлен обработчиком сигнала
-             # Просто ждем завершения задачи сервера
              logger.info("Ожидаю завершения веб-сервера...")
              try:
-                 await asyncio.wait_for(web_server_task, timeout=10.0) # Даем 10 сек на штатное завершение
+                 # Даем серверу сигнал остановиться (stop_event уже должен быть set)
+                 # и ждем завершения задачи
+                 await asyncio.wait_for(web_server_task, timeout=10.0)
              except asyncio.TimeoutError:
                  logger.warning("Веб-сервер не завершился за 10 секунд, отменяю задачу...")
                  web_server_task.cancel()
+                 # Дополнительно ждем отмены
+                 try:
+                     await web_server_task
+                 except asyncio.CancelledError:
+                     logger.info("Задача веб-сервера успешно отменена.")
+                 except Exception as e:
+                     logger.error(f"Ошибка при ожидании отмены задачи веб-сервера: {e}")
              except Exception as e:
                  logger.error(f"Ошибка при ожидании/отмене задачи веб-сервера: {e}")
 
