@@ -1,5 +1,5 @@
 # Обновлённый main.py:
-# - Исправлен поиск DDG: используется AsyncDDGS и await atext
+# - Исправлена SyntaxError из-за Markdown звёздочек
 
 import logging
 import os
@@ -30,12 +30,12 @@ from telegram.ext import (
     filters
 )
 import google.generativeai as genai
-# ===== ИСПРАВЛЕНИЕ: Импортируем AsyncDDGS =====
-**from duckduckgo_search import AsyncDDGS # Используем асинхронный класс**
+# ===== ИСПРАВЛЕНИЕ: Убираем ** =====
+from duckduckgo_search import AsyncDDGS # Используем асинхронный класс
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-# ============================================
+# ==================================
 
-# Переменные окружения и их проверка ... (без изменений)
+# Переменные окружения и их проверка
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
@@ -50,7 +50,6 @@ for var, name in [
     if not var:
         logger.critical(f"Переменная окружения {name} не задана!")
         exit(1)
-
 
 # Настройка Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
@@ -186,12 +185,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if use_search:
         logger.info(f"ChatID: {chat_id} | Поиск DDG включен. Запрос: '{original_user_message[:50]}...'")
         try:
-            # ===== ИСПРАВЛЕНИЕ: Используем AsyncDDGS =====
-            **ddgs = AsyncDDGS() # Создаем АСИНХРОННЫЙ экземпляр**
+            # ===== ИСПРАВЛЕНИЕ: Убираем ** =====
+            ddgs = AsyncDDGS() # Создаем АСИНХРОННЫЙ экземпляр
             logger.debug(f"ChatID: {chat_id} | Запрос к AsyncDDGS().atext('{original_user_message}', region='ru-ru', max_results={DDG_MAX_RESULTS})")
-            # Теперь вызываем await ddgs.atext(...)
-            **results = await ddgs.atext(original_user_message, region='ru-ru', max_results=DDG_MAX_RESULTS)**
-            # ============================================
+            results = await ddgs.atext(original_user_message, region='ru-ru', max_results=DDG_MAX_RESULTS)
+            # ==================================
             logger.debug(f"ChatID: {chat_id} | Результаты DDG:\n{pprint.pformat(results)}")
 
             if results:
@@ -422,7 +420,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   reply = "❌ Ошибка: Неверный Google API ключ."
              else:
                  reply = f"❌ Ошибка при анализе изображения: {error_message}"
-
 
     if reply:
         await update.message.reply_text(reply)
