@@ -202,7 +202,7 @@ async def perform_google_search(query: str, api_key: str, cse_id: str, num_resul
                     logger.warning(f"Google Search: Ошибка 429 - Квота исчерпана!")
                     return None
                 elif response.status == 403:
-                     logger.error(f"Google Search: Ошибка 403 - Доступ запрещен. Проверьте API ключ и его ограничения, а также включен ли Custom Search API.")
+             logger.error(f"Google Search: Ошибка 403 - Доступ запрещен. Проверьте API ключ и его ограничения, а также включен ли Custom Search API.")
                      return None
                 else:
                     error_text = await response.text()
@@ -218,7 +218,6 @@ async def perform_google_search(query: str, api_key: str, cse_id: str, num_resul
         logger.error(f"Google Search: Непредвиденная ошибка - {e}", exc_info=True)
         return None
 
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     original_user_message = update.message.text.strip() if update.message.text else ""
@@ -228,29 +227,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Получаем настройки из chat_data
     context.chat_data.setdefault('selected_model', DEFAULT_MODEL)
     context.chat_data.setdefault('temperature', 1.0)
-    context.chat_data.setdefault('history', [])
+    context.chat_data.setdefault('history', []) # Убедимся, что история есть
 
     model_id = context.chat_data['selected_model']
     temperature = context.chat_data['temperature']
-    # use_search больше не читается, поиск всегда активен
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    search_snippets_text = "" # Текст сниппетов для добавления в промпт
+    search_snippets_text = ""
     search_provider = None
 
-    # ===== ИЗМЕНЕНИЕ: Блок поиска теперь не зависит от use_search =====
-    logger.info(f"ChatID: {chat_id} | Поиск всегда включен. Запрос: '{original_user_message[:50]}...'")
+    # Шаг 1: Выполняем поиск (Google с фаллбэком на DDG)
+    logger.info(f"ChatID: {chat_id} | Выполняется поиск для запроса: '{original_user_message[:50]}...'")
     google_results = await perform_google_search(
         original_user_message, GOOGLE_API_KEY, GOOGLE_CSE_ID, GOOGLE_SEARCH_MAX_RESULTS
     )
 
     if google_results:
         search_provider = "Google"
-        search_snippets_text = "\n".join([f"- {snippet}" for snippet in google_results]) # Собираем только текст сниппетов
-        logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты Google: {len(google_results)} сниппетов.")
-    else:
-        logger.info(f"ChatID: {chat_id} | Поиск Google не дал результатов или произошла ошибка. Пробуем DuckDuckGo...")
+        search_snippets_text = "\n".join([f"- {snippet.strip()}" for snippet in google_results if snippet.strip()]) # Убираем пустые строки
+        if search_snippets_text:
+            logger.info(f"ChatID: {chat_id} | Найдены результаты Google: {len(google_results)} сниппетов.")
+        else:
+            logger.info(f"ChatID: {chat_id} | Результаты Google найдены, но не содержат текста.")
+            search_provider = None # Сбрасываем, если текст пуст
+    # --- Фаллбэк на DDG, если Google не сработал или вернул пустые сниппеты ---
+    if not search_snippets_text:
+        logger.info(f"ChatID: {chat_id} | Поиск Google не дал текстовых результатов или произошла ошибка. Пробуем DuckDuckGo...")
         try:
             ddgs = DDGS()
             logger.debug(f"ChatID: {chat_id} | Запрос к DDGS().text('{original_user_message}', region='ru-ru', max_results={DDG_MAX_RESULTS}) через asyncio.to_thread")
@@ -263,11 +266,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.debug(f"ChatID: {chat_id} | Результаты DDG:\n{pprint.pformat(results)}")
 
             if results:
-                ddg_snippets = [r.get('body', '') for r in results if r.get('body')]
+                ddg_snippets = [r.get('body', '').strip() for r in results if r.get('body', '').strip()]
                 if ddg_snippets:
                     search_provider = "DuckDuckGo (запасной)"
                     search_snippets_text = "\n".join([f"- {snippet}" for snippet in ddg_snippets])
-                    logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(ddg_snippets)} сниппетов.")
+                    logger.info(f"ChatID: {chat_id} | Найдены результаты DDG: {len(ddg_snippets)} сниппетов.")
                 else:
                     logger.info(f"ChatID: {chat_id} | Результаты DDG найдены, но не содержат текста (body).")
             else:
@@ -275,50 +278,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e_ddg:
             logger.error(f"ChatID: {chat_id} | Ошибка при поиске DuckDuckGo: {e_ddg}", exc_info=True)
 
-    # ===== ИЗМЕНЕНИЕ: Формирование промпта и добавление в историю =====
-    chat_history = context.chat_data['history']
-    prompt_for_model_and_history = original_user_message # Начинаем с оригинального сообщения
+    # Шаг 2: Подготовка данных для API Gemini
+    # Берем чистую историю из chat_data
+    clean_history = context.chat_data['history']
 
+    # Создаем временную копию истории для отправки модели
+    history_for_model = list(clean_history)
+
+    # Формируем последний "user" промпт для модели
+    prompt_for_api = original_user_message
     if search_snippets_text:
-        # Добавляем контекст ПЕРЕД вопросом пользователя, без явных инструкций
-        prompt_for_model_and_history = (
-            f"Актуальная информация из интернета ({search_provider}):\n{search_snippets_text}\n\n"
-            f"{original_user_message}"
+        # Добавляем контекст поиска в начало промпта для API, четко его обозначая
+        # Можно использовать маркеры, понятные модели, или просто текстовое описание
+        prompt_for_api = (
+            f"Используй следующую актуальную информацию из интернета ({search_provider}) для ответа на вопрос пользователя:\n"
+            f"```search_context\n{search_snippets_text}\n```\n\n"
+            f"Вопрос пользователя:\n{original_user_message}"
         )
-        search_log_msg = f"Поиск: Контекст добавлен ({search_provider})"
+        search_log_msg = f"Поиск: Контекст ({search_provider}) добавлен в промпт для API"
     else:
-        # Поиск не сработал или не дал результатов
         search_log_msg = "Поиск: Контекст НЕ добавлен (ошибка или нет результатов)"
 
-    # Добавляем единый промпт (с контекстом или без) в историю
-    chat_history.append({"role": "user", "parts": [{"text": prompt_for_model_and_history}]})
-    # =================================================================
+    # Добавляем этот (потенциально модифицированный) промпт во временную историю
+    history_for_model.append({"role": "user", "parts": [{"text": prompt_for_api}]})
 
-    logger.debug(f"ChatID: {chat_id} | Финальный промпт для Gemini (и в истории):\n{prompt_for_model_and_history}")
+    logger.debug(f"ChatID: {chat_id} | Промпт для API Gemini:\n{prompt_for_api}")
     logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, {search_log_msg}")
+    logger.info(f"ChatID: {chat_id} | Длина чистой истории: {len(clean_history)}, Длина истории для API: {len(history_for_model)}")
 
-    # Обрезка истории (как и раньше)
-    total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
-    while total_chars > MAX_CONTEXT_CHARS and len(chat_history) > 1:
-        if len(chat_history) >= 2:
-            removed_user = chat_history.pop(0)
-            removed_model = chat_history.pop(0)
-            logger.info(f"ChatID: {chat_id} | История обрезана, удалена пара сообщений, текущая длина истории: {len(chat_history)}")
-        else:
-            removed_message = chat_history.pop(0)
-            logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, история пуста.")
-        total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
-        logger.info(f"ChatID: {chat_id} | ... новая общая длина символов: {total_chars}")
 
-    # ===== ИЗМЕНЕНИЕ: Передаем модели текущую историю =====
-    # history_for_model больше не нужна, т.к. промпт уже в chat_history
-    current_history = chat_history
-    # ====================================================
+    # Обрезка ИМЕННО ВРЕМЕННОЙ истории перед отправкой, если она слишком длинная
+    # (Чистая история обрезается ниже, после получения ответа)
+    temp_total_chars = sum(len(p["parts"][0]["text"]) for p in history_for_model if p.get("parts") and p["parts"][0].get("text"))
+    while temp_total_chars > MAX_CONTEXT_CHARS and len(history_for_model) > 1:
+        # Удаляем самые старые сообщения (пару user/model) из временной копии
+        if len(history_for_model) >= 2:
+            history_for_model.pop(0) # user
+            history_for_model.pop(0) # model
+            logger.info(f"ChatID: {chat_id} | ВРЕМЕННАЯ история для API обрезана (удалена пара), длина: {len(history_for_model)}")
+        else: # Если осталось только одно (последнее) сообщение
+             history_for_model.pop(0)
+             logger.info(f"ChatID: {chat_id} | ВРЕМЕННАЯ история для API обрезана, осталось только последнее сообщение.")
+        temp_total_chars = sum(len(p["parts"][0]["text"]) for p in history_for_model if p.get("parts") and p["parts"][0].get("text"))
+        logger.info(f"ChatID: {chat_id} | ... новая общая длина символов ВРЕМЕННОЙ истории: {temp_total_chars}")
+
 
     current_system_instruction = system_instruction_text
     tools = []
     reply = None
 
+    # Шаг 3: Вызов API Gemini с временной историей
     try:
         generation_config=genai.GenerationConfig(
                 temperature=temperature,
@@ -331,12 +340,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             generation_config=generation_config,
             system_instruction=current_system_instruction
         )
-        # Передаем текущую историю (которая уже содержит промпт с контекстом или без)
-        response = model.generate_content(current_history)
-
+        # Используем history_for_model
+        response = model.generate_content(history_for_model)
         reply = response.text
+
         if not reply:
-            # Обработка пустого ответа (без изменений)
+            # Обработка пустого ответа... (код без изменений)
             try:
                 feedback = response.prompt_feedback
                 candidates_info = response.candidates
@@ -356,12 +365,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо: {e_inner}")
                 reply = "🤖 Нет ответа от модели."
 
-        if reply:
-             # Добавляем ответ модели в историю в chat_data
-             chat_history.append({"role": "model", "parts": [{"text": reply}]})
-
     except Exception as e:
-        # Обработка ошибок (без изменений)
+        # Обработка ошибок API... (код без изменений)
         logger.exception(f"ChatID: {chat_id} | Ошибка при взаимодействии с моделью {model_id}")
         error_message = str(e)
         try:
@@ -388,11 +393,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
              else:
                   reply = f"❌ Ошибка при обращении к модели: {error_message}"
 
+    # Шаг 4: Сохранение ЧИСТОГО диалога в context.chat_data['history']
+    # Добавляем ОРИГИНАЛЬНЫЙ запрос пользователя
+    context.chat_data['history'].append({"role": "user", "parts": [{"text": original_user_message}]})
     if reply:
+        # Добавляем ответ модели
+        context.chat_data['history'].append({"role": "model", "parts": [{"text": reply}]})
+        # Отправляем ответ пользователю
         MAX_MESSAGE_LENGTH = 4096
         for i in range(0, len(reply), MAX_MESSAGE_LENGTH):
             await update.message.reply_text(reply[i:i + MAX_MESSAGE_LENGTH])
+    else:
+        # Если ответа не было (например, ошибка), отправляем сообщение об ошибке
+        # (оно уже сформировано в блоке except или if not reply)
+        await update.message.reply_text(reply if reply else "❌ Произошла неизвестная ошибка при получении ответа.") # На всякий случай
 
+    # Шаг 5: Обрезка ЧИСТОЙ истории в context.chat_data['history'] ПОСЛЕ добавления ответа
+    final_history = context.chat_data['history']
+    total_chars = sum(len(p["parts"][0]["text"]) for p in final_history if p.get("parts") and p["parts"][0].get("text"))
+    while total_chars > MAX_CONTEXT_CHARS and len(final_history) > 1:
+        if len(final_history) >= 2:
+            removed_user = final_history.pop(0)
+            removed_model = final_history.pop(0)
+            logger.info(f"ChatID: {chat_id} | ЧИСТАЯ история обрезана (удалена пара), текущая длина: {len(final_history)}")
+        else:
+            removed_message = final_history.pop(0)
+            logger.info(f"ChatID: {chat_id} | ЧИСТАЯ история обрезана (удалено сообщение), история пуста.")
+        total_chars = sum(len(p["parts"][0]["text"]) for p in final_history if p.get("parts") and p["parts"][0].get("text"))
+        logger.info(f"ChatID: {chat_id} | ... новая общая длина символов ЧИСТОЙ истории: {total_chars}")
 
 # Обработчики фото и документов (без изменений, они используют handle_message для отправки промпта)
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
