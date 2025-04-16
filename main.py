@@ -80,8 +80,8 @@ user_temperature = {}
 # Константы
 MAX_CONTEXT_CHARS = 95000
 MAX_OUTPUT_TOKENS = 3000
-DDG_MAX_RESULTS = 10 # Можно уменьшить, т.к. это запасной вариант
-GOOGLE_SEARCH_MAX_RESULTS = 10 # Количество результатов от Google
+DDG_MAX_RESULTS = 30 # Можно уменьшить, т.к. это запасной вариант
+GOOGLE_SEARCH_MAX_RESULTS = 30 # Количество результатов от Google
 
 # Системная инструкция (без изменений)
 system_instruction_text = (
@@ -253,7 +253,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if google_results:
             search_provider = "Google"
             search_snippets = [f"- {snippet}" for snippet in google_results]
-            search_context = f"Контекст из поиска {search_provider}:\n" + "\n".join(search_snippets)
+            search_context = f"Результаты поиска {search_provider}:\n" + "\n".join(search_snippets)
             logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты Google: {len(search_snippets)} сниппетов.")
         else:
             logger.info(f"ChatID: {chat_id} | Поиск Google не дал результатов или произошла ошибка. Пробуем DuckDuckGo...")
@@ -273,7 +273,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
                     if search_snippets:
                         search_provider = "DuckDuckGo (запасной)"
-                        search_context = f"Контекст из поиска {search_provider}:\n" + "\n".join(search_snippets)
+                        search_context = f"Результаты поиска {search_provider}:\n" + "\n".join(search_snippets)
                         logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
                     else:
                         logger.info(f"ChatID: {chat_id} | Результаты DDG найдены, но не содержат текста (body).")
@@ -287,7 +287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if search_context:
             final_user_prompt = (
                 f"{search_context}\n\n"
-                f"Используя приведенный выше контекст из поиска и свои знания, ответь на следующий вопрос пользователя:\n"
+                f"Используя результаты поиска и свои знания, ответь на вопрос пользователя:\n"
                 f"\"{original_user_message}\""
             )
     else:
@@ -295,7 +295,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.debug(f"ChatID: {chat_id} | Финальный промпт для Gemini:\n{final_user_prompt}")
     # ===== ИЗМЕНЕНИЕ: Логируем, какой поиск использовался =====
-    search_log_msg = f"Поиск: {'Контекст добавлен (' + search_provider + ')' if search_provider else ('Контекст НЕ добавлен' if use_search else 'Отключен')}"
+    search_log_msg = f"Поиск: {'Результаты добавлены (' + search_provider + ')' if search_provider else ('Результаты НЕ добавлены' if use_search else 'Отключен')}"
     logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, {search_log_msg}")
     # =======================================================
 
