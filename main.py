@@ -66,9 +66,8 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 # Модели
 AVAILABLE_MODELS = {
-    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking (Exp)',
-    'gemini-2.5-pro-preview-03-25': '2.5 Pro Preview',
-    'gemini-2.5-pro-exp-03-25': '2.5 Pro (Exp)',
+    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking exp.',
+    'gemini-2.5-pro-exp-03-25': '2.5 Pro exp.',
     'gemini-2.0-flash-001': '2.0 Flash',
 }
 DEFAULT_MODEL = 'gemini-2.0-flash-thinking-exp-01-21'
@@ -81,8 +80,8 @@ user_temperature = {}
 # Константы
 MAX_CONTEXT_CHARS = 95000
 MAX_OUTPUT_TOKENS = 3000
-DDG_MAX_RESULTS = 5 # Можно уменьшить, т.к. это запасной вариант
-GOOGLE_SEARCH_MAX_RESULTS = 5 # Количество результатов от Google
+DDG_MAX_RESULTS = 10 # Можно уменьшить, т.к. это запасной вариант
+GOOGLE_SEARCH_MAX_RESULTS = 10 # Количество результатов от Google
 
 # Системная инструкция (без изменений)
 system_instruction_text = (
@@ -124,12 +123,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_temperature[chat_id] = 1.0
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"**{default_model_name}**."
-        f"\n + поиск Google (основной) / DuckDuckGo (запасной), чтение изображений (OCR) и текстовых файлов." # Обновлено описание
+        f"**{default_model_name}**"
+        f"\n + поиск Google, улучшенные настройки точности, логики и юмора, чтение изображений (OCR) и текстовых файлов." # Обновлено описание
         "\n/model — выбор модели"
         "\n/clear — очистить историю"
         "\n/search_on  /search_off — вкл/выкл поиск"
-        "\n/temp X.Y — установить температуру (0.0-2.0)" # Добавил подсказку для temp
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
 
@@ -605,7 +603,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if reply:
         # Разбиваем длинные сообщения
-        MAX_MESSAGE_LENGTH = 4096
+        MAX_MESSAGE_LENGTH = 3000
         for i in range(0, len(reply), MAX_MESSAGE_LENGTH):
             await update.message.reply_text(reply[i:i + MAX_MESSAGE_LENGTH])
 
