@@ -80,8 +80,8 @@ user_temperature = {}
 # Константы
 MAX_CONTEXT_CHARS = 95000
 MAX_OUTPUT_TOKENS = 3000
-DDG_MAX_RESULTS = 20 # Можно уменьшить, т.к. это запасной вариант
-GOOGLE_SEARCH_MAX_RESULTS = 20 # Количество результатов от Google
+DDG_MAX_RESULTS = 10 # Можно уменьшить, т.к. это запасной вариант
+GOOGLE_SEARCH_MAX_RESULTS = 10 # Количество результатов от Google
 
 # Системная инструкция (без изменений)
 system_instruction_text = (
