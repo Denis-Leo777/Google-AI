@@ -1,6 +1,5 @@
 # Обновлённый main.py:
 # - Исправлен поиск DDG: используется синхронный ddgs.text() в отдельном потоке через asyncio.to_thread()
-
 import logging
 import os
 import asyncio # Нужно для asyncio.to_thread
@@ -60,7 +59,7 @@ AVAILABLE_MODELS = {
     'gemini-2.5-pro-exp-03-25': '2.5 Pro exp.',
     'gemini-2.0-flash-001': '2.0 Flash',
 }
-DEFAULT_MODEL = 'gemini-2.0-flash-thinking-exp-01-21'
+DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25'
 
 # Переменные состояния пользователя
 user_search_enabled = {}
@@ -69,7 +68,7 @@ user_temperature = {}
 
 # Константы
 MAX_CONTEXT_CHARS = 95000
-MAX_OUTPUT_TOKENS = 9000
+MAX_OUTPUT_TOKENS = 3000
 DDG_MAX_RESULTS = 10
 
 # Системная инструкция
@@ -165,11 +164,11 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         await query.edit_message_text("❌ Неизвестная модель")
 
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    original_user_message = update.message.text.strip()
+    original_user_message = update.message.text.strip() if update.message.text else "" # Проверка на None
     if not original_user_message:
+        logger.info(f"ChatID: {chat_id} | Получено пустое сообщение, игнорируется.")
         return
 
     model_id = user_selected_model.get(chat_id, DEFAULT_MODEL)
@@ -178,131 +177,185 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    search_context = ""
-    final_user_prompt = original_user_message
+    # --- Логика формирования промпта ---
+    search_context = None # Инициализируем как None для четкого понимания, был ли контекст добавлен
+    final_user_prompt = None # Определится ниже
+
+    # Текст для случая, если поиск не удался или не дал полезных результатов
+    search_fallback_text = (
+        "Поискал(а) в сети, но по вашему вопросу ничего конкретного или полезного не нашлось. "
+        "Поэтому отвечу, опираясь на свои внутренние знания, которые могут быть не самыми последними."
+    )
 
     if use_search:
         logger.info(f"ChatID: {chat_id} | Поиск DDG включен. Запрос: '{original_user_message[:50]}...'")
         try:
-            # ===== ИСПРАВЛЕНИЕ: Вызываем синхронный text в отдельном потоке =====
-            ddgs = DDGS() # Создаем ОБЫЧНЫЙ экземпляр
+            ddgs = DDGS()
             logger.debug(f"ChatID: {chat_id} | Запрос к DDGS().text('{original_user_message}', region='ru-ru', max_results={DDG_MAX_RESULTS}) через asyncio.to_thread")
-            # Запускаем блокирующую функцию в отдельном потоке
             results = await asyncio.to_thread(
                 ddgs.text,
                 original_user_message,
                 region='ru-ru',
                 max_results=DDG_MAX_RESULTS
             )
-            # ===================================================================
             logger.debug(f"ChatID: {chat_id} | Результаты DDG:\n{pprint.pformat(results)}")
 
             if results:
-                search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
+                # Исправлено: Убираем дефис, он тут не нужен при нумерации
+                search_snippets = [r.get('body', '').strip() for r in results if r.get('body', '').strip()]
+
                 if search_snippets:
-                    search_context = "Информация в интернете на вопрос пользователя:\n" + "\n".join(search_snippets)
+                    # Используем выбранное количество сниппетов
+                    limited_snippets = search_snippets[:DDG_MAX_RESULTS] # Используем константу
+                    formatted_snippets = [f"{i+1}. {snippet}" for i, snippet in enumerate(limited_snippets)]
+
+                    # Формируем контекст поиска
+                    search_context = ( # Присваиваем значение переменной, а не пустой строке
+                        "Итак, вот сводка данных из интернета по запросу пользователя:\n"
+                        + "\n".join(formatted_snippets)
+                        + "\n\nЭто самая актуальная информация, которую удалось найти. Используй её как *основу* для ответа. "
+                        "Свои знания тоже подключай, но приоритет отдавай этим данным из сети. "
+                        "Если видишь там явные ошибки, противоречия или нестыковки – не игнорируй, так и укажи, мол, 'информация в сети выглядит сомнительно'."
+                    )
+
+                    # Формируем финальный промпт с контекстом
                     final_user_prompt = (
                         f"{search_context}\n\n"
-                        f"Сверяй собственные знания и актуальную информацию из интернета. Текущей считай информацию с самыми новыми датами:\n"
+                        f"Теперь, пожалуйста, сформулируй ответ на исходный вопрос пользователя:\n"
                         f"\"{original_user_message}\""
                     )
-                    logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
+                    # Исправлено: Логируем количество *использованных* сниппетов
+                    logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(limited_snippets)} сниппетов.")
+
                 else:
-                    logger.info(f"ChatID: {chat_id} | Результаты DDG найдены, но не содержат текста (body).")
+                    # Результаты есть, но без текста
+                    logger.info(f"ChatID: {chat_id} | Результаты DDG найдены, но не содержат полезного текста (body). Используется fallback.")
+                    final_user_prompt = f"{search_fallback_text}\n\nСобственно, вопрос:\n\"{original_user_message}\""
             else:
-                logger.info(f"ChatID: {chat_id} | Результаты DDG не найдены.")
+                # Результатов нет
+                logger.info(f"ChatID: {chat_id} | Результаты DDG не найдены. Используется fallback.")
+                final_user_prompt = f"{search_fallback_text}\n\nСобственно, вопрос:\n\"{original_user_message}\""
+
         except Exception as e_ddg:
             logger.error(f"ChatID: {chat_id} | Ошибка при поиске DuckDuckGo: {e_ddg}", exc_info=True)
+            # При ошибке тоже используем fallback
+            final_user_prompt = f"{search_fallback_text}\n\nСобственно, вопрос:\n\"{original_user_message}\""
     else:
+        # Поиск отключен
         logger.info(f"ChatID: {chat_id} | Поиск DDG отключен.")
+        # В этом случае промпт - это просто исходное сообщение
+        final_user_prompt = original_user_message
 
+    # Если final_user_prompt по какой-то причине не установился (не должно быть, но для страховки)
+    if final_user_prompt is None:
+        logger.warning(f"ChatID: {chat_id} | final_user_prompt не был установлен, используется original_user_message.")
+        final_user_prompt = original_user_message
+
+    # --- Подготовка к вызову модели ---
     logger.debug(f"ChatID: {chat_id} | Финальный промпт для Gemini:\n{final_user_prompt}")
+    # Исправлено: Проверяем search_context (который теперь None или строка)
     logger.info(f"ChatID: {chat_id} | Модель: {model_id}, Темп: {temperature}, Поиск DDG: {'Контекст добавлен' if search_context else 'Контекст НЕ добавлен'}")
 
     chat_history = context.chat_data.setdefault("history", [])
     chat_history.append({"role": "user", "parts": [{"text": final_user_prompt}]})
 
-    # Обрезка истории
-    total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
-    while total_chars > MAX_CONTEXT_CHARS and len(chat_history) > 1:
-        removed_message = chat_history.pop(0)
-        total_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
-        logger.info(f"ChatID: {chat_id} | История обрезана, удалено сообщение: {removed_message.get('role')}, текущая длина истории: {len(chat_history)}, символов: {total_chars}")
-    current_history = chat_history
-    current_system_instruction = system_instruction_text
-    tools = []
+    # --- Обрезка истории (оптимизировано) ---
+    current_chars = sum(len(p["parts"][0]["text"]) for p in chat_history if p.get("parts") and p["parts"][0].get("text"))
+    history_changed = False
+    while current_chars > MAX_CONTEXT_CHARS and len(chat_history) > 1:
+        history_changed = True
+        removed_message = chat_history.pop(0) # Удаляем самое старое сообщение (первое)
+        # Вычитаем длину удаленного сообщения, если оно было
+        removed_text_len = len(removed_message["parts"][0]["text"]) if removed_message.get("parts") and removed_message["parts"][0].get("text") else 0
+        current_chars -= removed_text_len
+        logger.info(f"ChatID: {chat_id} | История обрезана, удалено: {removed_message.get('role')}, длина: {removed_text_len}. Новая длина истории: {len(chat_history)}, символов: {current_chars}")
+    # if history_changed:
+        # logger.info(f"ChatID: {chat_id} | Итоговая длина истории после обрезки: {len(chat_history)}, символов: {current_chars}")
 
+    # --- Вызов модели и обработка ответа ---
     reply = None
-
     try:
-        generation_config=genai.GenerationConfig(
+        generation_config = genai.GenerationConfig(
                 temperature=temperature,
-                max_output_tokens=MAX_OUTPUT_TOKENS
+                max_output_tokens=MAX_OUTPUT_TOKENS # Убедитесь, что константа определена
         )
         model = genai.GenerativeModel(
             model_id,
-            tools=tools,
-            safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
+            # tools=tools, # tools сейчас пустой, можно убрать или оставить, если планируется
+            safety_settings=SAFETY_SETTINGS_BLOCK_NONE, # Убедитесь, что константа определена
             generation_config=generation_config,
-            system_instruction=current_system_instruction
+            system_instruction=system_instruction_text # Убедитесь, что переменная определена
         )
-        response = model.generate_content(current_history)
+        # Передаем актуальную историю
+        response = await model.generate_content_async(chat_history) # Используем async версию, раз хендлер асинхронный
 
         reply = response.text
         if not reply:
-            # Обработка пустого ответа
+            # Обработка пустого ответа (ваша логика выглядит нормально)
             try:
                 feedback = response.prompt_feedback
                 candidates_info = response.candidates
-                block_reason = feedback.block_reason if feedback else 'N/A'
-                finish_reason_val = candidates_info[0].finish_reason if candidates_info else 'N/A'
-                safety_ratings = feedback.safety_ratings if feedback else []
+                block_reason = feedback.block_reason if hasattr(feedback, 'block_reason') else 'N/A'
+                # Проверяем наличие и непустоту candidates перед доступом к индексу
+                finish_reason_val = candidates_info[0].finish_reason if candidates_info and hasattr(candidates_info[0], 'finish_reason') else 'N/A'
+                safety_ratings = feedback.safety_ratings if hasattr(feedback, 'safety_ratings') else []
                 safety_info = ", ".join([f"{s.category.name}: {s.probability.name}" for s in safety_ratings])
                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели. Block: {block_reason}, Finish: {finish_reason_val}, Safety: [{safety_info}]")
-                if block_reason and block_reason != genai.types.BlockReason.UNSPECIFIED:
+                # Используем строковое представление enum для сравнения
+                if block_reason and str(block_reason) != 'BlockReason.UNSPECIFIED':
                      reply = f"🤖 Модель не дала ответ. (Причина блокировки: {block_reason})"
                 else:
                      reply = f"🤖 Модель не дала ответ. (Причина: {finish_reason_val})"
-            except AttributeError:
-                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо (AttributeError).")
+            except AttributeError as e_attr:
+                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо (AttributeError: {e_attr}).")
+                 reply = "🤖 Нет ответа от модели."
+            except IndexError:
+                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо (IndexError в candidates).")
                  reply = "🤖 Нет ответа от модели."
             except Exception as e_inner:
                 logger.warning(f"ChatID: {chat_id} | Пустой ответ от модели, не удалось извлечь доп. инфо: {e_inner}")
                 reply = "🤖 Нет ответа от модели."
 
         if reply:
+             # Добавляем ответ модели в историю ТОЛЬКО если он не пустой и не является сообщением об ошибке от нас
              chat_history.append({"role": "model", "parts": [{"text": reply}]})
 
     except Exception as e:
-        # Обработка ошибок
+        # Обработка ошибок API (ваша логика выглядит хорошо)
         logger.exception(f"ChatID: {chat_id} | Ошибка при взаимодействии с моделью {model_id}")
         error_message = str(e)
-        try:
-            if isinstance(e, genai.types.BlockedPromptException):
-                 reply = f"❌ Запрос заблокирован моделью. Причина: {e}"
-            elif isinstance(e, genai.types.StopCandidateException):
-                 reply = f"❌ Генерация остановлена моделью. Причина: {e}"
-            elif "429" in error_message and "quota" in error_message:
-                 reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
-            elif "400" in error_message and "API key not valid" in error_message:
-                 reply = "❌ Ошибка: Неверный Google API ключ."
-            elif "Deadline Exceeded" in error_message:
-                 reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
-            else:
-                 reply = f"❌ Ошибка при обращении к модели: {error_message}"
-        except AttributeError:
-             logger.warning("genai.types не содержит BlockedPromptException/StopCandidateException, используем общую обработку.")
-             if "429" in error_message and "quota" in error_message:
-                  reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
-             elif "400" in error_message and "API key not valid" in error_message:
-                  reply = "❌ Ошибка: Неверный Google API ключ."
-             elif "Deadline Exceeded" in error_message:
-                  reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
-             else:
-                  reply = f"❌ Ошибка при обращении к модели: {error_message}"
+        # Используем безопасный доступ к типам исключений, если они могут отсутствовать
+        BlockedPromptException = getattr(genai.types, 'BlockedPromptException', None)
+        StopCandidateException = getattr(genai.types, 'StopCandidateException', None)
 
+        if BlockedPromptException and isinstance(e, BlockedPromptException):
+             reply = f"❌ Запрос заблокирован моделью. Причина: {e}"
+        elif StopCandidateException and isinstance(e, StopCandidateException):
+             reply = f"❌ Генерация остановлена моделью. Причина: {e}"
+        elif "429" in error_message and ("quota" in error_message.lower() or "resource has been exhausted" in error_message.lower()):
+             reply = f"❌ Ошибка: Достигнут лимит запросов к API Google (ошибка 429). Попробуйте позже."
+        elif "400" in error_message and "api key not valid" in error_message.lower():
+             reply = "❌ Ошибка: Неверный Google API ключ."
+        # Проверка на ошибку таймаута может быть разной в зависимости от библиотеки/запроса
+        elif "deadline exceeded" in error_message.lower() or "timeout" in error_message.lower():
+             reply = "❌ Ошибка: Модель слишком долго отвечала (таймаут)."
+        else:
+             reply = f"❌ Произошла ошибка при обращении к модели: {error_message}"
+
+    # --- Отправка ответа ---
     if reply:
-        await update.message.reply_text(reply)
+        try:
+            await update.message.reply_text(reply)
+        except Exception as send_error:
+            logger.error(f"ChatID: {chat_id} | Не удалось отправить ответное сообщение: {send_error}", exc_info=True)
+    else:
+        # Случай, когда reply остался None (например, ошибка API и ошибка при формировании сообщения об ошибке)
+        logger.error(f"ChatID: {chat_id} | Переменная 'reply' пуста после всех обработок, ответ не отправлен.")
+        try:
+            # Отправить хоть какое-то сообщение пользователю
+            await update.message.reply_text("🤖 Произошла внутренняя ошибка, не удалось обработать ваш запрос.")
+        except Exception as final_send_error:
+            logger.error(f"ChatID: {chat_id} | Не удалось отправить даже fallback-сообщение об ошибке: {final_send_error}", exc_info=True)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
