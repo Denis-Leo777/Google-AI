@@ -271,7 +271,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if results:
                     search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
                     if search_snippets:
-                        search_provider = "DuckDuckGo (запасной)"
+                        search_provider = "DuckDuckGo"
                         search_context = f"Результаты поиска {search_provider}:\n" + "\n".join(search_snippets)
                         logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
                     else:
