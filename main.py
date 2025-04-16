@@ -123,8 +123,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_temperature[chat_id] = 1.0
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"**{default_model_name}**"
-        f"\n + поиск Google, улучшенные настройки точности, логики и юмора, чтение изображений (OCR) и текстовых файлов." # Обновлено описание
+        f"GEMINI **{default_model_name}**"
+        f"\n + поиск Google, улучшенные настройки точности, логики и юмора, чтение изображений (OCR) и текстовых файлов" # Обновлено описание
         "\n/model — выбор модели"
         "\n/clear — очистить историю"
     )
