@@ -127,7 +127,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\n + поиск Google, улучшенные настройки точности, логики и юмора, чтение изображений (OCR) и текстовых файлов." # Обновлено описание
         "\n/model — выбор модели"
         "\n/clear — очистить историю"
-        "\n/search_on  /search_off — вкл/выкл поиск"
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
 
