@@ -405,9 +405,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if search_context_snippets:
         search_context = "\n".join([f"- {s.strip()}" for s in search_context_snippets if s.strip()]) # Убираем пустые и пробельные
         if search_context: # Убедимся, что контекст не пустой после очистки
+             # Строки ~335-340 (примерно)
+# Было:
+# final_user_prompt = (
+#     f"Дополнительная информация по теме (используй её по необходимости, не ссылаясь):\n{search_context}\n\n"
+#     f"Вопрос пользователя: \"{original_user_message}\""
+# )
+
+# Стало:
              final_user_prompt = (
-                 f"Дополнительная информация по теме (используй её по необходимости, не ссылаясь):\n{search_context}\n\n"
-                 f"Вопрос пользователя: \"{original_user_message}\""
+             f"Вопрос пользователя: \"{original_user_message}\"\n\n"
+             f"(Возможно релевантная доп. информация из поиска, используй с осторожностью, если подходит к вопросу, иначе игнорируй):\n{search_context}"
              )
              logger.info(f"ChatID: {chat_id} | Добавлен контекст из {search_provider} ({len(search_context_snippets)} сниппетов).")
         else:
