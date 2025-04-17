@@ -130,12 +130,12 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 # Модели
 AVAILABLE_MODELS = {
-    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking exp.',
+    'gemini-2.5-flash-preview-04-17': '2.5 Flash Preview',
     'gemini-2.5-pro-exp-03-25': '2.5 Pro exp.',
-    'gemini-2.0-flash-001': '2.0 Flash',
+    'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking exp.',
 }
 # Выбираем модель по умолчанию - оставлена та, что была в твоем файле
-DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25' if 'gemini-2.5-pro-exp-03-25' in AVAILABLE_MODELS else 'gemini-2.0-flash-thinking-exp-01-21'
+DEFAULT_MODEL = 'gemini-2.5-flash-preview-04-17' if 'gemini-2.5-flash-preview-04-17' in AVAILABLE_MODELS else 'gemini-2.5-pro-exp-03-25'
 
 # Переменные состояния пользователя (используем context.user_data)
 
