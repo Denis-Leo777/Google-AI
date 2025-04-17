@@ -89,11 +89,9 @@ AVAILABLE_MODELS = {
     'gemini-2.0-flash-thinking-exp-01-21': '2.0 Flash Thinking exp.',
     'gemini-2.5-pro-exp-03-25': '2.5 Pro exp.',
     'gemini-2.0-flash-001': '2.0 Flash',
-    # Можно добавить и другие доступные модели, например, gemini-1.5-flash-latest
-    'gemini-1.5-flash-latest': '1.5 Flash',
 }
 # Выбираем более стабильную модель по умолчанию
-DEFAULT_MODEL = 'gemini-1.5-flash-latest' if 'gemini-1.5-flash-latest' in AVAILABLE_MODELS else 'gemini-2.0-flash-001'
+DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25' if 'gemini-2.5-pro-exp-03-25' in AVAILABLE_MODELS else 'gemini-2.0-flash-thinking-exp-01-21'
 
 # Переменные состояния пользователя (используем context.user_data для персистентности между перезапусками, если не нужен сброс)
 # user_search_enabled = {}
@@ -104,8 +102,8 @@ DEFAULT_MODEL = 'gemini-1.5-flash-latest' if 'gemini-1.5-flash-latest' in AVAILA
 # Константы
 MAX_CONTEXT_CHARS = 95000 # Макс. символов в истории для отправки (примерно)
 MAX_OUTPUT_TOKENS = 4096 # Макс. токенов на выходе (можно настроить)
-DDG_MAX_RESULTS = 5 # Уменьшил DDG, т.к. это fallback
-GOOGLE_SEARCH_MAX_RESULTS = 7 # Уменьшил Google Search для снижения нагрузки и стоимости
+DDG_MAX_RESULTS = 10 # Уменьшил DDG, т.к. это fallback
+GOOGLE_SEARCH_MAX_RESULTS = 10 # Уменьшил Google Search для снижения нагрузки и стоимости
 RETRY_ATTEMPTS = 3 # Количество попыток запроса к Gemini
 RETRY_DELAY_SECONDS = 1 # Начальная задержка перед повтором
 
@@ -153,13 +151,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"Привет! Я твой бот на базе **{default_model_name}**."
-        f"\n⚙️ Поиск Google/DDG включен, температура 1.0."
-        f"\n\nЯ умею искать инфу, читать картинки (с текстом и без) и текстовые файлы."
-        f"\n\n`/model` — сменить модель"
-        f"\n`/clear` — очистить историю диалога"
-        f"\n`/search_on` / `/search_off` — вкл/выкл поиск"
-        f"\n`/temp 0.8` — установить температуру (0-2)"
+        f"**{default_model_name}** - модель по умолчанию."
+        f"\n⚙️ Поиск Google/DDG включен, используются улучшенные настройки точности, логики из юмора.""
+        f"\n\nЯ также умею читать картинки (с текстом и без) и текстовые файлы."
+        f"\n\n`/model` — сменить модель,"
+        f"\n`/search_on` / `/search_off` — вкл/выкл поиск,"
+        f"\n`/clear` — очистить историю диалога."
     )
     await update.message.reply_text(start_message, parse_mode='Markdown')
 
