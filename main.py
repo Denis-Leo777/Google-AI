@@ -187,7 +187,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"GEMINI**{default_model_name}**"
+        f"GEMINI **{default_model_name}**"
         f"\nИспользуются улучшенные настройки точности, логики и юмора."
         f"\nПоиск Google/DDG включен, умею читать картинки (с текстом и без) и текстовые файлы."
         f"\n /model — сменить модель,"
