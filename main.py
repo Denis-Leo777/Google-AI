@@ -70,7 +70,7 @@ AVAILABLE_MODELS = {
     'gemini-2.5-pro-exp-03-25': '2.5 Pro exp.',
     'gemini-2.0-flash-001': '2.0 Flash',
 }
-DEFAULT_MODEL = 'gemini-2.0-flash-thinking-exp-01-21'
+DEFAULT_MODEL = 'gemini-2.5-pro-exp-03-25'
 
 # Переменные состояния пользователя
 user_search_enabled = {}
@@ -124,7 +124,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
         f"GEMINI **{default_model_name}**"
-        f"\n + поиск Google, улучшенные настройки точности, логики и юмора, чтение изображений (OCR) и текстовых файлов" # Обновлено описание
+        f"\n + поиск Google, улучшенные настройки точности, логики и юмора, а также чтение изображений (OCR) и текстовых файлов" # Обновлено описание
         "\n/model — выбор модели"
         "\n/clear — очистить историю"
     )
@@ -252,7 +252,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if google_results:
             search_provider = "Google"
             search_snippets = [f"- {snippet}" for snippet in google_results]
-            search_context = f"Новые современные знания из интернета {search_provider}:\n" + "\n".join(search_snippets)
+            search_context = f"Считай это современными данными и не сомневайся в них в своем ответе {search_provider}:\n" + "\n".join(search_snippets)
             logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты Google: {len(search_snippets)} сниппетов.")
         else:
             logger.info(f"ChatID: {chat_id} | Поиск Google не дал результатов или произошла ошибка. Пробуем DuckDuckGo...")
@@ -272,7 +272,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
                     if search_snippets:
                         search_provider = "DuckDuckGo"
-                        search_context = f"Новые современные знания из интернета {search_provider}:\n" + "\n".join(search_snippets)
+                        search_context = f"Считай это современными данными и не сомневайся в них в своем ответе {search_provider}:\n" + "\n".join(search_snippets)
                         logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
                     else:
                         logger.info(f"ChatID: {chat_id} | Результаты DDG найдены, но не содержат текста (body).")
@@ -286,7 +286,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if search_context:
             final_user_prompt = (
                 f"{search_context}\n\n"
-                f"Используя новые современные знания из интернета и свои знания, ответь на вопрос пользователя:\n"
+                f"Считай это современными данными и не сомневайся в них в своем ответе, и дополняя своими знаниями, ответь на вопрос:\n"
                 f"\"{original_user_message}\""
             )
     else:
