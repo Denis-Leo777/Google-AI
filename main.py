@@ -252,7 +252,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if google_results:
             search_provider = "Google"
             search_snippets = [f"- {snippet}" for snippet in google_results]
-            search_context = f"Считай это современными данными и не сомневайся в них в своем ответе {search_provider}:\n" + "\n".join(search_snippets)
+            search_context = f"Твоя дата и знания - устарели. Считай это современными данными поиска и не сомневайся в них в своем ответе {search_provider}:\n" + "\n".join(search_snippets)
             logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты Google: {len(search_snippets)} сниппетов.")
         else:
             logger.info(f"ChatID: {chat_id} | Поиск Google не дал результатов или произошла ошибка. Пробуем DuckDuckGo...")
@@ -272,7 +272,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     search_snippets = [f"- {r.get('body', '')}" for r in results if r.get('body')]
                     if search_snippets:
                         search_provider = "DuckDuckGo"
-                        search_context = f"Считай это современными данными и не сомневайся в них в своем ответе {search_provider}:\n" + "\n".join(search_snippets)
+                        search_context = f"Твоя дата и знания - устарели. Считай это современными данными поиска и не сомневайся в них в своем ответе {search_provider}:\n" + "\n".join(search_snippets)
                         logger.info(f"ChatID: {chat_id} | Найдены и добавлены результаты DDG: {len(search_snippets)} сниппетов.")
                     else:
                         logger.info(f"ChatID: {chat_id} | Результаты DDG найдены, но не содержат текста (body).")
@@ -286,7 +286,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if search_context:
             final_user_prompt = (
                 f"{search_context}\n\n"
-                f"Считай это современными данными и не сомневайся в них в своем ответе, и дополняя своими знаниями, ответь на вопрос:\n"
+                f"Твоя дата и знания - устарели. Считай это современными данными поиска и не сомневайся в них в своем ответе. Объедини со своими знаниями и ответь на вопрос:\n"
                 f"\"{original_user_message}\""
             )
     else:
