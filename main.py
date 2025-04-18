@@ -759,9 +759,15 @@ async def main():
     def signal_handler():
         if not stop_event.is_set(): logger.info("Сигнал остановки, завершаю..."); stop_event.set()
         else: logger.warning("Повторный сигнал.")
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try: loop.add_signal_handler(sig, signal_handler)
-        except NotImplementedError: logger.warning(f"Нет обработчика {sig}."); try: signal.signal(signal.SIGINT, lambda s, f: signal_handler()) except Exception as e: logger.error(f"Ошибка signal.signal: {e}")
+        for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except NotImplementedError:
+            logger.warning(f"Нет обработчика {sig}.")
+            try:
+                signal.signal(signal.SIGINT, lambda s, f: signal_handler())
+            except Exception as e:
+                logger.error(f"Ошибка signal.signal: {e}")
 
     application = None; web_server_task = None; aiohttp_session_main = None
     try:
