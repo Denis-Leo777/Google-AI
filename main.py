@@ -758,6 +758,13 @@ async def main():
     # Строка 761 (или около того)
     loop = asyncio.get_running_loop(); stop_event = asyncio.Event()
 
+    # Обработчик сигналов
+    def signal_handler():
+        if not stop_event.is_set():
+             logger.info("Получен сигнал SIGINT/SIGTERM, инициирую штатную остановку...")
+             stop_event.set()
+        else:
+             logger.warning("Повторный сигнал остановки получен. Завершение уже идет.")
     # Строка 762 - Начало цикла
     for sig in (signal.SIGINT, signal.SIGTERM):
         # Строка 763 - Начало тела цикла (ОТСТУП обязателен!)
