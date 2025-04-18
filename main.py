@@ -787,14 +787,26 @@ async def main():
         logger.info("--- Остановка приложения ---")
         if not stop_event.is_set(): stop_event.set()
         if web_server_task and not web_server_task.done():
-             # --- ИСПРАВЛЕНИЕ ---
              logger.info("Остановка веб-сервера...")
              try:
                  await asyncio.wait_for(web_server_task, timeout=15.0)
                  logger.info("Веб-сервер остановлен.")
-             # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-             except asyncio.TimeoutError: logger.warning("Таймаут остановки веб-сервера, отмена..."); web_server_task.cancel(); try: await web_server_task except: pass
-             except Exception as e: logger.error(f"Ошибка остановки веб-сервера: {e}", exc_info=True)
+             except asyncio.TimeoutError:
+                 # --- ИСПРАВЛЕНИЕ ---
+                 logger.warning("Таймаут остановки веб-сервера, отмена...")
+                 web_server_task.cancel()
+                 try:
+                     await web_server_task # Ожидаем завершения отмены
+                 except asyncio.CancelledError:
+                     logger.info("Задача веб-сервера успешно отменена после таймаута.") # Улучшил сообщение
+                 except Exception as e_cancel:
+                     # Логируем ошибку, если отмена не удалась
+                     logger.error(f"Ошибка при ожидании отмены веб-сервера: {e_cancel}", exc_info=True)
+                 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+             except Exception as e: # Этот except должен быть на одном уровне с TimeoutError
+                 logger.error(f"Ошибка остановки веб-сервера: {e}", exc_info=True)
+
+        # ... остальной код finally ...
         if application: logger.info("Остановка Telegram App..."); try: await application.shutdown(); logger.info("Telegram App остановлено.") except Exception as e: logger.error(f"Ошибка application.shutdown(): {e}", exc_info=True)
         if aiohttp_session_main and not aiohttp_session_main.closed: logger.info("Закрытие HTTP сессии..."); await aiohttp_session_main.close(); await asyncio.sleep(0.5); logger.info("HTTP сессия закрыта.")
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()];
