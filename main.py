@@ -137,7 +137,7 @@ DEFAULT_MODEL = 'gemini-2.5-flash-preview-04-17' if 'gemini-2.5-flash-preview-04
 
 # Константы
 MAX_CONTEXT_CHARS = 100000 # Макс. символов в истории для отправки (примерно)
-MAX_OUTPUT_TOKENS = 2000 # Макс. токенов на выходе (можно настроить)
+MAX_OUTPUT_TOKENS = 5000 # Макс. токенов на выходе (можно настроить)
 DDG_MAX_RESULTS = 10 # Уменьшил DDG, т.к. это fallback
 GOOGLE_SEARCH_MAX_RESULTS = 10 # Уменьшил Google Search для снижения нагрузки и стоимости
 RETRY_ATTEMPTS = 5 # Количество попыток запроса к Gemini
@@ -176,12 +176,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['history'] = []
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
     start_message = (
-        f"**{default_model_name}** - модель по умолчанию."
-        f"\nПоиск Google/DDG включен, используются улучшенные настройки точности, логики и юмора." # убрал 'из'
-        f"\nЯ также умею читать картинки (с текстом и без) и текстовые файлы."
-        f"\n`/model` — сменить модель,"
-        f"\n`/search_on` / `/search_off` — вкл/выкл поиск,"
-        f"\n`/clear` — очистить историю диалога."
+        f"Google GEMINI **{default_model_name}**"
+        f"\n- в моделях используются улучшенные настройки точности, логики и юмора от автора бота,"
+        f"\n- работает поиск Google/DDG, понимаю изображения, читаю картинки и документы."
+        f"\n /model — сменить модель,"
+        f"\n /search_on / /search_off — вкл/выкл поиск,"
+        f"\n /clear — очистить историю диалога."
     )
     # Используем ParseMode.MARKDOWN для форматирования
     await update.message.reply_text(start_message, parse_mode=ParseMode.MARKDOWN)
