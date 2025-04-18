@@ -806,12 +806,43 @@ async def main():
              except Exception as e: # Этот except должен быть на одном уровне с TimeoutError
                  logger.error(f"Ошибка остановки веб-сервера: {e}", exc_info=True)
 
-        # ... остальной код finally ...
-        if application: logger.info("Остановка Telegram App..."); try: await application.shutdown(); logger.info("Telegram App остановлено.") except Exception as e: logger.error(f"Ошибка application.shutdown(): {e}", exc_info=True)
-        if aiohttp_session_main and not aiohttp_session_main.closed: logger.info("Закрытие HTTP сессии..."); await aiohttp_session_main.close(); await asyncio.sleep(0.5); logger.info("HTTP сессия закрыта.")
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()];
-        if tasks: logger.info(f"Отмена {len(tasks)} задач..."); [task.cancel() for task in tasks]; results = await asyncio.gather(*tasks, return_exceptions=True); logger.info("Задачи отменены.")
-        logger.info("--- Приложение остановлено ---")
+        if application:
+            logger.info("Остановка Telegram App...")
+            try:
+                await application.shutdown()
+                logger.info("Telegram App остановлено.")
+            except Exception as e:
+                logger.error(f"Ошибка application.shutdown(): {e}", exc_info=True)
+        if aiohttp_session_main and not aiohttp_session_main.closed:
+            logger.info("Закрытие HTTP сессии...")
+            await aiohttp_session_main.close()
+            await asyncio.sleep(0.5) # Дать время закрыться
+            logger.info("HTTP сессия закрыта.")
+
+        # Отменяем все еще работающие задачи (если они есть)
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if tasks:
+            logger.info(f"Отмена {len(tasks)} оставшихся фоновых задач...")
+            # Отменяем задачи
+            for task in tasks:
+                task.cancel()
+            # Ожидаем завершения отмены
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                # Логируем результаты/ошибки отмененных задач (опционально, но полезно)
+                cancelled_count = 0
+                error_count = 0
+                for res in results:
+                     if isinstance(res, asyncio.CancelledError):
+                          cancelled_count += 1
+                     elif isinstance(res, Exception):
+                          error_count += 1
+                          logger.warning(f"Ошибка в отмененной задаче при gather: {res}")
+                logger.info(f"Оставшиеся задачи завершены (отменено: {cancelled_count}, ошибок: {error_count}).")
+            except asyncio.CancelledError:
+                 logger.info("Отмена оставшихся задач была прервана.")
+            except Exception as e_gather:
+                 logger.error(f"Ошибка при ожидании отмены оставшихся задач: {e_gather}", exc_info=True)
 
 if __name__ == '__main__':
     try: asyncio.run(main())
