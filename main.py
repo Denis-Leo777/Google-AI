@@ -487,7 +487,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_caption = update.message.caption or ""
 
-    # --- OCR ---
+ # --- OCR ---
     if tesseract_available:
         try:
             image = Image.open(io.BytesIO(file_bytes))
@@ -495,7 +495,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if extracted_text and extracted_text.strip():
                 logger.info(f"ChatID: {chat_id} | OCR нашел текст.")
                 ocr_context = f"На изображении обнаружен текст:\n```\n{extracted_text.strip()}\n```" # Упростил
-                user_prompt = f"Пользователь загрузил фото{' с подписью: \"'+user_caption+'\"' if user_caption else ''}. {ocr_context}\nЧто можешь сказать об этом фото и тексте?"
+                caption_part = f' с подписью: "{user_caption}"' if user_caption else ""
+                user_prompt = f"Пользователь загрузил фото{caption_part}. {ocr_context}\nЧто можешь сказать об этом фото и тексте?"
                 fake_message = type('obj', (object,), {'text': user_prompt, 'reply_text': update.message.reply_text, 'chat_id': chat_id})
                 fake_update = type('obj', (object,), {'effective_chat': update.effective_chat, 'message': fake_message})
                 await handle_message(fake_update, context); return
