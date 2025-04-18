@@ -787,7 +787,12 @@ async def main():
         logger.info("--- Остановка приложения ---")
         if not stop_event.is_set(): stop_event.set()
         if web_server_task and not web_server_task.done():
-             logger.info("Остановка веб-сервера..."); try: await asyncio.wait_for(web_server_task, timeout=15.0); logger.info("Веб-сервер остановлен.")
+             # --- ИСПРАВЛЕНИЕ ---
+             logger.info("Остановка веб-сервера...")
+             try:
+                 await asyncio.wait_for(web_server_task, timeout=15.0)
+                 logger.info("Веб-сервер остановлен.")
+             # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
              except asyncio.TimeoutError: logger.warning("Таймаут остановки веб-сервера, отмена..."); web_server_task.cancel(); try: await web_server_task except: pass
              except Exception as e: logger.error(f"Ошибка остановки веб-сервера: {e}", exc_info=True)
         if application: logger.info("Остановка Telegram App..."); try: await application.shutdown(); logger.info("Telegram App остановлено.") except Exception as e: logger.error(f"Ошибка application.shutdown(): {e}", exc_info=True)
