@@ -755,22 +755,27 @@ async def main():
     logging.getLogger('aiohttp.access').setLevel(logging.WARNING); logging.getLogger('telegram.ext').setLevel(logging.INFO); logging.getLogger('telegram.bot').setLevel(logging.INFO)
     logger.setLevel(log_level)
 
+    # Строка 761 (или около того)
     loop = asyncio.get_running_loop(); stop_event = asyncio.Event()
-    def signal_handler():
-        if not stop_event.is_set(): logger.info("Сигнал остановки, завершаю..."); stop_event.set()
-        else: logger.warning("Повторный сигнал.")
-        for sig in (signal.SIGINT, signal.SIGTERM):
+
+    # Строка 762 - Начало цикла
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        # Строка 763 - Начало тела цикла (ОТСТУП обязателен!)
         try:
             loop.add_signal_handler(sig, signal_handler)
         except NotImplementedError:
+            # Этот блок тоже с отступом относительно 'for'
             logger.warning(f"Нет обработчика {sig}.")
             try:
+                # Этот блок с отступом относительно 'except NotImplementedError'
                 signal.signal(signal.SIGINT, lambda s, f: signal_handler())
             except Exception as e:
+                # Этот блок с отступом относительно 'except NotImplementedError'
                 logger.error(f"Ошибка signal.signal: {e}")
 
+    # Строка ~771 - Код после цикла (без отступа относительно 'for')
     application = None; web_server_task = None; aiohttp_session_main = None
-    try:
+        try:
         logger.info(f"--- Запуск бота (Log Level: {log_level_str}) ---")
         application, web_server_coro = await setup_bot_and_server(stop_event)
         web_server_task = asyncio.create_task(web_server_coro)
