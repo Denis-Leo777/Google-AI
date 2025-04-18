@@ -775,7 +775,7 @@ async def main():
 
     # Строка ~771 - Код после цикла (без отступа относительно 'for')
     application = None; web_server_task = None; aiohttp_session_main = None
-        try:
+    try:
         logger.info(f"--- Запуск бота (Log Level: {log_level_str}) ---")
         application, web_server_coro = await setup_bot_and_server(stop_event)
         web_server_task = asyncio.create_task(web_server_coro)
