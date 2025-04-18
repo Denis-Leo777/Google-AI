@@ -302,12 +302,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<< ИЗМЕНЕНИЕ: Обновленное сообщение /start <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
     start_message = (
         f"Google GEMINI **{default_model_name}**"
-        f"\n- в моделях используются улучшенные настройки точности, логики и юмора от автора бота,"
+        f"\n- в модели используются улучшенные настройки точности, логики и юмора от автора бота,"
         f"\n- работает поиск Google/DDG, понимаю изображения, читаю картинки и документы."
-        f"\n `/model` — сменить модель,"
         f"\n `/search_on` / `/search_off` — вкл/выкл поиск,"
         f"\n `/clear` — очистить историю диалога."
-        f"\n `/temp` — посмотреть/изменить 'креативность' (0.0-2.0)" # Добавил подсказку про /temp
     )
     # Используем ParseMode.MARKDOWN для форматирования
     await update.message.reply_text(start_message, parse_mode=ParseMode.MARKDOWN)
