@@ -662,14 +662,15 @@ async def reanalyze_video(update: Update, context: ContextTypes.DEFAULT_TYPE, vi
 
     youtube_uri = f"https://www.youtube.com/watch?v={video_id}"
 
-    # 1. Формирование промпта с ссылкой в тексте (БЕЗ User ID)
-    prompt_for_video = (
-        # Убрали префикс User ID отсюда
-        f"{user_question}\n\n"
-        f"**Важно:** Ответь на основе содержимого видео по следующей ссылке: {youtube_uri}"
+    # 1. Формирование промпта БЕЗ User ID, но с запросом ключевых моментов
+    prompt_for_summary = (
+    # Убрали префикс User ID
+        f"Проанализируй видео по ссылке и выдели 3-5 ключевых моментов из его содержания.\n" # Более конкретный запрос
+        f"**ССЫЛКА НА ВИДЕО ДЛЯ АНАЛИЗА:** {youtube_uri}\n"
+        f"Ответ должен быть основан ИСКЛЮЧИТЕЛЬНО на содержании видео." # Добавим строгости
     )
-    content_for_video = [{"role": "user", "parts": [{"text": prompt_for_video}]}]
-
+    content_for_summary = [{"role": "user", "parts": [{"text": prompt_for_summary}]}]
+   
     # 2. Вызов модели (логика ретраев и обработки ошибок)
     model_id = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
     temperature = get_user_setting(context, 'temperature', 1.0)
