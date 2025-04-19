@@ -324,7 +324,8 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
             logger.info(f"ChatID: {chat_id} | Reanalyze: Попытка {attempt + 1}/{RETRY_ATTEMPTS}...")
             generation_config=genai.GenerationConfig(temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS); model = genai.GenerativeModel(model_id, safety_settings=SAFETY_SETTINGS_BLOCK_NONE, generation_config=generation_config, system_instruction=system_instruction_text)
             response_vision = await asyncio.to_thread(model.generate_content, content_for_vision)
-            if hasattr(response_vision, 'text'): reply = response_vision.text; else: reply = None
+            if hasattr(response_vision, 'text'): reply = response_vision.text; 
+            else: reply = None
             if not reply: # Обработка пустого ответа...
                  block_reason_str, finish_reason_str = 'N/A', 'N/A'; # Логика извлечения причин...
                  logger.warning(f"ChatID: {chat_id} | Reanalyze: пустой ответ ({attempt + 1})..."); # Формирование reply об ошибке...
