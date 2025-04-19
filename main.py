@@ -166,27 +166,59 @@ system_instruction_text = (
 def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value): return context.user_data.get(key, default_value)
 def set_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, value): context.user_data[key] = value
 async def send_reply(target_message: Message, text: str, context: ContextTypes.DEFAULT_TYPE) -> Message | None:
-    MAX_MESSAGE_LENGTH = 4096; reply_chunks = [text[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(text), MAX_MESSAGE_LENGTH)]; sent_message = None; chat_id = target_message.chat_id
+    """Отправляет сообщение с Markdown, если не удается - отправляет как обычный текст."""
+    MAX_MESSAGE_LENGTH = 4096
+    reply_chunks = [text[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(text), MAX_MESSAGE_LENGTH)]
+    sent_message = None
+    chat_id = target_message.chat_id
+
     try:
+        # Основная попытка отправки с Markdown
         for i, chunk in enumerate(reply_chunks):
-            if i == 0: sent_message = await target_message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-            else: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.MARKDOWN)
+            if i == 0:
+                sent_message = await target_message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            else:
+                sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.MARKDOWN)
             await asyncio.sleep(0.1)
-        return sent_message
+        return sent_message # Возвращаем последнее отправленное сообщение
+
     except BadRequest as e_md:
+        # Если ошибка парсинга Markdown
         if "Can't parse entities" in str(e_md) or "can't parse" in str(e_md).lower():
-            logger.warning(f"ChatID: {chat_id} | Ошибка парсинга Markdown: {e_md}. Попытка отправить как обычный текст."); 
-     try:
-         sent_message = None; for i, chunk in enumerate(reply_chunks):
-              if i == 0: sent_message = await target_message.reply_text(chunk)
-              else: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk)
-              await asyncio.sleep(0.1)
-        return sent_message
-     except Exception as e_plain: logger.error(f"ChatID: {chat_id} | Не удалось отправить даже как обычный текст: {e_plain}", exc_info=True); try: await context.bot.send_message(chat_id=chat_id, text="❌ Не удалось отправить ответ.") except Exception as e_final_send: logger.critical(f"ChatID: {chat_id} | Не удалось отправить сообщение об ошибке: {e_final_send}")
-        else: logger.error(f"ChatID: {chat_id} | Ошибка при отправке ответа (Markdown): {e_md}", exc_info=True); try: await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка при отправке ответа: {str(e_md)[:100]}...") except Exception as e_error_send: logger.error(f"ChatID: {chat_id} | Не удалось отправить сообщение об ошибке отправки: {e_error_send}")
-    except Exception as e_other: logger.error(f"ChatID: {chat_id} | Непредвиденная ошибка при отправке ответа: {e_other}", exc_info=True); try: await context.bot.send_message(chat_id=chat_id, text="❌ Произошла непредвиденная ошибка при отправке ответа.") except Exception as e_unexp_send: logger.error(f"ChatID: {chat_id} | Не удалось отправить сообщение о непредвиденной ошибке: {e_unexp_send}")
-    return None
-# ==========================================================
+            logger.warning(f"ChatID: {chat_id} | Ошибка парсинга Markdown: {e_md}. Попытка отправить как обычный текст.")
+            # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<< ИСПРАВЛЕНИЕ: Отступы try/except <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+            try: # <-- Этот try должен быть на том же уровне, что и logger.warning выше
+                sent_message = None # Сбрасываем, т.к. первая попытка не удалась
+                for i, chunk in enumerate(reply_chunks): # <-- Отступ +1
+                     if i == 0: sent_message = await target_message.reply_text(chunk) # Без parse_mode <-- Отступ +2
+                     else: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk) # <-- Отступ +2
+                     await asyncio.sleep(0.1) # <-- Отступ +2
+                return sent_message # <-- Отступ +1
+            except Exception as e_plain: # <-- Этот except должен быть на том же уровне, что и try выше
+                logger.error(f"ChatID: {chat_id} | Не удалось отправить даже как обычный текст: {e_plain}", exc_info=True) # <-- Отступ +1
+                try: # <-- Этот try должен быть с отступом +1 внутри except e_plain
+                    await context.bot.send_message(chat_id=chat_id, text="❌ Не удалось отправить ответ.") # <-- Отступ +2
+                except Exception as e_final_send: # <-- Этот except на том же уровне, что и try выше (внутри except e_plain)
+                     logger.critical(f"ChatID: {chat_id} | Не удалось отправить даже сообщение об ошибке: {e_final_send}") # <-- Отступ +2
+            # ============================================================================================
+        else: # <-- Этот else должен быть на том же уровне, что и if "Can't parse entities..."
+            # Другая ошибка BadRequest или иная ошибка при отправке с Markdown
+            logger.error(f"ChatID: {chat_id} | Ошибка при отправке ответа (Markdown): {e_md}", exc_info=True) # <-- Отступ +1
+            try: # <-- Отступ +1 внутри else
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка при отправке ответа: {str(e_md)[:100]}...") # <-- Отступ +2
+            except Exception as e_error_send: # <-- Отступ +1 внутри else
+                logger.error(f"ChatID: {chat_id} | Не удалось отправить сообщение об ошибке отправки: {e_error_send}") # <-- Отступ +2
+
+    except Exception as e_other: # <-- Этот except должен быть на том же уровне, что и самый первый try
+        # Любая другая непредвиденная ошибка
+        logger.error(f"ChatID: {chat_id} | Непредвиденная ошибка при отправке ответа: {e_other}", exc_info=True) # <-- Отступ +1
+        try: # <-- Отступ +1 внутри except e_other
+            await context.bot.send_message(chat_id=chat_id, text="❌ Произошла непредвиденная ошибка при отправке ответа.") # <-- Отступ +2
+        except Exception as e_unexp_send: # <-- Отступ +1 внутри except e_other
+            logger.error(f"ChatID: {chat_id} | Не удалось отправить сообщение о непредвиденной ошибке: {e_unexp_send}") # <-- Отступ +2
+
+    return None # <-- Отступ на уровне функции
+# ==============================================================
 
 # --- Команды (/start, /clear, /temp, /search_on/off, /model) ---
 # ... (код без изменений) ...
