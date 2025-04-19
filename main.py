@@ -181,7 +181,7 @@ RETRY_ATTEMPTS = 5
 RETRY_DELAY_SECONDS = 1
 IMAGE_DESCRIPTION_PREFIX = "[Описание изображения]: "
 YOUTUBE_SUMMARY_PREFIX = "[Конспект видео]: "
-VIDEO_CAPABLE_KEYWORDS = ['flash', 'pro', 'ultra', '1.5'] # Обновлено для Gemini 1.5
+VIDEO_CAPABLE_KEYWORDS = ['gemini-2.5-flash-preview-04-17']
 USER_ID_PREFIX_FORMAT = "[User {user_id}]: "
 
 system_instruction_text = (
@@ -281,7 +281,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**Google GEMINI {default_model_name}**"
         f"\n- с улучшенными настройками точности, логики и юмора от автора бота,"
         f"\n- обладаю огромным объемом знаний, уточняет инфу в Google/DDG,"
-        f"\n- умею понимать и читать изображения, документы, делать конспекты YouTube-видео,"
+        f"\n- умею понимать и читать изображения, документы,"
         f"\n- пишите в личку или добавляйте меня в группы, я запоминаю историю чата и понимаю, кто мне пишет."
         f"\n- канал автора: https://t.me/denisobovsyom"
         f"\n/model — сменить модель"
