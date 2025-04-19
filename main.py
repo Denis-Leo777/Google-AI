@@ -226,12 +226,13 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): # ...
     set_user_setting(context, 'selected_model', DEFAULT_MODEL); set_user_setting(context, 'search_enabled', True); set_user_setting(context, 'temperature', 1.0); context.chat_data['history'] = []
     default_model_name = AVAILABLE_MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)
-    start_message = 
-    f"Google GEMINI {default_model_name}" 
+    start_message = (
+    f"**Google GEMINI {default_model_name}**" 
     f"\n- в модели используются улучшенные настройки точности, логики и юмора от автора бота," 
     f"\n- работает поиск Google/DDG, понимает изображения, читает картинки и документы." 
     f"\n /model — сменить модель," f"\n /search_on / /search_off — вкл/выкл поиск," 
     f"\n /clear — очистить историю диалога."
+    )
     await update.message.reply_text(start_message, parse_mode=ParseMode.MARKDOWN)
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE): # ...
     context.chat_data['history'] = []; await update.message.reply_text("🧹 История диалога очищена.")
