@@ -784,5 +784,3 @@ if __name__ == '__main__':
     except KeyboardInterrupt: logger.info("Прервано (KeyboardInterrupt).")
     except Exception as e_top: logger.critical("Неперехваченная ошибка.", exc_info=True)
 # --- END OF FILE main.py ---
-
---- END OF FILE main.txt ---
