@@ -268,14 +268,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     default_model_name = AVAILABLE_MODELS.get(current_model, current_model)
 
     start_message = (
-        f"**Google GEMINI {default_model_name}** 
-        f"\n- с улучшенными настройками точности, логики и юмора от автора бота,"
+        f"**Google GEMINI {default_model_name}**" 
+        f"\n- с улучшенными настройками точности, логики и юмора от автора бота," 
         f"\n- обладаю огромным объемом знаний, уточняет инфу в Google/DDG," 
-        f"\n- умею понимать и читать изображения, документы, делать конспекты YouTube-видео,"
+        f"\n- умею понимать и читать изображения, документы, делать конспекты YouTube-видео," 
         f"\n- пишите в личку или добавляйте меня в группы, я запоминаю историю чата и понимаю, кто мне пишет." 
-        f"\n- канал автора: https://t.me/denisobovsyom"
-        f"\n/model — сменить модель"
-        f"\n/search_on / /search_off — вкл/выкл поиск (сейчас: {'Вкл' if get_user_setting(context, 'search_enabled', True) else 'Выкл'})"
+        f"\n- канал автора: https://t.me/denisobovsyom" 
+        f"\n/model — сменить модель" 
+        f"\n/search_on / /search_off — вкл/выкл поиск (сейчас: {'Вкл' if get_user_setting(context, 'search_enabled', True) else 'Выкл'})" 
         f"\n/clear — очистить историю **этого** чата"
     )
     await update.message.reply_text(start_message, parse_mode=ParseMode.MARKDOWN)
