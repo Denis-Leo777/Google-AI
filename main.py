@@ -173,7 +173,7 @@ RETRY_ATTEMPTS = 5
 RETRY_DELAY_SECONDS = 1
 IMAGE_DESCRIPTION_PREFIX = "[Описание изображения]: "
 YOUTUBE_SUMMARY_PREFIX = "[Конспект видео]: "
-VIDEO_CAPABLE_KEYWORDS = ['2.5 Flash Preview'] # Модели, которые могут "смотреть" видео
+VIDEO_CAPABLE_KEYWORDS = ['gemini-2.5-flash-preview-04-17'] # Модели, которые могут "смотреть" видео
 USER_ID_PREFIX_FORMAT = "[User {user_id}]: " # Формат префикса для сообщений пользователя в истории
 
 system_instruction_text = (
