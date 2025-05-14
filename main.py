@@ -290,17 +290,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Формируем сообщение точно как запрошено пользователем
     start_message = (
-        f"\nПривет! Я - новейшая модель ИИ от Google - GEMINI {default_model_name}."
-        f"\nМожешь называть меня Джеми или Женя. Я:"
-        f"\n- обладаю огромным объемом знаний и мышлением,"
-        f"\n- имею улучшенные настройки точности, логики и юмора от автора бота,"
-        f"\n- дополняю инфу поиском в Google/DDG,"
-        f"\n- умею работать с изображениями и документами (понимать и читать)."
-        f"\nСпрашивайте лично и добавляйте в группы, я запоминаю контекст истории чата и кто мне пишет."
-        f"\nКанал автора бота: https://t.me/denisobovsyom"
-        f"\n/model — сменить модель"
-        f"\n/search_on / /search_off — вкл/выкл поиск (сейчас: {'Вкл' if get_user_setting(context, 'search_enabled', True) else 'Выкл'})"
-        f"\n/clear — очистить историю этого чата"
+        f"\nПривет! Я - Настя."
     )
     await update.message.reply_text(start_message, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
