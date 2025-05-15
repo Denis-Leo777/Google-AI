@@ -180,7 +180,7 @@ AVAILABLE_MODELS = {
 }
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-04-17' if 'gemini-2.5-flash-preview-04-17' in AVAILABLE_MODELS else 'gemini-2.5-pro-exp-03-25'
 
-MAX_CONTEXT_CHARS = 300000
+MAX_CONTEXT_CHARS = 200000
 MAX_HISTORY_MESSAGES = 100
 MAX_OUTPUT_TOKENS = 65536
 DDG_MAX_RESULTS = 10
@@ -295,8 +295,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Формируем сообщение точно как запрошено пользователем
     start_message = (
-        f"\nПривет! Я - Настя."
-    )
+        f"\nПривет! Я - новейшая модель ИИ от Google - GEMINI 2.5 Flash preview."
+        f"\nМожешь называть меня Джеми или Женя. Я:"
+        f"\n- обладаю огромным объемом знаний и поиском Google,"
+        f"\n- имею улучшенные настройки мышления, логики и юмора от автора бота,"
+        f"\n- умею понимать и читать изображения и документы."
+        f"\nСпрашивайте лично и добавляйте в группы, я запоминаю контекст чата и кто мне пишет."
+        f"\nКанал автора бота: https://t.me/denisobovsyom"
+        f"\n/model — сменить модель"
+        f"\n/searchon / /searchoff — вкл/выкл поиск (сейчас: Вкл)"
+        f"\n/clear — очистить историю этого чата"
+        )
     await update.message.reply_text(start_message, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
