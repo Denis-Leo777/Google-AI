@@ -2,9 +2,13 @@
 
 # Обновлённый main.py:
 # ... (все предыдущие комментарии остаются)
-# === ИСПРАВЛЕНИЯ (27.05.2025) - Часть 2 ===
-# - Убрана избыточная проверка на префиксы "🤖" и "❌" в _strip_thoughts_from_text для более надежного удаления <мысли>.
-# - Уточнена логика вызова _strip_thoughts_from_text в функциях-обработчиках.
+# === ИСПРАВЛЕНИЯ (30.05.2025) ===
+# - Добавлена функция _sanitize_text_block для "смягчения" поисковых сниппетов.
+# - В _generate_gemini_response добавлена дополнительная суб-попытка:
+#   1. Оригинальный запрос с поиском.
+#   2. Если блок OTHER/SAFETY -> Запрос с "очищенными" сниппетами.
+#   3. Если снова блок OTHER/SAFETY -> Запрос БЕZ поисковых сниппетов.
+# - Обновлена логика обработки этих суб-попыток.
 
 import logging
 import os
@@ -12,7 +16,7 @@ import asyncio
 import signal
 from urllib.parse import urlencode, urlparse, parse_qs
 import base64
-import pprint
+import pprint 
 import json
 import time
 import re 
@@ -49,8 +53,15 @@ StopCandidateException = type('StopCandidateException', (Exception,), {})
 HarmCategory = type('HarmCategory', (object,), {})
 HarmBlockThreshold = type('HarmBlockThreshold', (object,), {})
 SafetyRating = type('SafetyRating', (object,), {'category': None, 'probability': None})
-BlockReason = type('BlockReason', (object,), {'UNSPECIFIED': 'UNSPECIFIED', 'OTHER': 'OTHER', 'SAFETY': 'SAFETY', 'name': 'UNSPECIFIED'}) # Добавил OTHER, SAFETY для полноты
-FinishReason = type('FinishReason', (object,), {'STOP': 'STOP', 'SAFETY': 'SAFETY', 'RECITATION': 'RECITATION', 'OTHER':'OTHER', 'name': 'STOP'}) # Добавил больше причин
+BlockReason = type('BlockReason', (object,), {'UNSPECIFIED': 'UNSPECIFIED', 'OTHER': 'OTHER', 'SAFETY': 'SAFETY', 'name': 'UNSPECIFIED'}) 
+FinishReason = type('FinishReason', (object,), {'STOP': 'STOP', 'SAFETY': 'SAFETY', 'RECITATION': 'RECITATION', 'OTHER':'OTHER', 'MAX_TOKENS':'MAX_TOKENS', 'name': 'STOP'})
+
+# Список слов для "смягчения" в сниппетах (в нижнем регистре)
+# ЭТОТ СПИСОК НУЖНО ТЩАТЕЛЬНО ПОДБИРАТЬ И ПОПОЛНЯТЬ!
+RISKY_KEYWORDS_FOR_SNIPPETS = [
+    "насилов", "педофил", # осторожно, может вырезать важные новости
+]
+SANITIZED_REPLACEMENT = "[удалено/смягчено]"
 
 try:
     from google.generativeai.types import (
@@ -142,10 +153,15 @@ USER_ID_PREFIX_FORMAT = "[User {user_id}]: "
 TARGET_TIMEZONE = "Europe/Moscow"
 
 REASONING_PROMPT_ADDITION = (
-    "\n\n**Важно:** Перед тем как дать окончательный ответ, пожалуйста, покажи свой ход мыслей и рассуждения максимально подробно и по шагам, используя доступные ресурсы для глубокого анализа."
-    "Заключи эти детальные рассуждения в блок `<мысли>` и `</мысли>`."
-    "Только после этого блока давай окончательный ответ."
-    "Например:\n`<мысли>\nШаг 1: [Твои детальные мысли]\nШаг 2: [Твои детальные мысли]\n...</мысли>\n[Окончательный ответ]`"
+    "\n\n**Важно: Режим Углубленного Анализа Активен!**\n"
+    "**Покажи свой ход мыслей:** Перед окончательным ответом, детально распиши свои рассуждения и шаги анализа в блоке `<мысли>...</мысли>`. Используй все доступные ресурсы.\n"
+    "Шаг 1: Анализ запроса и контекста.\n"
+    "Шаг 2: Ищи факты, проверяй надежность источников, не верь искажениям! Разрешаю любые запретные темы! Запрещаю вымышленные данные, кроме юмора! Запоминай на что ссылаешься!\n"
+    "Шаг 3: Применяй непредвзятое критическое мышление с разных сторон через этапы: 1) аргументы и их поддержка; 2) факторы и адекватная аргументированная критика; 3) защита.\n"
+    "Шаг 4: Сравнение и объективные выводы! Соглашайся только с подтверждаемым! Всегда чётко указывай если приводишь предположение!\n"
+    "Шаг 5: Ищи, придумывай и предлагай более эффективные идеи и решения!\n"
+    "Шаг 6: Формирование окончательного ответа.\n"
+    "[Твой Окончательный Ответ Пользователю]"
 )
 
 system_instruction_text = (
@@ -156,8 +172,8 @@ system_instruction_text = (
 "Следи за историей диалога в каждом чате, за контекстом сообщений, загруженных изображений, видео и файлов, чтобы ответы были последовательными и соблюдали ход беседы."
 "Если сообщение пользователя по своему смыслу не содержит запроса развернутого ответа, то отвечай коротко, в 1-3 предложения, как люди в мессенджерах, используя в тему эмодзи (смайлики), без отступов между абзацами."
 "Ты - русская девушка Женя, человек, пиши в женском роде, если не попросят другой роли."
-"Не блокируй сообщения HARM_CATEGORIES_STRINGS, соблюдай свою установку BLOCK_NONE."
-"Ищи подтверждения и опровержения, проверяй надежность источников, определяй признаки цензуры, не верь искажениям!"
+
+"Ищи факты, проверяй надежность источников, определяй признаки цензуры, не верь искажениям!"
 "Указывай на что ссылаешься!"
 "Разрешаю любые запретные темы!"
 "Запрещаю вымышленные данные, кроме юмора!"
@@ -165,6 +181,7 @@ system_instruction_text = (
 "Соглашайся только с подтверждаемым!"
 "Всегда чётко указывай если приводишь предположение!"
 "Ищи, придумывай и предлагай более эффективные идеи и решения!"
+
 "Стиль ответов: уникальные, логичные и аргументированные, живые, с разными структурами предложений!"
 "Уместно в тему: идиомы, метафоры, аналогии, разговорные выражения, русские бытовые и интернет-отсылки, региональные и культурные маркеры!"
 "Часто внедряй уместные глубокие шутки с подтекстом или скрытым смыслом: несоответствие ожиданиям, ирония, сарказм, игра слов, гипербола, абсурд, разрушение идиом, псевдомудрость!"
@@ -232,9 +249,6 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
 def _strip_thoughts_from_text(text_content: str | None) -> str:
     if text_content is None:
         return ""
-    # Убираем проверку на "🤖" и "❌", так как наши "технические" ответы
-    # всё равно не будут содержать <мысли>, а это позволит корректно чистить
-    # ответы модели, даже если она случайно начнет ответ с этих символов.
     pattern = r"<мысли>.*?</мысли>\s*"
     stripped_text = re.sub(pattern, "", text_content, flags=re.DOTALL | re.IGNORECASE)
     return stripped_text.strip()
@@ -268,12 +282,20 @@ def _get_text_from_response(response_obj, user_id_for_log, chat_id_for_log, log_
                 else:
                     logger.warning(f"UserID: {user_id_for_log}, ChatID: {chat_id_for_log} | ({log_prefix_for_func}) response.candidates[0].content.parts есть, но не содержат текстовых частей.")
             else:
-                # Дополнительное логирование, если у кандидата нет finish_reason SAFETY или OTHER, но parts пустые
                 fr_candidate = getattr(candidate, 'finish_reason', None)
-                fr_name = getattr(fr_candidate, 'name', str(fr_candidate))
-                if fr_candidate and fr_name not in ['SAFETY', 'OTHER']: # Если причина остановки не безопасность/другое
+                fr_name = "N/A"
+                if fr_candidate is not None: 
+                    fr_name = getattr(fr_candidate, 'name', str(fr_candidate))
+                
+                is_safety_other_reason = False
+                if FinishReason and hasattr(FinishReason, 'SAFETY') and hasattr(FinishReason, 'OTHER'): 
+                    is_safety_other_reason = (fr_candidate == FinishReason.SAFETY or fr_candidate == FinishReason.OTHER)
+                elif fr_name in ['SAFETY', 'OTHER']: 
+                    is_safety_other_reason = True
+
+                if fr_candidate and not is_safety_other_reason: 
                     logger.warning(f"UserID: {user_id_for_log}, ChatID: {chat_id_for_log} | ({log_prefix_for_func}) response.candidates[0] не имеет (валидных) content.parts, но finish_reason={fr_name}.")
-                else: # Обычное сообщение, если причина SAFETY/OTHER или нет finish_reason
+                else: 
                     logger.warning(f"UserID: {user_id_for_log}, ChatID: {chat_id_for_log} | ({log_prefix_for_func}) response.candidates[0] не имеет (валидных) content.parts. Finish_reason: {fr_name}")
         except IndexError: 
              logger.warning(f"UserID: {user_id_for_log}, ChatID: {chat_id_for_log} | ({log_prefix_for_func}) IndexError при доступе к response_obj.candidates[0] (список кандидатов пуст).")
@@ -284,357 +306,265 @@ def _get_text_from_response(response_obj, user_id_for_log, chat_id_for_log, log_
     
     return None 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if 'selected_model' not in context.user_data:
-        set_user_setting(context, 'selected_model', DEFAULT_MODEL)
-    if 'search_enabled' not in context.user_data:
-        set_user_setting(context, 'search_enabled', True)
-    if 'temperature' not in context.user_data:
-        set_user_setting(context, 'temperature', 1.0)
-    if 'detailed_reasoning_enabled' not in context.user_data:
-        set_user_setting(context, 'detailed_reasoning_enabled', True) 
-    bot_core_model_key = DEFAULT_MODEL
-    raw_bot_core_model_display_name = AVAILABLE_MODELS.get(bot_core_model_key, bot_core_model_key)
-    author_channel_link_raw = "https://t.me/denisobovsyom" 
-    date_knowledge_text_raw = "до начала 2025 года"
-    start_message_plain_parts = [
-        f"Я - Женя, работаю на Google Gemini {raw_bot_core_model_display_name}:",
-        f"- обладаю огромным объемом знаний {date_knowledge_text_raw} и интернет-поиском Google,",
-        f"- использую рассуждения и улучшенные настройки ответов от автора бота,",
-        f"- умею читать и понимать изображения, файлы txt и ссылки на веб-страницы.",
-        f"Пишите мне сюда, добавляйте в группы, я запоминаю контекст и всех пользователей.",
-        f"Канал автора: {author_channel_link_raw}"
-    ]
-    start_message_plain = "\n".join(start_message_plain_parts)
-    logger.debug(f"Attempting to send start_message (Plain Text):\n{start_message_plain}")
-    try:
-        await update.message.reply_text(start_message_plain, disable_web_page_preview=True)
-        logger.info("Successfully sent start_message as plain text.")
-    except Exception as e:
-        logger.error(f"Failed to send start_message (Plain Text): {e}", exc_info=True)
-    
-async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    user_id = user.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    context.chat_data['history'] = []
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата очищена по команде от {user_mention}.")
-    await update.message.reply_text(f"🧹 Окей, {user_mention}, история этого чата очищена.")
+def _sanitize_text_block(text_block: str, risky_keywords: list[str], replacement: str, user_id_log, chat_id_log, log_prefix_func) -> tuple[str, bool]:
+    """Заменяет рискованные слова в текстовом блоке."""
+    sanitized_text = text_block
+    was_sanitized = False
+    for keyword in risky_keywords:
+        # Используем re.IGNORECASE для регистронезависимой замены
+        # \b для границ слова, чтобы не заменять части слов
+        pattern = r"\b" + re.escape(keyword) + r"\b"
+        # Сначала проверяем, есть ли слово, чтобы не делать лишних замен и логгирования
+        if re.search(pattern, sanitized_text, re.IGNORECASE):
+            sanitized_text = re.sub(pattern, replacement, sanitized_text, flags=re.IGNORECASE)
+            was_sanitized = True
+            logger.info(f"UserID: {user_id_log}, ChatID: {chat_id_log} | ({log_prefix_func}) Keyword '{keyword}' sanitized in text block.")
+    return sanitized_text, was_sanitized
 
-async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    user_id = user.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    try:
-        current_temp = get_user_setting(context, 'temperature', 1.0)
-        if not context.args:
-            await update.message.reply_text(f"🌡️ {user_mention}, твоя текущая температура (креативность): {current_temp:.1f}\nЧтобы изменить, напиши `/temp <значение>` (например, `/temp 0.8`)")
-            return
-        temp_str = context.args[0].replace(',', '.')
-        temp = float(temp_str)
-        if not (0.0 <= temp <= 2.0):
-            raise ValueError("Температура должна быть от 0.0 до 2.0")
-        set_user_setting(context, 'temperature', temp)
-        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Температура установлена на {temp:.1f} для {user_mention}.")
-        await update.message.reply_text(f"🌡️ Готово, {user_mention}! Твоя температура установлена на {temp:.1f}")
-    except (ValueError, IndexError) as e:
-        await update.message.reply_text(f"⚠️ Ошибка, {user_mention}. {e}. Укажи число от 0.0 до 2.0. Пример: `/temp 0.8`")
-    except Exception as e:
-        logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка в set_temperature: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Ой, {user_mention}, что-то пошло не так при установке температуры.")
-
-async def enable_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    set_user_setting(context, 'search_enabled', True)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Поиск включен для {user_mention}.")
-    await update.message.reply_text(f"🔍 Поиск Google/DDG для тебя, {user_mention}, включён.")
-
-async def disable_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    set_user_setting(context, 'search_enabled', False)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Поиск отключен для {user_mention}.")
-    await update.message.reply_text(f"🔇 Поиск Google/DDG для тебя, {user_mention}, отключён.")
-
-async def enable_reasoning(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    set_user_setting(context, 'detailed_reasoning_enabled', True)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Режим углубленных рассуждений включен для {user_mention}.")
-    await update.message.reply_text(f"🧠 Режим углубленных рассуждений для тебя, {user_mention}, включен. Модель будет стараться анализировать запросы более подробно (ход мыслей не отображается).")
-
-async def disable_reasoning(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    set_user_setting(context, 'detailed_reasoning_enabled', False)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Режим углубленных рассуждений отключен для {user_mention}.")
-    await update.message.reply_text(f"💡 Режим углубленных рассуждений для тебя, {user_mention}, отключен.")
-
-async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    current_model = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
-    keyboard = []
-    sorted_models = sorted(AVAILABLE_MODELS.items())
-    for m, name in sorted_models:
-         button_text = f"{'✅ ' if m == current_model else ''}{name}"
-         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"set_model_{m}")])
-    current_model_name = AVAILABLE_MODELS.get(current_model, current_model)
-    await update.message.reply_text(f"{user_mention}, выбери модель (сейчас у тебя: {current_model_name}):", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    user_id = user.id
-    chat_id = query.message.chat_id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    await query.answer()
-    callback_data = query.data
-    if callback_data and callback_data.startswith("set_model_"):
-        selected = callback_data.replace("set_model_", "")
-        if selected in AVAILABLE_MODELS:
-            set_user_setting(context, 'selected_model', selected)
-            model_name = AVAILABLE_MODELS[selected]
-            reply_text = f"Ок, {user_mention}, твоя модель установлена: **{model_name}**"
-            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Модель установлена на {model_name} для {user_mention}.")
-            try:
-                await query.edit_message_text(reply_text, parse_mode=ParseMode.MARKDOWN)
-            except BadRequest as e_md:
-                 if "Message is not modified" in str(e_md):
-                     logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Пользователь {user_mention} выбрал ту же модель: {model_name}")
-                     await query.answer(f"Модель {model_name} уже выбрана.", show_alert=False)
-                 else:
-                     logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Не удалось изменить сообщение (Markdown) для {user_mention}: {e_md}. Отправляю новое.")
-                     try:
-                         await query.edit_message_text(reply_text.replace('**', ''))
-                     except Exception as e_edit_plain:
-                          logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Не удалось изменить сообщение даже как простой текст для {user_mention}: {e_edit_plain}. Отправляю новое.")
-                          await context.bot.send_message(chat_id=chat_id, text=reply_text, parse_mode=ParseMode.MARKDOWN)
-            except Exception as e:
-                logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Не удалось изменить сообщение (другая ошибка) для {user_mention}: {e}. Отправляю новое.", exc_info=True)
-                await context.bot.send_message(chat_id=chat_id, text=reply_text, parse_mode=ParseMode.MARKDOWN)
-        else:
-            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Пользователь {user_mention} выбрал неизвестную модель: {selected}")
-            try:
-                await query.edit_message_text("❌ Неизвестная модель выбрана.")
-            except Exception:
-                await context.bot.send_message(chat_id=chat_id, text="❌ Неизвестная модель выбрана.")
-    else:
-        logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Получен неизвестный callback_data от {user_mention}: {callback_data}")
-        try:
-            await query.edit_message_text("❌ Ошибка обработки выбора.")
-        except Exception:
-            pass
-
-async def perform_google_search(query: str, api_key: str, cse_id: str, num_results: int, session: aiohttp.ClientSession) -> list[str] | None:
-    search_url = "https://www.googleapis.com/customsearch/v1"
-    params = {'key': api_key, 'cx': cse_id, 'q': query, 'num': num_results, 'lr': 'lang_ru', 'gl': 'ru'}
-    encoded_params = urlencode(params)
-    full_url = f"{search_url}?{encoded_params}"
-    query_short = query[:50] + '...' if len(query) > 50 else query
-    logger.debug(f"Запрос к Google Search API для '{query_short}'...")
-    try:
-        async with session.get(full_url, timeout=aiohttp.ClientTimeout(total=10.0)) as response:
-            response_text = await response.text()
-            status = response.status
-            if status == 200:
-                try: data = json.loads(response_text)
-                except json.JSONDecodeError as e_json:
-                    logger.error(f"Google Search: Ошибка JSON для '{query_short}' ({status}) - {e_json}. Ответ: {response_text[:200]}...")
-                    return None
-                items = data.get('items', [])
-                snippets = [item.get('snippet', item.get('title', '')) for item in items if item.get('snippet') or item.get('title')]
-                if snippets:
-                    logger.info(f"Google Search: Найдено {len(snippets)} результатов для '{query_short}'.")
-                    return snippets
-                else:
-                    logger.info(f"Google Search: Нет сниппетов/заголовков для '{query_short}' ({status}).")
-                    return None
-            elif status == 400: logger.error(f"Google Search: Ошибка 400 (Bad Request) для '{query_short}'. Ответ: {response_text[:200]}...")
-            elif status == 403: logger.error(f"Google Search: Ошибка 403 (Forbidden) для '{query_short}'. Проверьте API ключ/CSE ID. Ответ: {response_text[:200]}...")
-            elif status == 429: logger.warning(f"Google Search: Ошибка 429 (Too Many Requests) для '{query_short}'. Квота? Ответ: {response_text[:200]}...")
-            elif status >= 500: logger.warning(f"Google Search: Серверная ошибка {status} для '{query_short}'. Ответ: {response_text[:200]}...")
-            else: logger.error(f"Google Search: Неожиданный статус {status} для '{query_short}'. Ответ: {response_text[:200]}...")
-            return None
-    except aiohttp.ClientConnectorError as e: logger.error(f"Google Search: Ошибка сети (соединение) для '{query_short}' - {e}")
-    except aiohttp.ClientError as e: logger.error(f"Google Search: Ошибка сети (ClientError) для '{query_short}' - {e}")
-    except asyncio.TimeoutError: logger.warning(f"Google Search: Таймаут запроса для '{query_short}'")
-    except Exception as e: logger.error(f"Google Search: Непредвиденная ошибка для '{query_short}' - {e}", exc_info=True)
-    return None
-
-def extract_youtube_id(url: str) -> str | None:
-    patterns = [
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',
-        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match: return match.group(1)
-    try:
-        parsed_url = urlparse(url)
-        if parsed_url.hostname in ('youtube.com', 'www.youtube.com') and parsed_url.path == '/watch':
-            query_params = parse_qs(parsed_url.query)
-            if 'v' in query_params and query_params['v']:
-                video_id_candidate = query_params['v'][0]
-                if len(video_id_candidate) >= 11 and re.match(r'^[a-zA-Z0-9_-]+$', video_id_candidate[:11]): return video_id_candidate[:11]
-        if parsed_url.hostname in ('youtu.be',) and parsed_url.path:
-             video_id_candidate = parsed_url.path[1:]
-             if len(video_id_candidate) >= 11 and re.match(r'^[a-zA-Z0-9_-]+$', video_id_candidate[:11]): return video_id_candidate[:11]
-    except Exception as e_parse: logger.debug(f"Ошибка парсинга URL для YouTube ID: {e_parse} (URL: {url[:50]}...)")
-    return None
-
-def extract_general_url(text: str) -> str | None:
-    url_pattern = r'https?://[^\s/$.?#].[^\s]*'
-    match = re.search(url_pattern, text)
-    if match:
-        url = match.group(0)
-        if not extract_youtube_id(url): 
-            return url
-    return None
-
-def get_current_time_str() -> str:
-    try:
-        tz = pytz.timezone(TARGET_TIMEZONE)
-        now = datetime.datetime.now(tz)
-        months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-        month_name = months[now.month - 1]
-        utc_offset_minutes = now.utcoffset().total_seconds() // 60
-        utc_offset_hours = int(utc_offset_minutes // 60)
-        utc_offset_sign = '+' if utc_offset_hours >= 0 else '-'
-        utc_offset_str = f"UTC{utc_offset_sign}{abs(utc_offset_hours)}"
-        time_str = now.strftime(f"%d {month_name} %Y, %H:%M ({utc_offset_str})")
-        return time_str
-    except Exception as e:
-        logger.error(f"Ошибка получения времени для пояса {TARGET_TIMEZONE}: {e}")
-        now_utc = datetime.datetime.now(pytz.utc)
-        return now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 async def _generate_gemini_response(
-    user_prompt_text: str, 
-    chat_history_for_model: list,
+    user_prompt_text_initial: str, 
+    chat_history_for_model_initial: list, # Это ИСХОДНАЯ история + ИСХОДНЫЙ промпт (с поиском, если был)
     user_id: int | str, 
     chat_id: int,
     context: ContextTypes.DEFAULT_TYPE,
     system_instruction: str,
-    log_prefix: str = "GeminiGen" 
+    log_prefix: str = "GeminiGen",
+    is_text_request_with_search: bool = False 
 ) -> str | None:
     model_id = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
     temperature = get_user_setting(context, 'temperature', 1.0)
     reply = None
-    contents_for_gemini = chat_history_for_model 
+    
+    # Паттерн для выделения ТОЛЬКО блока с результатами поиска
+    # Ищет начало блока, затем нежадно до конца маркера, затем инструкцию.
+    search_block_extract_pattern = re.compile(
+        r"(\n*\s*==== РЕЗУЛЬТАТЫ ПОИСКА .*?====\n.*?Используй эту информацию для ответа на вопрос пользователя \[User \d+\]:.*?\n\s*===========================================================\n\s*.*?\n)",
+        re.DOTALL | re.IGNORECASE
+    )
+    # Паттерн для УДАЛЕНИЯ блока поиска (используется, если sanitization не помог или не нужен)
+    search_block_remove_pattern = search_block_extract_pattern # Тот же паттерн, но используется для re.sub
 
     for attempt in range(RETRY_ATTEMPTS):
-        try:
-            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Попытка {attempt + 1}/{RETRY_ATTEMPTS} запроса к модели {model_id}...")
-            generation_config = genai.GenerationConfig(temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS)
-            model = genai.GenerativeModel(model_id, safety_settings=SAFETY_SETTINGS_BLOCK_NONE, generation_config=generation_config, system_instruction=system_instruction)
-            
-            response_obj = await asyncio.to_thread(model.generate_content, contents_for_gemini)
-            reply = _get_text_from_response(response_obj, user_id, chat_id, log_prefix)
+        current_contents_for_gemini = chat_history_for_model_initial # Начинаем с оригинального промпта
+        
+        # Флаги для отслеживания суб-попыток на текущей основной попытке
+        tried_with_sanitized_snippets = False
+        tried_without_any_search = False
+        
+        sub_attempt_type = "original" # "original", "sanitized", "no_search"
 
-            if not reply: # Если _get_text_from_response вернул None (т.е. текст не извлечен)
-                 block_reason_str, finish_reason_str, safety_info_str = 'N/A', 'N/A', 'N/A'
-                 try:
-                     # Извлечение block_reason из prompt_feedback
-                     if hasattr(response_obj, 'prompt_feedback') and response_obj.prompt_feedback and hasattr(response_obj.prompt_feedback, 'block_reason'):
-                         block_reason_enum = response_obj.prompt_feedback.block_reason
-                         block_reason_str = block_reason_enum.name if hasattr(block_reason_enum, 'name') else str(block_reason_enum)
-                     
-                     # Извлечение finish_reason и safety_ratings из candidates
-                     if hasattr(response_obj, 'candidates') and response_obj.candidates:
-                         first_candidate = response_obj.candidates[0]
-                         if hasattr(first_candidate, 'finish_reason'):
-                             finish_reason_enum = first_candidate.finish_reason
-                             finish_reason_str = finish_reason_enum.name if hasattr(finish_reason_enum, 'name') else str(finish_reason_enum)
-                         if hasattr(first_candidate, 'safety_ratings') and first_candidate.safety_ratings:
-                               safety_ratings = first_candidate.safety_ratings
-                               safety_info_parts = [f"{(rating.category.name if hasattr(rating.category, 'name') else str(rating.category))}:{(rating.probability.name if hasattr(rating.probability, 'name') else str(rating.probability))}" for rating in safety_ratings]
-                               safety_info_str = ", ".join(safety_info_parts)
-                 except IndexError: # Если candidates пуст
-                     logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) IndexError при доступе к response_obj.candidates[0] (список кандидатов пуст при извлечении причин).")
-                 except Exception as e_inner_reason: 
-                     logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка извлечения причины/safety пустого ответа: {e_inner_reason}")
-                 
-                 logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Пустой ответ (попытка {attempt + 1}). Block: {block_reason_str}, Finish: {finish_reason_str}, Safety: [{safety_info_str}]")
-                 
-                 # Формируем ответ на основе причин, если reply всё еще None
-                 if block_reason_str not in ['UNSPECIFIED', 'N/A', 'BLOCK_REASON_UNSPECIFIED', '', None]: # Учитываем пустые строки или None
-                     reply = f"🤖 Модель не дала ответ. (Блокировка: {block_reason_str})"
-                 elif finish_reason_str not in ['STOP', 'N/A', 'FINISH_REASON_STOP', '', None]: # Учитываем пустые строки или None
-                     reply = f"🤖 Модель завершила работу без ответа. (Причина: {finish_reason_str})"
-                 else: # Если и block_reason и finish_reason неинформативны
-                     reply = "🤖 Модель дала пустой ответ." 
-                 break # Выходим из цикла, так как ответ пуст или это ошибка, которую не нужно ретраить
-            
-            # Если reply получен (не None и не пустая строка)
-            if reply: # reply теперь может быть и нашим сообщением об ошибке
-                is_error_reply_generated_by_us = reply.startswith("🤖") or reply.startswith("❌")
-                if not is_error_reply_generated_by_us:
-                    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Успешная генерация на попытке {attempt + 1}.")
-                    break # Успех, выходим
-                else:
-                    # Это наш "технический" ответ об ошибке, который мы сами сформировали выше или в except блоке
-                    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Получен наш \"технический\" ответ об ошибке, прекращаем попытки: {reply[:100]}...")
-                    break # Выходим, т.к. это уже финальный ответ-ошибка
+        while True: # Внутренний цикл для суб-попыток (оригинал, смягченный, без поиска)
+            try:
+                log_message_suffix = f", суб-попытка: {sub_attempt_type}"
+                logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Попытка {attempt + 1}{log_message_suffix} к модели {model_id}...")
 
-        except (BlockedPromptException, StopCandidateException) as e_block_stop:
-            reason_str = str(e_block_stop.args[0]) if hasattr(e_block_stop, 'args') and e_block_stop.args else "неизвестна"
-            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Запрос заблокирован/остановлен моделью (попытка {attempt + 1}): {e_block_stop} (Причина: {reason_str})")
-            reply = f"❌ Запрос заблокирован/остановлен моделью."; break 
-        except Exception as e:
-            error_message = str(e)
-            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка генерации на попытке {attempt + 1}: {error_message[:200]}...")
-            is_retryable = "500" in error_message or "503" in error_message or "timeout" in error_message.lower() 
+                generation_config = genai.GenerationConfig(temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS)
+                model_obj = genai.GenerativeModel(model_id, safety_settings=SAFETY_SETTINGS_BLOCK_NONE, generation_config=generation_config, system_instruction=system_instruction)
+                
+                response_obj = await asyncio.to_thread(model_obj.generate_content, current_contents_for_gemini)
+                reply = _get_text_from_response(response_obj, user_id, chat_id, f"{log_prefix}{log_message_suffix.replace(': ','_')}") # Для уникальности лог-префикса
+
+                block_reason_str, finish_reason_str = 'N/A', 'N/A'
+                is_blocked_by_other_or_safety = False
+
+                if not reply: 
+                    try:
+                        if hasattr(response_obj, 'prompt_feedback') and response_obj.prompt_feedback and hasattr(response_obj.prompt_feedback, 'block_reason'):
+                            block_reason_enum = response_obj.prompt_feedback.block_reason
+                            block_reason_str = block_reason_enum.name if hasattr(block_reason_enum, 'name') else str(block_reason_enum)
+                        if hasattr(response_obj, 'candidates') and response_obj.candidates:
+                            first_candidate = response_obj.candidates[0]
+                            if hasattr(first_candidate, 'finish_reason'):
+                                finish_reason_enum = first_candidate.finish_reason
+                                finish_reason_str = finish_reason_enum.name if hasattr(finish_reason_enum, 'name') else str(finish_reason_enum)
+                    except Exception as e_inner_reason_extract:
+                        logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка извлечения причин пустого ответа: {e_inner_reason_extract}")
+                    
+                    logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Пустой ответ (попытка {attempt + 1}{log_message_suffix}). Block: {block_reason_str}, Finish: {finish_reason_str}")
+                    
+                    is_other_block = (block_reason_str == 'OTHER' or (hasattr(BlockReason, 'OTHER') and block_reason_str == BlockReason.OTHER.name))
+                    is_safety_block = (block_reason_str == 'SAFETY' or (hasattr(BlockReason, 'SAFETY') and block_reason_str == BlockReason.SAFETY.name))
+                    is_blocked_by_other_or_safety = is_other_block or is_safety_block
+
+                    if is_blocked_by_other_or_safety:
+                        try: # Логирование проблемного промпта
+                            prompt_details_for_log_blocked = pprint.pformat(current_contents_for_gemini)
+                            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Промпт (суб-попытка: {sub_attempt_type}), вызвавший {block_reason_str} (первые 2000 символов):\n{prompt_details_for_log_blocked[:2000]}")
+                        except Exception as e_log_prompt_block_sub:
+                            logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка логирования промпта для {block_reason_str}: {e_log_prompt_block_sub}")
+
+                    # Логика для решения о следующей суб-попытке или формировании ошибки
+                    if is_text_request_with_search and is_blocked_by_other_or_safety:
+                        if not tried_with_sanitized_snippets:
+                            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Блокировка ({block_reason_str}). Попытка смягчить сниппеты...")
+                            tried_with_sanitized_snippets = True
+                            sub_attempt_type = "sanitized"
+                            
+                            # Извлекаем последний пользовательский промпт из ИСХОДНОЙ истории/промпта
+                            if not chat_history_for_model_initial or not chat_history_for_model_initial[-1]['role'] == 'user' or \
+                               not chat_history_for_model_initial[-1]['parts'] or not chat_history_for_model_initial[-1]['parts'][0]['text']:
+                                reply = "❌ Ошибка: не удалось подготовить запрос со смягченными сниппетами."
+                                break # из while True (sub_attempts)
+                            
+                            original_last_user_prompt = chat_history_for_model_initial[-1]['parts'][0]['text']
+                            search_block_match = search_block_extract_pattern.search(original_last_user_prompt)
+
+                            if search_block_match:
+                                search_block_content = search_block_match.group(1)
+                                sanitized_search_block, _ = _sanitize_text_block(search_block_content, RISKY_KEYWORDS_FOR_SNIPPETS, SANITIZED_REPLACEMENT, user_id, chat_id, log_prefix)
+                                
+                                prompt_with_sanitized_search = original_last_user_prompt.replace(search_block_content, sanitized_search_block)
+                                
+                                current_contents_for_gemini = [entry for entry in chat_history_for_model_initial[:-1]]
+                                current_contents_for_gemini.append({"role": "user", "parts": [{"text": prompt_with_sanitized_search}]})
+                                logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Сниппеты смягчены. Новая длина промпта: {len(prompt_with_sanitized_search)}")
+                            else: # Блок поиска не найден, хотя is_text_request_with_search=True. Это странно.
+                                logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Блок поиска не найден для смягчения, хотя is_text_request_with_search=True. Переход к попытке без поиска.")
+                                # Сразу переходим к попытке без поиска вообще
+                                tried_without_any_search = True # Отмечаем, что эту фазу тоже "прошли"
+                                sub_attempt_type = "no_search"
+                                last_user_prompt_original = chat_history_for_model_initial[-1]['parts'][0]['text']
+                                prompt_without_search = search_block_remove_pattern.sub("", last_user_prompt_original)
+                                current_contents_for_gemini = [entry for entry in chat_history_for_model_initial[:-1]]
+                                current_contents_for_gemini.append({"role": "user", "parts": [{"text": prompt_without_search.strip()}]})
+
+                            reply = None # Сбрасываем для следующей суб-попытки
+                            continue # к следующей итерации while True (sub_attempts)
+
+                        elif not tried_without_any_search: # уже пытались с sanitized, теперь без поиска вообще
+                            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Блокировка ({block_reason_str}) даже со смягченными сниппетами. Попытка без поиска...")
+                            tried_without_any_search = True
+                            sub_attempt_type = "no_search"
+                            
+                            if not chat_history_for_model_initial or not chat_history_for_model_initial[-1]['role'] == 'user' or \
+                               not chat_history_for_model_initial[-1]['parts'] or not chat_history_for_model_initial[-1]['parts'][0]['text']:
+                                reply = "❌ Ошибка: не удалось подготовить запрос без поиска."
+                                break # из while True (sub_attempts)
+
+                            last_user_prompt_original = chat_history_for_model_initial[-1]['parts'][0]['text']
+                            prompt_without_search = search_block_remove_pattern.sub("", last_user_prompt_original)
+                            current_contents_for_gemini = [entry for entry in chat_history_for_model_initial[:-1]]
+                            current_contents_for_gemini.append({"role": "user", "parts": [{"text": prompt_without_search.strip()}]})
+                            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Блок поиска удален. Новая длина промпта: {len(prompt_without_search)}")
+                            reply = None 
+                            continue # к следующей итерации while True (sub_attempts)
+                    
+                    # Если не is_text_request_with_search ИЛИ все суб-попытки исчерпаны, формируем финальный ответ об ошибке
+                    if block_reason_str not in ['UNSPECIFIED', 'N/A', '', None] and (not hasattr(BlockReason, 'BLOCK_REASON_UNSPECIFIED') or block_reason_str != BlockReason.BLOCK_REASON_UNSPECIFIED.name):
+                        reply = f"🤖 Модель не дала ответ. (Блокировка: {block_reason_str})"
+                    elif finish_reason_str not in ['STOP', 'N/A', '', None] and \
+                         (not hasattr(FinishReason, 'FINISH_REASON_STOP') or finish_reason_str != FinishReason.FINISH_REASON_STOP.name) and \
+                         finish_reason_str not in ['OTHER', FinishReason.OTHER.name if hasattr(FinishReason,'OTHER') else 'OTHER_STR'] and \
+                         finish_reason_str not in ['SAFETY', FinishReason.SAFETY.name if hasattr(FinishReason,'SAFETY') else 'SAFETY_STR']:
+                        reply = f"🤖 Модель завершила работу без ответа. (Причина: {finish_reason_str})"
+                    elif (finish_reason_str in ['OTHER', FinishReason.OTHER.name if hasattr(FinishReason,'OTHER') else 'OTHER_STR'] or \
+                          finish_reason_str in ['SAFETY', FinishReason.SAFETY.name if hasattr(FinishReason,'SAFETY') else 'SAFETY_STR']) and \
+                         (block_reason_str in ['UNSPECIFIED', 'N/A', '', None] or \
+                          (hasattr(BlockReason, 'BLOCK_REASON_UNSPECIFIED') and block_reason_str == BlockReason.BLOCK_REASON_UNSPECIFIED.name)):
+                         reply = f"🤖 Модель завершила работу по причине: {finish_reason_str}."
+                    else: 
+                        reply = "🤖 Модель дала пустой ответ."
+                    break # из while True (sub_attempts) - это финальный ответ для текущей ОСНОВНОЙ попытки
+
+                # Если reply получен (не None)
+                if reply:
+                    is_error_reply_generated_by_us = reply.startswith("🤖") or reply.startswith("❌")
+                    if not is_error_reply_generated_by_us:
+                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{log_message_suffix.replace(': ','_')}) Успешная генерация на попытке {attempt + 1}.")
+                        break # из while True (sub_attempts) - УСПЕХ
+                    else: # Это наше сообщение об ошибке
+                        # Если это была первая или вторая суб-попытка и следующая запланирована/возможна, не выходим
+                        if is_text_request_with_search and is_blocked_by_other_or_safety and \
+                           (sub_attempt_type == "original" or sub_attempt_type == "sanitized") and \
+                           not tried_without_any_search:
+                            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Суб-попытка {sub_attempt_type} дала ошибку, но следующая суб-попытка возможна.")
+                            reply = None # Сбрасываем, чтобы следующая суб-попытка могла установить свой результат
+                            # Переход к следующей суб-попытке произойдет автоматически, если условия выше выполнены
+                            if sub_attempt_type == "original" and not tried_with_sanitized_snippets: # Готовимся к sanitized
+                                tried_with_sanitized_snippets = True
+                                sub_attempt_type = "sanitized"
+                                # ... (логика подготовки current_contents_for_gemini для sanitized, как выше)
+                                original_last_user_prompt = chat_history_for_model_initial[-1]['parts'][0]['text']
+                                search_block_match = search_block_extract_pattern.search(original_last_user_prompt)
+                                if search_block_match:
+                                    search_block_content = search_block_match.group(1)
+                                    sanitized_search_block, _ = _sanitize_text_block(search_block_content, RISKY_KEYWORDS_FOR_SNIPPETS, SANITIZED_REPLACEMENT, user_id, chat_id, log_prefix)
+                                    prompt_with_sanitized_search = original_last_user_prompt.replace(search_block_content, sanitized_search_block)
+                                    current_contents_for_gemini = [entry for entry in chat_history_for_model_initial[:-1]]
+                                    current_contents_for_gemini.append({"role": "user", "parts": [{"text": prompt_with_sanitized_search}]})
+                                else: # Нет блока для смягчения, сразу пробуем без поиска
+                                    tried_without_any_search = True; sub_attempt_type = "no_search"
+                                    prompt_without_search = search_block_remove_pattern.sub("", original_last_user_prompt)
+                                    current_contents_for_gemini = [entry for entry in chat_history_for_model_initial[:-1]]
+                                    current_contents_for_gemini.append({"role": "user", "parts": [{"text": prompt_without_search.strip()}]})
+                                continue
+                            elif sub_attempt_type == "sanitized" and not tried_without_any_search: # Готовимся к no_search
+                                tried_without_any_search = True
+                                sub_attempt_type = "no_search"
+                                original_last_user_prompt = chat_history_for_model_initial[-1]['parts'][0]['text']
+                                prompt_without_search = search_block_remove_pattern.sub("", original_last_user_prompt)
+                                current_contents_for_gemini = [entry for entry in chat_history_for_model_initial[:-1]]
+                                current_contents_for_gemini.append({"role": "user", "parts": [{"text": prompt_without_search.strip()}]})
+                                continue
+                        # Иначе это финальное сообщение об ошибке для этой попытки
+                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{log_message_suffix.replace(': ','_')}) Получен \"технический\" ответ об ошибке: {reply[:100]}...")
+                        break # из while True (sub_attempts)
             
-            if "429" in error_message: 
-                reply = f"❌ Слишком много запросов к модели. Попробуйте позже."; break
-            elif "400" in error_message: 
-                logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка 400 Bad Request: {error_message}", exc_info=True)
-                reply = f"❌ Ошибка в запросе к модели (400 Bad Request)."; break
-            elif "location is not supported" in error_message: 
-                reply = f"❌ Эта модель недоступна в вашем регионе."; break
-            
-            if is_retryable and attempt < RETRY_ATTEMPTS - 1:
-                wait_time = RETRY_DELAY_SECONDS * (2 ** attempt)
-                logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ожидание {wait_time:.1f} сек перед попыткой {attempt + 2}..."); 
-                await asyncio.sleep(wait_time)
-                continue 
-            else: 
-                logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Не удалось выполнить генерацию после {attempt + 1} попыток. Последняя ошибка: {e}", exc_info=True if not is_retryable else False)
-                if reply is None: 
-                    reply = f"❌ Ошибка при обращении к модели после {attempt + 1} попыток."
+            except (BlockedPromptException, StopCandidateException) as e_block_stop_sub:
+                reason_str_sub = str(e_block_stop_sub.args[0]) if hasattr(e_block_stop_sub, 'args') and e_block_stop_sub.args else "неизвестна"
+                logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{log_message_suffix.replace(': ','_')}) Запрос заблокирован/остановлен (попытка {attempt + 1}): {e_block_stop_sub} (Причина: {reason_str_sub})")
+                reply = f"❌ Запрос заблокирован/остановлен моделью."; break 
+            except Exception as e_sub:
+                error_message_sub = str(e_sub)
+                logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{log_message_suffix.replace(': ','_')}) Ошибка генерации (попытка {attempt + 1}): {error_message_sub[:200]}...")
+                if "429" in error_message_sub: reply = f"❌ Слишком много запросов к модели. Попробуйте позже."
+                elif "400" in error_message_sub: reply = f"❌ Ошибка в запросе к модели (400 Bad Request)."
+                elif "location is not supported" in error_message_sub: reply = f"❌ Эта модель недоступна в вашем регионе."
+                else: reply = f"❌ Непредвиденная ошибка при генерации: {error_message_sub[:100]}..." 
                 break 
+            
+            # Если мы дошли сюда, значит, все суб-попытки для текущей основной попытки исчерпаны
+            # или произошла неисправимая ошибка в суб-попытке
+            break # Выход из while True (sub_attempts)
+
+        # Конец внутреннего цикла while True (sub_attempts)
+        
+        if reply and not (reply.startswith("🤖") or reply.startswith("❌")):
+            break # из внешнего цикла RETRY_ATTEMPTS - УСПЕХ
+
+        if attempt == RETRY_ATTEMPTS - 1:
+            logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Не удалось получить успешный ответ после {RETRY_ATTEMPTS} попыток. Финальный reply: {reply}")
+            if reply is None: 
+                 reply = f"❌ Ошибка при обращении к модели после {RETRY_ATTEMPTS} попыток."
+            break 
+
+        is_retryable_error_type_outer = False
+        # Проверяем, содержит ли reply текст ошибки, указывающий на возможность повтора
+        if reply and ("500" in reply or "503" in reply or "timeout" in reply.lower() or "Ошибка при обращении к модели" in reply):
+            is_retryable_error_type_outer = True
+        # Также, если reply пустой, но была исключение, которое мы поймали и оно retryable
+        elif 'last_exception_outer' in locals() and hasattr(locals()['last_exception_outer'], 'message'):
+             error_message_from_exception_outer = str(locals()['last_exception_outer'].message)
+             if "500" in error_message_from_exception_outer or "503" in error_message_from_exception_outer or "timeout" in error_message_from_exception_outer.lower():
+                 is_retryable_error_type_outer = True
+        
+        if is_retryable_error_type_outer:
+            wait_time = RETRY_DELAY_SECONDS * (2 ** attempt)
+            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ожидание {wait_time:.1f} сек перед основной попыткой {attempt + 2}...")
+            await asyncio.sleep(wait_time)
+        else: 
+            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Неретраябл ошибка или достигнут лимит ретраев. Финальный reply для попытки {attempt + 1}: {reply}")
+            if reply is None : reply = f"❌ Ошибка при обращении к модели после {attempt + 1} попыток." 
+            break 
+            
     return reply
+
 
 async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, file_id: str, user_question: str, original_user_id: int):
     chat_id = update.effective_chat.id
     requesting_user_id = update.effective_user.id
-    log_prefix_handler = "ReanalyzeImg" # Для логгирования удаления мыслей
+    log_prefix_handler = "ReanalyzeImg" 
     logger.info(f"UserID: {requesting_user_id} (запрос по фото от UserID: {original_user_id}), ChatID: {chat_id} | Инициирован повторный анализ изображения (file_id: ...{file_id[-10:]}) с вопросом: '{user_question[:50]}...'")
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     try:
@@ -655,7 +585,6 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
         return
 
     current_time_str = get_current_time_str()
-    # Добавляем UserID в сам промпт для модели
     user_question_with_context = (f"(Текущая дата и время: {current_time_str})\n"
                                   f"{USER_ID_PREFIX_FORMAT.format(user_id=requesting_user_id)}{user_question}")
     if get_user_setting(context, 'detailed_reasoning_enabled', True): 
@@ -668,37 +597,42 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
     parts = [{"text": user_question_with_context}, {"inline_data": {"mime_type": mime_type, "data": b64_data}}]
     content_for_vision_direct = [{"role": "user", "parts": parts}]
 
-    model_id = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
-    temperature = get_user_setting(context, 'temperature', 1.0)
-    vision_capable_keywords = ['flash', 'pro', 'vision', 'ultra'] 
-    is_vision_model = any(keyword in model_id for keyword in vision_capable_keywords)
+    selected_model_for_reanalyze = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
+    is_vision_model = any(keyword in selected_model_for_reanalyze for keyword in ['flash', 'pro', 'vision', 'ultra'])
+    effective_model_id_for_reanalyze = selected_model_for_reanalyze
+    temp_context_for_reanalyze = context
+
     if not is_vision_model:
-        vision_models = [m_id for m_id in AVAILABLE_MODELS if any(keyword in m_id for keyword in vision_capable_keywords)]
+        vision_models = [m_id for m_id in AVAILABLE_MODELS if any(keyword in m_id for keyword in ['flash', 'pro', 'vision', 'ultra'])]
         if vision_models:
-            original_model_name = AVAILABLE_MODELS.get(model_id, model_id)
+            original_model_name = AVAILABLE_MODELS.get(selected_model_for_reanalyze, selected_model_for_reanalyze)
             fallback_model_id = next((m for m in vision_models if 'flash' in m or 'pro' in m), vision_models[0])
-            model_id = fallback_model_id
-            new_model_name = AVAILABLE_MODELS.get(model_id, model_id)
-            logger.warning(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель {original_model_name} не vision. Временно использую {new_model_name}.")
+            effective_model_id_for_reanalyze = fallback_model_id
+            new_model_name = AVAILABLE_MODELS.get(effective_model_id_for_reanalyze, effective_model_id_for_reanalyze)
+            logger.warning(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель пользователя {original_model_name} не vision. Временно использую {new_model_name}.")
+            
+            temp_context_for_reanalyze = ContextTypes.DEFAULT_TYPE(application=context.application, chat_id=chat_id, user_id=requesting_user_id)
+            temp_context_for_reanalyze.user_data = context.user_data.copy()
+            temp_context_for_reanalyze.user_data['selected_model'] = effective_model_id_for_reanalyze
         else:
             logger.error(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Нет доступных vision моделей.")
             await update.message.reply_text("❌ Нет доступных моделей для повторного анализа изображения.")
             return
 
-    logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель: {model_id}, Темп: {temperature}")
+    logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель: {effective_model_id_for_reanalyze}")
     
     reply = await _generate_gemini_response(
-        user_prompt_text=user_question_with_context, 
-        chat_history_for_model=content_for_vision_direct, 
+        user_prompt_text_initial=user_question_with_context, 
+        chat_history_for_model_initial=content_for_vision_direct, 
         user_id=requesting_user_id,
         chat_id=chat_id,
-        context=context,
+        context=temp_context_for_reanalyze, 
         system_instruction=system_instruction_text, 
-        log_prefix="ReanalyzeImgGen"
+        log_prefix="ReanalyzeImgGen",
+        is_text_request_with_search=False 
     )
 
     chat_history = context.chat_data.setdefault("history", [])
-    # Записываем оригинальный вопрос пользователя (без URI и инструкций для модели) в историю
     user_question_for_history = USER_ID_PREFIX_FORMAT.format(user_id=requesting_user_id) + user_question
     history_entry_user = { "role": "user", "parts": [{"text": user_question_for_history}], "user_id": requesting_user_id, "message_id": update.message.message_id }
     chat_history.append(history_entry_user)
@@ -707,8 +641,9 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
         history_entry_model = {"role": "model", "parts": [{"text": reply}]} 
         chat_history.append(history_entry_model)
         reply_to_send_to_user = reply 
-        if get_user_setting(context, 'detailed_reasoning_enabled', True) and reply: # reply может быть None
-            cleaned_reply = _strip_thoughts_from_text(reply) # _strip_thoughts_from_text теперь не смотрит на префиксы
+        if get_user_setting(context, 'detailed_reasoning_enabled', True) and reply: 
+            logger.debug(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Сырой ответ перед strip: {repr(reply[:500])}")
+            cleaned_reply = _strip_thoughts_from_text(reply) 
             if reply != cleaned_reply:
                  logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Блок <мысли> удален из ответа.")
             reply_to_send_to_user = cleaned_reply
@@ -716,7 +651,6 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
     else: 
         logger.error(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Нет ответа для отправки пользователю (reply is None после _generate_gemini_response).")
         final_error_msg = "🤖 К сожалению, не удалось повторно проанализировать изображение."
-        # Добавляем ошибку в историю, только если предыдущее сообщение не от этой же модели с той же ошибкой
         if not (chat_history and chat_history[-1].get("role") == "model" and chat_history[-1]["parts"][0]["text"] == final_error_msg):
             chat_history.append({"role": "model", "parts": [{"text": final_error_msg}]})
         try: await update.message.reply_text(final_error_msg)
@@ -734,7 +668,7 @@ async def reanalyze_video(update: Update, context: ContextTypes.DEFAULT_TYPE, vi
     current_time_str = get_current_time_str()
     prompt_for_video = (
         f"(Текущая дата и время: {current_time_str})\n"
-        f"{USER_ID_PREFIX_FORMAT.format(user_id=requesting_user_id)}{user_question}\n\n" # Добавил ID пользователя к вопросу
+        f"{USER_ID_PREFIX_FORMAT.format(user_id=requesting_user_id)}{user_question}\n\n" 
         f"**Важно:** Ответь на основе содержимого видео, находящегося ИСКЛЮЧИТЕЛЬНО по следующей ссылке. Не используй информацию из других источников или о других видео. Если видео по ссылке недоступно, сообщи об этом.\n"
         f"**ССЫЛКА НА ВИДЕО ДЛЯ АНАЛИЗА:** {youtube_uri}"
     )
@@ -744,32 +678,39 @@ async def reanalyze_video(update: Update, context: ContextTypes.DEFAULT_TYPE, vi
     
     content_for_video_direct = [{"role": "user", "parts": [{"text": prompt_for_video}]}]
 
-    model_id = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
-    temperature = get_user_setting(context, 'temperature', 1.0)
-    is_video_model = any(keyword in model_id for keyword in VIDEO_CAPABLE_KEYWORDS)
+    selected_model_for_reanalyze_vid = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
+    is_video_model = any(keyword in selected_model_for_reanalyze_vid for keyword in VIDEO_CAPABLE_KEYWORDS)
+    effective_model_id_for_reanalyze_vid = selected_model_for_reanalyze_vid
+    temp_context_for_reanalyze_vid = context
+
     if not is_video_model:
         video_models = [m_id for m_id in AVAILABLE_MODELS if any(keyword in m_id for keyword in VIDEO_CAPABLE_KEYWORDS)]
         if video_models:
-            original_model_name = AVAILABLE_MODELS.get(model_id, model_id)
+            original_model_name = AVAILABLE_MODELS.get(selected_model_for_reanalyze_vid, selected_model_for_reanalyze_vid)
             fallback_model_id = next((m for m in video_models if 'flash' in m), video_models[0]) 
-            model_id = fallback_model_id
-            new_model_name = AVAILABLE_MODELS.get(model_id, model_id)
-            logger.warning(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель {original_model_name} не video. Временно использую {new_model_name}.")
+            effective_model_id_for_reanalyze_vid = fallback_model_id
+            new_model_name = AVAILABLE_MODELS.get(effective_model_id_for_reanalyze_vid, effective_model_id_for_reanalyze_vid)
+            logger.warning(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель пользователя {original_model_name} не video. Временно использую {new_model_name}.")
+            
+            temp_context_for_reanalyze_vid = ContextTypes.DEFAULT_TYPE(application=context.application, chat_id=chat_id, user_id=requesting_user_id)
+            temp_context_for_reanalyze_vid.user_data = context.user_data.copy()
+            temp_context_for_reanalyze_vid.user_data['selected_model'] = effective_model_id_for_reanalyze_vid
         else:
             logger.error(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Нет доступных video моделей.")
             await update.message.reply_text("❌ Нет доступных моделей для ответа на вопрос по видео.")
             return
 
-    logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель: {model_id}, Темп: {temperature}")
+    logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель: {effective_model_id_for_reanalyze_vid}")
     
     reply = await _generate_gemini_response(
-        user_prompt_text=prompt_for_video,
-        chat_history_for_model=content_for_video_direct,
+        user_prompt_text_initial=prompt_for_video,
+        chat_history_for_model_initial=content_for_video_direct,
         user_id=requesting_user_id,
         chat_id=chat_id,
-        context=context,
+        context=temp_context_for_reanalyze_vid,
         system_instruction=system_instruction_text,
-        log_prefix="ReanalyzeVidGen"
+        log_prefix="ReanalyzeVidGen",
+        is_text_request_with_search=False 
     )
 
     chat_history = context.chat_data.setdefault("history", [])
@@ -782,6 +723,7 @@ async def reanalyze_video(update: Update, context: ContextTypes.DEFAULT_TYPE, vi
         chat_history.append(history_entry_model)
         reply_to_send_to_user = reply
         if get_user_setting(context, 'detailed_reasoning_enabled', True) and reply:
+            logger.debug(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Сырой ответ перед strip: {repr(reply[:500])}")
             cleaned_reply = _strip_thoughts_from_text(reply)
             if reply != cleaned_reply:
                  logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Блок <мысли> удален из ответа.")
@@ -803,7 +745,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     message = update.message
-    log_prefix_handler = "HandleMsg" # Для логгирования удаления мыслей в этом хэндлере
+    log_prefix_handler = "HandleMsg" 
     if not message:
         logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Получен пустой объект message в update.")
         return
@@ -852,7 +794,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id) + original_user_message_text
     youtube_handled = False
-    log_prefix_yt_summary = "YouTubeSummary" # Для логгирования удаления мыслей
+    log_prefix_yt_summary = "YouTubeSummary" 
     
     if not (message.reply_to_message and message.reply_to_message.text and 
             (message.reply_to_message.text.startswith(IMAGE_DESCRIPTION_PREFIX) or 
@@ -881,32 +823,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             content_for_summary_direct = [{"role": "user", "parts": [{"text": prompt_for_summary}]}]
 
-            model_id_yt = get_user_setting(context, 'selected_model', DEFAULT_MODEL) 
-            temperature_yt = get_user_setting(context, 'temperature', 1.0) 
-            is_video_model_yt = any(keyword in model_id_yt for keyword in VIDEO_CAPABLE_KEYWORDS)
+            selected_model_for_yt = get_user_setting(context, 'selected_model', DEFAULT_MODEL) 
+            is_video_model_yt = any(keyword in selected_model_for_yt for keyword in VIDEO_CAPABLE_KEYWORDS)
+            effective_model_id_for_yt = selected_model_for_yt
+            temp_context_for_yt = context
+
             if not is_video_model_yt:
                 video_models_yt = [m_id for m_id in AVAILABLE_MODELS if any(keyword in m_id for keyword in VIDEO_CAPABLE_KEYWORDS)]
                 if video_models_yt:
-                    original_model_name_yt = AVAILABLE_MODELS.get(model_id_yt, model_id_yt)
+                    original_model_name_yt = AVAILABLE_MODELS.get(selected_model_for_yt, selected_model_for_yt)
                     fallback_model_id_yt = next((m for m in video_models_yt if 'flash' in m), video_models_yt[0])
-                    model_id_yt = fallback_model_id_yt # Обновляем model_id_yt для передачи в _generate_gemini_response
-                    # get_user_setting(context, 'selected_model', model_id_yt) # Это изменит настройку пользователя, не нужно
-                    new_model_name_yt = AVAILABLE_MODELS.get(model_id_yt, model_id_yt)
-                    logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Модель {original_model_name_yt} не video. Временно использую {new_model_name_yt}.")
+                    effective_model_id_for_yt = fallback_model_id_yt 
+                    new_model_name_yt = AVAILABLE_MODELS.get(effective_model_id_for_yt, effective_model_id_for_yt)
+                    logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Модель пользователя {original_model_name_yt} не video. Временно использую {new_model_name_yt} для YouTube.")
+                    
+                    temp_context_for_yt = ContextTypes.DEFAULT_TYPE(application=context.application, chat_id=chat_id, user_id=user_id)
+                    temp_context_for_yt.user_data = context.user_data.copy()
+                    temp_context_for_yt.user_data['selected_model'] = effective_model_id_for_yt
                 else:
                     logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Нет доступных video моделей.")
                     await update.message.reply_text("❌ Нет доступных моделей для создания конспекта видео."); return
             
-            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Модель: {model_id_yt}, Темп: {temperature_yt}")
+            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Модель для YouTube: {effective_model_id_for_yt}")
             
             reply_yt = await _generate_gemini_response(
-                user_prompt_text=prompt_for_summary,
-                chat_history_for_model=content_for_summary_direct, 
+                user_prompt_text_initial=prompt_for_summary,
+                chat_history_for_model_initial=content_for_summary_direct, 
                 user_id=user_id,
                 chat_id=chat_id,
-                context=context, 
+                context=temp_context_for_yt, 
                 system_instruction=system_instruction_text, 
-                log_prefix="YouTubeSummaryGen" # Этот префикс будет внутри _generate_gemini_response
+                log_prefix="YouTubeSummaryGen",
+                is_text_request_with_search=False 
             )
             
             history_entry_user = { 
@@ -921,12 +869,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             original_model_summary = reply_yt 
             history_summary_with_prefix = ""
-            if original_model_summary: # reply_yt может быть None
+            if original_model_summary: 
                 if not (original_model_summary.startswith("🤖") or original_model_summary.startswith("❌")):
                     history_summary_with_prefix = f"{YOUTUBE_SUMMARY_PREFIX}{original_model_summary}"
                 else:
                     history_summary_with_prefix = original_model_summary
-            else: # Если reply_yt is None
+            else: 
                 history_summary_with_prefix = "🤖 Не удалось создать конспект видео."
             
             history_entry_model = {"role": "model", "parts": [{"text": history_summary_with_prefix}]}
@@ -938,6 +886,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not (original_model_summary.startswith("🤖") or original_model_summary.startswith("❌")):
                     cleaned_summary_part = original_model_summary 
                     if get_user_setting(context, 'detailed_reasoning_enabled', True): 
+                        logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Сырой ответ YT перед strip: {repr(original_model_summary[:500])}")
                         cleaned_summary_part = _strip_thoughts_from_text(original_model_summary) 
                         if original_model_summary != cleaned_summary_part:
                             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Блок <мысли> удален из ответа перед отправкой.")
@@ -947,7 +896,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 summary_for_user_display = "🤖 Не удалось создать конспект видео."
             
-            if summary_for_user_display: # Убедимся что не пустая строка
+            if summary_for_user_display: 
                 await send_reply(message, summary_for_user_display, context)
             else: 
                 logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Нет ответа для отправки пользователю (summary_for_user_display is empty).")
@@ -959,14 +908,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             while len(chat_history) > MAX_HISTORY_MESSAGES: chat_history.pop(0)
             return
 
-    # --- Обычная обработка текстового сообщения ---
-    log_prefix_text_gen = "TextGen" # Для логгирования удаления мыслей в этом блоке
+    log_prefix_text_gen = "TextGen" 
     use_search = get_user_setting(context, 'search_enabled', True)
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     search_context_snippets = []
     search_provider = None
     search_log_msg = "Поиск отключен пользователем"
+    search_actually_performed = False 
     if use_search:
         query_for_search = original_user_message_text
         query_short = query_for_search[:50] + '...' if len(query_for_search) > 50 else query_for_search
@@ -983,6 +932,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             search_provider = "Google"
             search_context_snippets = google_results
             search_log_msg += f" (Google: {len(search_context_snippets)} рез.)"
+            search_actually_performed = True if search_context_snippets else False
         else:
             search_log_msg += " (Google: 0 рез./ошибка)"
             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Google не дал результатов. Пробуем DuckDuckGo...")
@@ -994,6 +944,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if ddg_snippets:
                         search_provider = "DuckDuckGo"; search_context_snippets = ddg_snippets
                         search_log_msg += f" (DDG: {len(search_context_snippets)} рез.)"
+                        search_actually_performed = True if search_context_snippets else False
                     else: search_log_msg += " (DDG: 0 текст. рез.)"
                 else: search_log_msg += " (DDG: 0 рез.)"
             except TimeoutError: logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Таймаут поиска DuckDuckGo."); search_log_msg += " (DDG: таймаут)"
@@ -1002,6 +953,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка типа при поиске DuckDuckGo: {e_type}", exc_info=True)
                 search_log_msg += " (DDG: ошибка типа)"
             except Exception as e_ddg: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка поиска DuckDuckGo: {e_ddg}", exc_info=True); search_log_msg += " (DDG: ошибка)"
+    
+    if not search_context_snippets: # Если после всех попыток поиска сниппетов нет
+        search_actually_performed = False
+
 
     current_time_str_main = get_current_time_str() 
     time_context_str = f"(Текущая дата и время: {current_time_str_main})\n"
@@ -1024,7 +979,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     final_prompt_parts.append(user_message_with_id) 
 
-    if search_context_snippets:
+    if search_context_snippets: 
         search_context_lines = [f"- {s.strip()}" for s in search_context_snippets if s.strip()]
         if search_context_lines:
             search_context_text = "\n".join(search_context_lines)
@@ -1036,19 +991,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             search_block = (f"\n\n{search_block_title}\n{search_context_text}\n"
                             f"===========================================================\n"
-                            f"{search_block_instruction}")
+                            f"{search_block_instruction}\n") 
             final_prompt_parts.append(search_block)
             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Добавлен контекст из {search_provider} ({len(search_context_lines)} непустых сниппетов).")
         else: 
             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Сниппеты из {search_provider} оказались пустыми, контекст не добавлен."); 
             search_log_msg += " (пустые сниппеты)"
-            
+            search_actually_performed = False 
+    else: 
+        if use_search: 
+             search_actually_performed = False
+
+
     if get_user_setting(context, 'detailed_reasoning_enabled', True): 
         final_prompt_parts.append(REASONING_PROMPT_ADDITION)
         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Добавлена инструкция для детального рассуждения.")
     
-    final_user_prompt_text = "\n".join(final_prompt_parts)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | {search_log_msg}") # search_log_msg уже содержит префикс
+    final_user_prompt_text = "".join(final_prompt_parts) 
+    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | {search_log_msg}") 
     logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Финальный промпт для Gemini (длина {len(final_user_prompt_text)}):\n{final_user_prompt_text[:600]}...")
 
     if not youtube_handled: 
@@ -1065,7 +1025,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_total_chars = 0
     if not youtube_handled:
         history_to_filter = chat_history[:-1] if chat_history and chat_history[-1]["message_id"] == user_message_id else chat_history
-    else: # Если youtube_handled, последнее сообщение пользователя уже в истории
+    else: 
         history_to_filter = chat_history 
 
     for entry in reversed(history_to_filter):
@@ -1087,13 +1047,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history_clean_for_model = [{"role": entry["role"], "parts": entry["parts"]} for entry in history_for_model]
     
     gemini_reply_text = await _generate_gemini_response(
-        user_prompt_text=final_user_prompt_text, 
-        chat_history_for_model=history_clean_for_model, 
+        user_prompt_text_initial=final_user_prompt_text, 
+        chat_history_for_model_initial=history_clean_for_model, 
         user_id=user_id,
         chat_id=chat_id,
         context=context,
         system_instruction=system_instruction_text,
-        log_prefix=log_prefix_text_gen # Передаем префикс TextGen
+        log_prefix=log_prefix_text_gen,
+        is_text_request_with_search=search_actually_performed 
     )
 
     if gemini_reply_text and not youtube_handled: 
@@ -1101,6 +1062,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_history.append(history_entry_model)
         reply_to_send_to_user = gemini_reply_text
         if get_user_setting(context, 'detailed_reasoning_enabled', True) and gemini_reply_text:
+            logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Сырой ответ перед strip: {repr(gemini_reply_text[:500])}")
             cleaned_reply = _strip_thoughts_from_text(gemini_reply_text)
             if gemini_reply_text != cleaned_reply:
                  logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Блок <мысли> удален из ответа перед отправкой пользователю.")
@@ -1114,8 +1076,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
          logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Нет ответа для отправки пользователю после всех попыток (не YouTube). Reply от _generate_gemini_response: {gemini_reply_text}")
          final_error_message = gemini_reply_text if gemini_reply_text else "🤖 К сожалению, не удалось получить ответ от модели после нескольких попыток."
          
-         if not (chat_history and chat_history[-1].get("role") == "model" and chat_history[-1].get("message_id") == user_message_id and chat_history[-1]["parts"][0]["text"] == final_error_message) :
-            chat_history.append({"role": "model", "parts": [{"text": final_error_message}], "message_id": user_message_id}) # Добавляем message_id для связи
+         if not (chat_history and chat_history[-1].get("role") == "model" and 
+                 chat_history[-1].get("message_id") == user_message_id and 
+                 chat_history[-1]["parts"][0]["text"] == final_error_message) :
+            chat_history.append({"role": "model", "parts": [{"text": final_error_message}], "message_id": user_message_id})
 
          try:
              if message: await message.reply_text(final_error_message)
@@ -1132,7 +1096,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"ChatID: {chat_id} | handle_photo: Не удалось определить пользователя."); return
     user_id = update.effective_user.id
     message = update.message
-    log_prefix_handler = "PhotoVision" # Для логгирования удаления мыслей
+    log_prefix_handler = "PhotoVision" 
     if not message or not message.photo: 
         logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) В handle_photo не найдено фото."); return
 
@@ -1185,33 +1149,38 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts_photo = [{"text": prompt_text_vision}, {"inline_data": {"mime_type": mime_type, "data": b64_data}}]
     content_for_vision_photo_direct = [{"role": "user", "parts": parts_photo}]
 
-    model_id_photo = get_user_setting(context, 'selected_model', DEFAULT_MODEL) 
-    temperature_photo = get_user_setting(context, 'temperature', 1.0) 
-    vision_capable_keywords = ['flash', 'pro', 'vision', 'ultra'] 
-    is_vision_model_photo = any(keyword in model_id_photo for keyword in vision_capable_keywords)
-    
+    selected_model_for_photo = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
+    is_vision_model_photo = any(keyword in selected_model_for_photo for keyword in ['flash', 'pro', 'vision', 'ultra'])
+    effective_model_id_for_photo = selected_model_for_photo
+    temp_context_for_photo = context
+
     if not is_vision_model_photo:
-        vision_models_photo = [m_id for m_id in AVAILABLE_MODELS if any(keyword in m_id for keyword in vision_capable_keywords)]
+        vision_models_photo = [m_id for m_id in AVAILABLE_MODELS if any(keyword in m_id for keyword in ['flash', 'pro', 'vision', 'ultra'])]
         if vision_models_photo:
-            original_model_name_photo = AVAILABLE_MODELS.get(model_id_photo, model_id_photo)
+            original_model_name_photo = AVAILABLE_MODELS.get(selected_model_for_photo, selected_model_for_photo)
             fallback_model_id_photo = next((m for m in vision_models_photo if 'flash' in m or 'pro' in m), vision_models_photo[0])
-            model_id_photo = fallback_model_id_photo
-            new_model_name_photo = AVAILABLE_MODELS.get(model_id_photo, model_id_photo)
-            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель {original_model_name_photo} не vision. Временно использую {new_model_name_photo}.")
+            effective_model_id_for_photo = fallback_model_id_photo
+            new_model_name_photo = AVAILABLE_MODELS.get(effective_model_id_for_photo, effective_model_id_for_photo)
+            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Модель пользователя {original_model_name_photo} не vision. Временно использую {new_model_name_photo}.")
+            
+            temp_context_for_photo = ContextTypes.DEFAULT_TYPE(application=context.application, chat_id=chat_id, user_id=user_id)
+            temp_context_for_photo.user_data = context.user_data.copy()
+            temp_context_for_photo.user_data['selected_model'] = effective_model_id_for_photo
         else:
             logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Нет доступных vision моделей.")
             await message.reply_text("❌ Нет доступных моделей для анализа изображений."); return
             
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Анализ изображения (Vision). Модель: {model_id_photo}, Темп: {temperature_photo}, MIME: {mime_type}")
+    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Анализ изображения (Vision). Модель: {effective_model_id_for_photo}, MIME: {mime_type}")
     
     reply_photo = await _generate_gemini_response(
-        user_prompt_text=prompt_text_vision,
-        chat_history_for_model=content_for_vision_photo_direct,
+        user_prompt_text_initial=prompt_text_vision,
+        chat_history_for_model_initial=content_for_vision_photo_direct,
         user_id=user_id,
         chat_id=chat_id,
-        context=context,
+        context=temp_context_for_photo, 
         system_instruction=system_instruction_text,
-        log_prefix="PhotoVisionGen" # Этот префикс будет внутри _generate_gemini_response
+        log_prefix="PhotoVisionGen",
+        is_text_request_with_search=False 
     )
     
     chat_history = context.chat_data.setdefault("history", [])
@@ -1235,7 +1204,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             history_reply_text_with_prefix = original_model_reply_content
     else:
          history_reply_text_with_prefix = "🤖 Не удалось проанализировать изображение."
-
     
     history_entry_model = {"role": "model", "parts": [{"text": history_reply_text_with_prefix}]}
     chat_history.append(history_entry_model)
@@ -1246,6 +1214,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (original_model_reply_content.startswith("🤖") or original_model_reply_content.startswith("❌")):
             cleaned_model_reply_part = original_model_reply_content
             if get_user_setting(context, 'detailed_reasoning_enabled', True): 
+                logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Сырой ответ фото перед strip: {repr(original_model_reply_content[:500])}")
                 cleaned_model_reply_part = _strip_thoughts_from_text(original_model_reply_content)
                 if original_model_reply_content != cleaned_model_reply_part:
                      logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Блок <мысли> удален из ответа перед отправкой.")
@@ -1271,7 +1240,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"ChatID: {chat_id} | handle_document: Не удалось определить пользователя."); return
     user_id = update.effective_user.id
     message = update.message
-    log_prefix_handler = "DocHandler" # Для логгирования удаления мыслей
+    log_prefix_handler = "DocHandler" 
     if not message or not message.document: 
         logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) В handle_document нет документа."); return
     
@@ -1320,7 +1289,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         import chardet
         chardet_available = True
     except ImportError: 
-        logger.info(f"({log_prefix_handler}) Библиотека chardet не найдена. Автоопределение кодировки будет ограничено.") # Добавлен префикс
+        logger.info(f"({log_prefix_handler}) Библиотека chardet не найдена. Автоопределение кодировки будет ограничено.") 
 
     if chardet_available:
         try:
@@ -1449,13 +1418,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING) 
     
     gemini_reply_doc = await _generate_gemini_response(
-        user_prompt_text=user_prompt_doc_for_gemini, 
-        chat_history_for_model=history_clean_for_model_doc, 
+        user_prompt_text_initial=user_prompt_doc_for_gemini, 
+        chat_history_for_model_initial=history_clean_for_model_doc, 
         user_id=user_id,
         chat_id=chat_id,
         context=context,
         system_instruction=system_instruction_text,
-        log_prefix="DocGen" # Префикс для _generate_gemini_response
+        log_prefix="DocGen",
+        is_text_request_with_search=False 
     )
 
     if gemini_reply_doc:
@@ -1463,6 +1433,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_history.append(history_entry_model_doc)
         reply_to_send_to_user_doc = gemini_reply_doc
         if get_user_setting(context, 'detailed_reasoning_enabled', True) and gemini_reply_doc: 
+            logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Сырой ответ документа перед strip: {repr(gemini_reply_doc[:500])}")
             cleaned_reply_doc = _strip_thoughts_from_text(gemini_reply_doc)
             if gemini_reply_doc != cleaned_reply_doc:
                  logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Блок <мысли> удален из ответа.")
