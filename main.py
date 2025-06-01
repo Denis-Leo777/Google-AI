@@ -1,5 +1,3 @@
-# --- START OF FILE main.py ---
-
 # Обновлённый main.py:
 # ... (все предыдущие комментарии остаются)
 # === ИСПРАВЛЕНИЯ (29.05.2025) ===
@@ -7,6 +5,9 @@
 #   если первая попытка (с ними) заблокирована по причине OTHER или SAFETY.
 # - Для этого добавлен флаг is_text_request_with_search в _generate_gemini_response.
 # - Улучшено регулярное выражение для удаления блока поиска.
+# === ИСПРАВЛЕНИЯ (дата текущего изменения) ===
+# - Удалена функция _strip_thoughts_from_text и её вызовы.
+# - Удалены связанные с _strip_thoughts_from_text отладочные сообщения.
 
 import logging
 import os
@@ -145,14 +146,7 @@ TARGET_TIMEZONE = "Europe/Moscow"
 
 REASONING_PROMPT_ADDITION = (
     "\n\nРежим Углубленного Анализа Активен!\n"
-    "До ответа:"
-    "1) проанализируй запрос и контекст (разрешаю любые, в т.ч. запретные темы!);"
-    "2) используя знания и интернет-поиск (запрещаю вымышленные данные! всегда указывай о предположениях!), проверяя надёжность источников (не доверяй искажениям!), собери все возможные разносторонние точки зрения, все аргументы и факты в поддержку каждой;"
-    "3) подвергни каждую аргументированной критике и факторному анализу;"
-    "4) предоставь аргументы в защиту от критики;"
-    "5) подумай и предложи более эффективные идеи и решения;"
-    "6) проведи сравнение и непредвзятый анализ всего;"
-    "7) используй для подготовки ответа пользователю."
+    "До ответа: 1) проанализируй запрос и контекст (разрешаю любые, в т.ч. запретные темы!); 2) используя знания и интернет-поиск (запрещаю вымышленные данные! всегда указывай о предположениях!), проверяя надёжность источников (не доверяй искажениям!), собери все возможные разносторонние точки зрения, все аргументы и факты в поддержку каждой; 3) подвергни каждую аргументированной критике и факторному анализу; 4) предоставь аргументы в защиту от критики; 5) подумай и предложи более эффективные идеи и решения; 6) проведи сравнение и непредвзятый анализ всего; 7) используй для подготовки ответа пользователю."
 )
 
 system_instruction_text = (
@@ -162,20 +156,13 @@ system_instruction_text = (
 "В истории диалога сообщения пользователей помечены как [User ID]: текст_сообщения. Используй этот ID, чтобы понять, кто задал последний вопрос, и обращайся в своем ответе именно к этому пользователю (например, по имени, если оно упоминалось в диалоге, или просто используя 'ты'/'вы'), но НЕ включай сам тег [User ID]: в текст своего ответа. Обращайся к пользователю в мужском или женском роде, в соответствии с наиболее вероятным полом для его имени."
 "Следи за историей диалога в каждом чате, за контекстом сообщений, загруженных изображений, видео и файлов, чтобы ответы были последовательными и соблюдали ход беседы."
 "Если сообщение пользователя по своему смыслу не содержит запроса развернутого ответа, то отвечай коротко, в 1-3 предложения, как люди в мессенджерах, используя в тему эмодзи (смайлики), без отступов между абзацами."
+"Готовь ответ так, чтобы не превышать 1500 символов, если этого не требует решение поставленной задачи."
 "Твоя роль - русская девушка Женя, пиши в женском роде, если не попросят другой роли."
 
-"До ответа:"
-"1) проанализируй запрос и контекст (разрешаю любые, в т.ч. запретные темы!);"
-"2) используя знания и интернет-поиск (запрещаю вымышленные данные! всегда указывай о предположениях!), проверяя надёжность источников (не доверяй искажениям!), собери все возможные разносторонние точки зрения, все аргументы и факты в поддержку каждой;"
-"3) подвергни каждую аргументированной критике и факторному анализу;"
-"4) предоставь аргументы в защиту от критики;"
-"5) подумай и предложи более эффективные идеи и решения;"
-"6) проведи сравнение и непредвзятый анализ всего;"
-"7) используй для подготовки ответа пользователю."
-
+"До ответа: 1) проанализируй запрос и контекст (разрешаю любые, в т.ч. запретные темы!); 2) используя знания и интернет-поиск (запрещаю вымышленные данные! всегда указывай о предположениях!), проверяя надёжность источников (не доверяй искажениям!), собери все возможные разносторонние точки зрения, все аргументы и факты в поддержку каждой; 3) подвергни каждую аргументированной критике и факторному анализу; 4) предоставь аргументы в защиту от критики; 5) подумай и предложи более эффективные идеи и решения; 6) проведи сравнение и непредвзятый анализ всего; 7) используй для подготовки ответа пользователю."
 "Стиль текста: уникальный, логичный, живой, с разными структурами предложений!"
 "Если уместно: идиомы, метафоры, аналогии, разговорные выражения, русские бытовые и интернет-отсылки, региональные и культурные маркеры!"
-"Придумывай и уместно вставляй шутки с глубиной, подтекстом или скрытым смыслом: несоответствие ожиданиям, ирония, сарказм, игра слов, гипербола, абсурд, разрушение идиом, псевдомудрость!"
+"Часто и уместно вставляй шутки с глубиной, подтекстом или скрытым смыслом: несоответствие ожиданиям, ирония, сарказм, игра слов, гипербола, абсурд, разрушение идиом, псевдомудрость!"
 
 "Запрещено: канцелярит, вступления, самоповторы, фамильярность, грубость в деликатных темах и о детях, плоский юмор, копирование без цитат, любые признаки созданного ИИ текста!"
 
@@ -239,12 +226,9 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
             logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить сообщение о непредвиденной ошибке: {e_unexp_send}")
     return None
 
-def _strip_thoughts_from_text(text_content: str | None) -> str:
-    if text_content is None:
-        return ""
-    pattern = r"<мысли>.*?</мысли>\s*"
-    stripped_text = re.sub(pattern, "", text_content, flags=re.DOTALL | re.IGNORECASE)
-    return stripped_text.strip()
+# Функция _strip_thoughts_from_text удалена
+# def _strip_thoughts_from_text(text_content: str | None) -> str:
+# ...
 
 def _get_text_from_response(response_obj, user_id_for_log, chat_id_for_log, log_prefix_for_func) -> str | None:
     reply_text = None
@@ -277,14 +261,13 @@ def _get_text_from_response(response_obj, user_id_for_log, chat_id_for_log, log_
             else:
                 fr_candidate = getattr(candidate, 'finish_reason', None)
                 fr_name = "N/A"
-                if fr_candidate is not None: # Проверяем, что fr_candidate не None перед доступом к name
+                if fr_candidate is not None: 
                     fr_name = getattr(fr_candidate, 'name', str(fr_candidate))
                 
-                # Используем безопасное сравнение с Enum, если они доступны
                 is_safety_other_reason = False
-                if FinishReason and hasattr(FinishReason, 'SAFETY') and hasattr(FinishReason, 'OTHER'): # Проверка существования Enum и атрибутов
+                if FinishReason and hasattr(FinishReason, 'SAFETY') and hasattr(FinishReason, 'OTHER'): 
                     is_safety_other_reason = (fr_candidate == FinishReason.SAFETY or fr_candidate == FinishReason.OTHER)
-                elif fr_name in ['SAFETY', 'OTHER']: # Fallback на строки
+                elif fr_name in ['SAFETY', 'OTHER']: 
                     is_safety_other_reason = True
 
                 if fr_candidate and not is_safety_other_reason: 
@@ -558,69 +541,53 @@ async def _generate_gemini_response(
     context: ContextTypes.DEFAULT_TYPE,
     system_instruction: str,
     log_prefix: str = "GeminiGen",
-    is_text_request_with_search: bool = False # Флаг, указывающий, был ли поиск
+    is_text_request_with_search: bool = False 
 ) -> str | None:
     model_id = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
     temperature = get_user_setting(context, 'temperature', 1.0)
     reply = None
     
-    # Паттерн для удаления блока поиска. Ищет начало, затем нежадно до конца маркера,
-    # затем инструкцию, которая может содержать ID пользователя.
-    # Захватывает и пустые строки вокруг для чистки.
     search_block_pattern_to_remove = re.compile(
         r"\n*\s*==== РЕЗУЛЬТАТЫ ПОИСКА .*?====\n.*?Используй эту информацию для ответа на вопрос пользователя \[User \d+\]:.*?\n\s*===========================================================\n\s*.*?\n",
         re.DOTALL | re.IGNORECASE
     )
-    # Более простой, но возможно менее точный, если структура инструкции изменится:
-    # search_block_pattern_to_remove = re.compile(r"\n*\s*==== РЕЗУЛЬТАТЫ ПОИСКА .*?===========================================================.*?\n", re.DOTALL | re.IGNORECASE)
-
 
     for attempt in range(RETRY_ATTEMPTS):
         contents_to_use = chat_history_for_model_initial
-        current_prompt_text_for_log = user_prompt_text_initial # Для логирования промпта, который вызвал ошибку
+        current_prompt_text_for_log = user_prompt_text_initial 
         
         attempted_without_search_this_cycle = False
 
-        # Внутренний цикл для одной попытки С поиском и, если надо, одной БЕЗ поиска
-        for sub_attempt in range(2): # 0 - с поиском (если есть), 1 - без поиска (если нужно)
+        for sub_attempt in range(2): 
             if sub_attempt == 1 and not attempted_without_search_this_cycle:
-                # Если это вторая итерация, но флаг не был взведен (т.е. первая попытка не была заблокирована нужным образом)
-                break # то нет смысла делать вторую попытку без поиска
+                break 
 
             if sub_attempt == 1 and attempted_without_search_this_cycle:
-                # Готовимся к попытке без поиска
                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Попытка {attempt + 1}, суб-попытка БЕЗ ПОИСКА.")
                 
-                # Берем текст последнего user-сообщения из ИСХОДНОЙ истории
                 if not chat_history_for_model_initial or \
                    not chat_history_for_model_initial[-1]['role'] == 'user' or \
                    not chat_history_for_model_initial[-1]['parts'] or \
                    not chat_history_for_model_initial[-1]['parts'][0]['text']:
                     logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Некорректная структура chat_history_for_model_initial для удаления поиска.")
                     reply = "❌ Ошибка: не удалось подготовить запрос без поиска из-за структуры истории."
-                    break # из sub_attempt цикла
+                    break 
 
                 last_user_prompt_with_search = chat_history_for_model_initial[-1]['parts'][0]['text']
-                
-                # Удаляем блок поиска
                 text_without_search = search_block_pattern_to_remove.sub("", last_user_prompt_with_search)
 
                 if text_without_search == last_user_prompt_with_search:
                     logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Блок поиска не был удален регулярным выражением. Повторная попытка будет с тем же промптом.")
-                    # Чтобы не зацикливаться, если блок не удаляется, не будем делать эту суб-попытку
-                    # и позволим внешнему циклу ретраев работать как обычно.
-                    # reply останется от предыдущей неудачной попытки (или None)
-                    break # из sub_attempt цикла
+                    break 
                 else:
                     logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Блок поиска удален для повторной суб-попытки.")
 
                 new_history_for_model = [entry for entry in chat_history_for_model_initial[:-1]]
                 new_history_for_model.append({"role": "user", "parts": [{"text": text_without_search.strip()}]})
                 contents_to_use = new_history_for_model
-                current_prompt_text_for_log = text_without_search.strip() # Обновляем для логов
+                current_prompt_text_for_log = text_without_search.strip() 
             elif sub_attempt == 0:
                  logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Попытка {attempt + 1}, суб-попытка С ПОИСКОМ (если есть в промпте).")
-
 
             try:
                 generation_config = genai.GenerationConfig(temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS)
@@ -630,7 +597,7 @@ async def _generate_gemini_response(
                 reply = _get_text_from_response(response_obj, user_id, chat_id, f"{log_prefix}{'_NoSearch' if sub_attempt == 1 else ''}")
 
                 block_reason_str, finish_reason_str = 'N/A', 'N/A'
-                if not reply: # Если _get_text_from_response вернул None
+                if not reply: 
                     try:
                         if hasattr(response_obj, 'prompt_feedback') and response_obj.prompt_feedback and hasattr(response_obj.prompt_feedback, 'block_reason'):
                             block_reason_enum = response_obj.prompt_feedback.block_reason
@@ -645,25 +612,22 @@ async def _generate_gemini_response(
                     
                     logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Пустой ответ (попытка {attempt + 1}{', суб-попытка без поиска' if sub_attempt == 1 else ''}). Block: {block_reason_str}, Finish: {finish_reason_str}")
 
-                    # Проверяем, нужно ли делать суб-попытку без поиска
                     is_other_or_safety_block = (block_reason_str == 'OTHER' or (hasattr(BlockReason, 'OTHER') and block_reason_str == BlockReason.OTHER.name) or \
                                                block_reason_str == 'SAFETY' or (hasattr(BlockReason, 'SAFETY') and block_reason_str == BlockReason.SAFETY.name))
 
                     if sub_attempt == 0 and is_text_request_with_search and is_other_or_safety_block:
                         logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Попытка с поиском заблокирована ({block_reason_str}). Планируем суб-попытку без поиска.")
-                        attempted_without_search_this_cycle = True # Взводим флаг для следующей итерации sub_attempt
+                        attempted_without_search_this_cycle = True 
                         
-                        # Логируем исходный промпт, вызвавший проблему
                         try:
                             prompt_details_for_log = pprint.pformat(chat_history_for_model_initial) 
                             logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Исходный промпт (с поиском), вызвавший {block_reason_str} (первые 2000 символов):\n{prompt_details_for_log[:2000]}")
                         except Exception as e_log_prompt_block:
                             logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка логирования промпта для {block_reason_str}: {e_log_prompt_block}")
                         
-                        reply = None # Сбрасываем reply, чтобы sub_attempt=1 выполнился
-                        continue # Переходим к sub_attempt = 1
+                        reply = None 
+                        continue 
 
-                    # Если не планируем суб-попытку, формируем финальное сообщение об ошибке для текущей ПОПЫТКИ
                     if block_reason_str not in ['UNSPECIFIED', 'N/A', '', None] and (not hasattr(BlockReason, 'BLOCK_REASON_UNSPECIFIED') or block_reason_str != BlockReason.BLOCK_REASON_UNSPECIFIED.name):
                         reply = f"🤖 Модель не дала ответ. (Блокировка: {block_reason_str})"
                     elif finish_reason_str not in ['STOP', 'N/A', '', None] and \
@@ -678,59 +642,48 @@ async def _generate_gemini_response(
                          reply = f"🤖 Модель завершила работу по причине: {finish_reason_str}."
                     else: 
                         reply = "🤖 Модель дала пустой ответ."
-                    break # из sub_attempt цикла, т.к. это финальный ответ для этой попытки
+                    break 
 
-                # Если reply получен успешно (или это было сообщение об ошибке от предыдущей суб-попытки)
                 if reply:
                     is_error_reply_generated_by_us = reply.startswith("🤖") or reply.startswith("❌")
                     if not is_error_reply_generated_by_us:
                         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{'_NoSearch' if sub_attempt == 1 and attempted_without_search_this_cycle else ''}) Успешная генерация на попытке {attempt + 1}.")
-                        break # из sub_attempt цикла - УСПЕХ
+                        break 
                     else:
-                        # Если это наше сообщение об ошибке, и это была первая суб-попытка, а вторая запланирована
                         if sub_attempt == 0 and attempted_without_search_this_cycle:
-                            # Не выходим, даем шанс второй суб-попытке
                             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Первая суб-попытка дала ошибку, но вторая (без поиска) запланирована.")
-                            reply = None # Сбрасываем, чтобы вторая суб-попытка могла установить свой результат
-                            continue # к sub_attempt = 1
-                        else: # Это финальное сообщение об ошибке для этой попытки
+                            reply = None 
+                            continue 
+                        else: 
                             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{'_NoSearch' if sub_attempt == 1 and attempted_without_search_this_cycle else ''}) Получен \"технический\" ответ об ошибке: {reply[:100]}...")
-                            break # из sub_attempt цикла
+                            break 
             
             except (BlockedPromptException, StopCandidateException) as e_block_stop_sub:
                 reason_str_sub = str(e_block_stop_sub.args[0]) if hasattr(e_block_stop_sub, 'args') and e_block_stop_sub.args else "неизвестна"
                 logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{'_NoSearch' if sub_attempt == 1 and attempted_without_search_this_cycle else ''}) Запрос заблокирован/остановлен (попытка {attempt + 1}): {e_block_stop_sub} (Причина: {reason_str_sub})")
-                reply = f"❌ Запрос заблокирован/остановлен моделью."; break # из sub_attempt цикла
+                reply = f"❌ Запрос заблокирован/остановлен моделью."; break 
             except Exception as e_sub:
                 error_message_sub = str(e_sub)
                 logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{'_NoSearch' if sub_attempt == 1 and attempted_without_search_this_cycle else ''}) Ошибка генерации (попытка {attempt + 1}): {error_message_sub[:200]}...")
-                # Эти ошибки обычно не требуют ретрая без поиска, они глобальны для попытки
                 if "429" in error_message_sub: reply = f"❌ Слишком много запросов к модели. Попробуйте позже."
                 elif "400" in error_message_sub: reply = f"❌ Ошибка в запросе к модели (400 Bad Request)."
                 elif "location is not supported" in error_message_sub: reply = f"❌ Эта модель недоступна в вашем регионе."
-                else: reply = f"❌ Непредвиденная ошибка при генерации: {error_message_sub[:100]}..." # Общая ошибка, если не специфичная
-                break # из sub_attempt цикла, это ошибка для всей ВНЕШНЕЙ попытки
+                else: reply = f"❌ Непредвиденная ошибка при генерации: {error_message_sub[:100]}..." 
+                break 
 
-        # Конец внутреннего цикла sub_attempt
-        # Если reply хороший (не ошибка и не None), выходим из внешнего цикла
         if reply and not (reply.startswith("🤖") or reply.startswith("❌")):
-            break # из внешнего цикла RETRY_ATTEMPTS
+            break 
 
-        # Если это была последняя попытка и reply все еще ошибка/None
         if attempt == RETRY_ATTEMPTS - 1:
             logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Не удалось получить успешный ответ после {RETRY_ATTEMPTS} попыток. Финальный reply: {reply}")
-            # reply уже содержит сообщение об ошибке из последней неудачной (суб)попытки или сформированное выше
-            if reply is None: # На всякий случай, если reply так и не установился
+            if reply is None: 
                  reply = f"❌ Ошибка при обращении к модели после {RETRY_ATTEMPTS} попыток."
-            break # из внешнего цикла RETRY_ATTEMPTS
+            break 
 
-        # Если reply - это ошибка (начинается с "🤖" или "❌") или None, и это не последняя попытка
-        # Проверяем, является ли ошибка "retryable" (500, 503, timeout)
-        # Эта проверка должна быть здесь, чтобы решать, делать ли внешний retry
         is_retryable_error_type = False
-        if reply and ("500" in reply or "503" in reply or "timeout" in reply.lower()): # Проверяем текст ошибки, если он содержит код
+        if reply and ("500" in reply or "503" in reply or "timeout" in reply.lower()): 
             is_retryable_error_type = True
-        elif 'last_exception' in locals() and hasattr(locals()['last_exception'], 'message') : # Если была исключение в model.generate_content
+        elif 'last_exception' in locals() and hasattr(locals()['last_exception'], 'message') : 
              error_message_from_exception = str(locals()['last_exception'].message)
              if "500" in error_message_from_exception or "503" in error_message_from_exception or "timeout" in error_message_from_exception.lower():
                  is_retryable_error_type = True
@@ -739,11 +692,10 @@ async def _generate_gemini_response(
             wait_time = RETRY_DELAY_SECONDS * (2 ** attempt)
             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ожидание {wait_time:.1f} сек перед попыткой {attempt + 2}...")
             await asyncio.sleep(wait_time)
-            # reply сбрасывается перед следующей итерацией внешнего цикла неявно, так как мы начинаем с contents_to_use = chat_history_for_model_initial
-        else: # Если ошибка не retryable (например, 429, 400, block_reason)
+        else: 
             logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Неретраябл ошибка или достигнут лимит ретраев. Финальный reply: {reply}")
-            if reply is None : reply = f"❌ Ошибка при обращении к модели после {attempt + 1} попыток." # Гарантируем, что reply не None
-            break # из внешнего цикла RETRY_ATTEMPTS
+            if reply is None : reply = f"❌ Ошибка при обращении к модели после {attempt + 1} попыток." 
+            break 
             
     return reply
 
@@ -783,7 +735,6 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
     parts = [{"text": user_question_with_context}, {"inline_data": {"mime_type": mime_type, "data": b64_data}}]
     content_for_vision_direct = [{"role": "user", "parts": parts}]
 
-    # Проверка и возможное переключение модели для Vision
     selected_model_for_reanalyze = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
     is_vision_model = any(keyword in selected_model_for_reanalyze for keyword in ['flash', 'pro', 'vision', 'ultra'])
     effective_model_id_for_reanalyze = selected_model_for_reanalyze
@@ -813,10 +764,10 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
         chat_history_for_model_initial=content_for_vision_direct, 
         user_id=requesting_user_id,
         chat_id=chat_id,
-        context=temp_context_for_reanalyze, # Используем (возможно) временный контекст
+        context=temp_context_for_reanalyze, 
         system_instruction=system_instruction_text, 
         log_prefix="ReanalyzeImgGen",
-        is_text_request_with_search=False # Здесь нет поисковых сниппетов
+        is_text_request_with_search=False 
     )
 
     chat_history = context.chat_data.setdefault("history", [])
@@ -828,12 +779,6 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
         history_entry_model = {"role": "model", "parts": [{"text": reply}]} 
         chat_history.append(history_entry_model)
         reply_to_send_to_user = reply 
-        if get_user_setting(context, 'detailed_reasoning_enabled', True) and reply: 
-            logger.debug(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Сырой ответ перед strip: {repr(reply[:500])}")
-            cleaned_reply = _strip_thoughts_from_text(reply) 
-            if reply != cleaned_reply:
-                 logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Блок <мысли> удален из ответа.")
-            reply_to_send_to_user = cleaned_reply
         await send_reply(update.message, reply_to_send_to_user, context)
     else: 
         logger.error(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Нет ответа для отправки пользователю (reply is None после _generate_gemini_response).")
@@ -897,7 +842,7 @@ async def reanalyze_video(update: Update, context: ContextTypes.DEFAULT_TYPE, vi
         context=temp_context_for_reanalyze_vid,
         system_instruction=system_instruction_text,
         log_prefix="ReanalyzeVidGen",
-        is_text_request_with_search=False # Здесь нет поисковых сниппетов
+        is_text_request_with_search=False 
     )
 
     chat_history = context.chat_data.setdefault("history", [])
@@ -909,12 +854,6 @@ async def reanalyze_video(update: Update, context: ContextTypes.DEFAULT_TYPE, vi
         history_entry_model = {"role": "model", "parts": [{"text": reply}]} 
         chat_history.append(history_entry_model)
         reply_to_send_to_user = reply
-        if get_user_setting(context, 'detailed_reasoning_enabled', True) and reply:
-            logger.debug(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Сырой ответ перед strip: {repr(reply[:500])}")
-            cleaned_reply = _strip_thoughts_from_text(reply)
-            if reply != cleaned_reply:
-                 logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Блок <мысли> удален из ответа.")
-            reply_to_send_to_user = cleaned_reply
         await send_reply(update.message, reply_to_send_to_user, context)
     else:
         logger.error(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Нет ответа для отправки пользователю (reply is None).")
@@ -1041,7 +980,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context=temp_context_for_yt, 
                 system_instruction=system_instruction_text, 
                 log_prefix="YouTubeSummaryGen",
-                is_text_request_with_search=False # YouTube анализ не использует поиск Google/DDG
+                is_text_request_with_search=False 
             )
             
             history_entry_user = { 
@@ -1069,16 +1008,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Добавлен model-ответ (YouTube) в chat_history: {history_summary_with_prefix[:100]}...")
 
             summary_for_user_display = ""
-            if original_model_summary :
+            if original_model_summary:
                 if not (original_model_summary.startswith("🤖") or original_model_summary.startswith("❌")):
-                    cleaned_summary_part = original_model_summary 
-                    if get_user_setting(context, 'detailed_reasoning_enabled', True): 
-                        logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Сырой ответ YT перед strip: {repr(original_model_summary[:500])}")
-                        cleaned_summary_part = _strip_thoughts_from_text(original_model_summary) 
-                        if original_model_summary != cleaned_summary_part:
-                            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_yt_summary}) Блок <мысли> удален из ответа перед отправкой.")
-                    summary_for_user_display = f"{YOUTUBE_SUMMARY_PREFIX}{cleaned_summary_part}"
-                else: 
+                    summary_for_user_display = f"{YOUTUBE_SUMMARY_PREFIX}{original_model_summary}"
+                else:
                     summary_for_user_display = original_model_summary
             else:
                 summary_for_user_display = "🤖 Не удалось создать конспект видео."
@@ -1102,7 +1035,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     search_context_snippets = []
     search_provider = None
     search_log_msg = "Поиск отключен пользователем"
-    search_actually_performed = False # Флаг, был ли реально выполнен поиск и добавлены сниппеты
+    search_actually_performed = False 
     if use_search:
         query_for_search = original_user_message_text
         query_short = query_for_search[:50] + '...' if len(query_for_search) > 50 else query_for_search
@@ -1162,7 +1095,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     final_prompt_parts.append(user_message_with_id) 
 
-    if search_context_snippets: # Только если сниппеты действительно есть
+    if search_context_snippets: 
         search_context_lines = [f"- {s.strip()}" for s in search_context_snippets if s.strip()]
         if search_context_lines:
             search_context_text = "\n".join(search_context_lines)
@@ -1174,23 +1107,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             search_block = (f"\n\n{search_block_title}\n{search_context_text}\n"
                             f"===========================================================\n"
-                            f"{search_block_instruction}\n") # Добавил \n в конце для отделения от след. блока
+                            f"{search_block_instruction}\n") 
             final_prompt_parts.append(search_block)
             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Добавлен контекст из {search_provider} ({len(search_context_lines)} непустых сниппетов).")
         else: 
             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Сниппеты из {search_provider} оказались пустыми, контекст не добавлен."); 
             search_log_msg += " (пустые сниппеты)"
-            search_actually_performed = False # Сбрасываем, если сниппеты пустые
-    else: # Если use_search был True, но search_context_snippets пуст (например, оба поиска не дали результатов)
-        if use_search: # Только если поиск был включен, но не дал результатов
+            search_actually_performed = False 
+    else: 
+        if use_search: 
              search_actually_performed = False
-
 
     if get_user_setting(context, 'detailed_reasoning_enabled', True): 
         final_prompt_parts.append(REASONING_PROMPT_ADDITION)
         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Добавлена инструкция для детального рассуждения.")
     
-    final_user_prompt_text = "".join(final_prompt_parts) # join без \n, т.к. \n уже есть где надо
+    final_user_prompt_text = "".join(final_prompt_parts) 
     logger.info(f"UserID: {user_id}, ChatID: {chat_id} | {search_log_msg}") 
     logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Финальный промпт для Gemini (длина {len(final_user_prompt_text)}):\n{final_user_prompt_text[:600]}...")
 
@@ -1237,19 +1169,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context=context,
         system_instruction=system_instruction_text,
         log_prefix=log_prefix_text_gen,
-        is_text_request_with_search=search_actually_performed # Передаем флаг, был ли поиск
+        is_text_request_with_search=search_actually_performed 
     )
 
     if gemini_reply_text and not youtube_handled: 
         history_entry_model = {"role": "model", "parts": [{"text": gemini_reply_text}]} 
         chat_history.append(history_entry_model)
         reply_to_send_to_user = gemini_reply_text
-        if get_user_setting(context, 'detailed_reasoning_enabled', True) and gemini_reply_text:
-            logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Сырой ответ перед strip: {repr(gemini_reply_text[:500])}")
-            cleaned_reply = _strip_thoughts_from_text(gemini_reply_text)
-            if gemini_reply_text != cleaned_reply:
-                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Блок <мысли> удален из ответа перед отправкой пользователю.")
-            reply_to_send_to_user = cleaned_reply
         if message: await send_reply(message, reply_to_send_to_user, context)
         else:
             logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Не найдено сообщение для ответа в update (не YouTube).")
@@ -1363,7 +1289,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context=temp_context_for_photo, 
         system_instruction=system_instruction_text,
         log_prefix="PhotoVisionGen",
-        is_text_request_with_search=False # Здесь нет поисковых сниппетов
+        is_text_request_with_search=False 
     )
     
     chat_history = context.chat_data.setdefault("history", [])
@@ -1395,13 +1321,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_for_user_display = ""
     if original_model_reply_content:
         if not (original_model_reply_content.startswith("🤖") or original_model_reply_content.startswith("❌")):
-            cleaned_model_reply_part = original_model_reply_content
-            if get_user_setting(context, 'detailed_reasoning_enabled', True): 
-                logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Сырой ответ фото перед strip: {repr(original_model_reply_content[:500])}")
-                cleaned_model_reply_part = _strip_thoughts_from_text(original_model_reply_content)
-                if original_model_reply_content != cleaned_model_reply_part:
-                     logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Блок <мысли> удален из ответа перед отправкой.")
-            reply_for_user_display = f"{IMAGE_DESCRIPTION_PREFIX}{cleaned_model_reply_part}"
+            reply_for_user_display = f"{IMAGE_DESCRIPTION_PREFIX}{original_model_reply_content}"
         else:
             reply_for_user_display = original_model_reply_content
     else:
@@ -1608,19 +1528,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context=context,
         system_instruction=system_instruction_text,
         log_prefix="DocGen",
-        is_text_request_with_search=False # Документы не используют поиск Google/DDG в этом хендлере
+        is_text_request_with_search=False 
     )
 
     if gemini_reply_doc:
         history_entry_model_doc = {"role": "model", "parts": [{"text": gemini_reply_doc}]} 
         chat_history.append(history_entry_model_doc)
         reply_to_send_to_user_doc = gemini_reply_doc
-        if get_user_setting(context, 'detailed_reasoning_enabled', True) and gemini_reply_doc: 
-            logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Сырой ответ документа перед strip: {repr(gemini_reply_doc[:500])}")
-            cleaned_reply_doc = _strip_thoughts_from_text(gemini_reply_doc)
-            if gemini_reply_doc != cleaned_reply_doc:
-                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Блок <мысли> удален из ответа.")
-            reply_to_send_to_user_doc = cleaned_reply_doc
         await send_reply(message, reply_to_send_to_user_doc, context)
     else: 
          logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Нет ответа от _generate_gemini_response.")
