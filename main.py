@@ -174,12 +174,39 @@ def set_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, value):
 
 async def send_reply(target_message: Message, text: str, context: ContextTypes.DEFAULT_TYPE) -> Message | None:
     MAX_MESSAGE_LENGTH = 4096
-    reply_chunks = [text[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(text), MAX_MESSAGE_LENGTH)]
+    
+    # === ИСПРАВЛЕНИЯ (дата текущего изменения) ===
+    # Новая, "умная" логика разделения текста на части.
+    # Она ищет последний перенос строки или пробел перед лимитом, чтобы не разрывать слова и Markdown-разметку.
+    def smart_chunker(text_to_chunk, chunk_size):
+        chunks = []
+        remaining_text = text_to_chunk
+        while len(remaining_text) > 0:
+            if len(remaining_text) <= chunk_size:
+                chunks.append(remaining_text)
+                break
+            
+            # Ищем лучший разделитель (перенос строки, потом пробел)
+            split_pos = remaining_text.rfind('\n', 0, chunk_size)
+            if split_pos == -1:
+                split_pos = remaining_text.rfind(' ', 0, chunk_size)
+
+            # Если разделителей нет (одно ооочень длинное слово), рубим как есть
+            if split_pos == -1 or split_pos == 0:
+                split_pos = chunk_size
+
+            chunks.append(remaining_text[:split_pos])
+            remaining_text = remaining_text[split_pos:].lstrip() # lstrip() убирает пробелы в начале следующего чанка
+        return chunks
+
+    reply_chunks = smart_chunker(text, MAX_MESSAGE_LENGTH)
     sent_message = None
     chat_id = target_message.chat_id
     message_id = target_message.message_id
     current_user_id = target_message.from_user.id if target_message.from_user else "Unknown"
+
     try:
+        # Попытка отправить с Markdown
         for i, chunk in enumerate(reply_chunks):
             if i == 0:
                 sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, reply_to_message_id=message_id, parse_mode=ParseMode.MARKDOWN)
@@ -189,11 +216,20 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
         return sent_message
     except BadRequest as e_md:
         if "Can't parse entities" in str(e_md) or "can't parse" in str(e_md).lower() or "reply message not found" in str(e_md).lower():
-            problematic_chunk_preview = reply_chunks[i][:500].replace('\n', '\\n') if reply_chunks and i < len(reply_chunks) else "N/A" 
+            # Ошибка парсинга произошла даже с умной нарезкой. Значит, модель сгенерировала невалидный Markdown в одном из чанков.
+            # Теперь fallback на отправку простого текста более оправдан.
+            problematic_chunk_preview = "N/A"
+            if 'i' in locals() and i < len(reply_chunks):
+                problematic_chunk_preview = reply_chunks[i][:500].replace('\n', '\\n')
+            
             logger.warning(f"UserID: {current_user_id}, ChatID: {chat_id} | Ошибка парсинга Markdown или ответа на сообщение ({message_id}): {e_md}. Проблемный чанк (начало): '{problematic_chunk_preview}...'. Попытка отправить как обычный текст.")
             try:
                 sent_message = None
-                for i_plain, chunk_plain in enumerate(reply_chunks):
+                # Отправляем все чанки как простой текст
+                full_text_plain = "".join(reply_chunks) # Собираем обратно, чтобы отправить как единое целое, если возможно
+                plain_chunks = [full_text_plain[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(full_text_plain), MAX_MESSAGE_LENGTH)]
+
+                for i_plain, chunk_plain in enumerate(plain_chunks):
                      if i_plain == 0:
                          sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain, reply_to_message_id=message_id)
                      else:
@@ -219,7 +255,6 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
         except Exception as e_unexp_send:
             logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить сообщение о непредвиденной ошибке: {e_unexp_send}")
     return None
-
 # Функция _strip_thoughts_from_text удалена
 # def _strip_thoughts_from_text(text_content: str | None) -> str:
 # ...
