@@ -1,8 +1,9 @@
 # Обновлённый main.py:
 # === ИСПРАВЛЕНИЯ (дата текущего изменения, v10 - Финальная версия) ===
 # - Исправлена ошибка 'Unclosed client session' для DuckDuckGo-поиска
-#   путем использования асинхронного менеджера контекста.
-# - Восстановлены все функции, исправлены все предыдущие ошибки.
+#   путем использования синхронной версии библиотеки в отдельном потоке.
+# - Исправлена ошибка 'SSL SYSCALL error: EOF detected' при выключении
+#   бота путем улучшения обработки ошибок в PostgresPersistence.
 
 import logging
 import os
@@ -84,11 +85,11 @@ class PostgresPersistence(BasePersistence):
                 conn.commit()
         except psycopg2.Error as e:
             logger.error(f"PostgresPersistence: Ошибка выполнения SQL-запроса: {e}")
-            if conn:
+            if conn and not conn.closed:
                 try:
                     conn.rollback()
-                except psycopg2.InterfaceError:
-                    logger.warning("PostgresPersistence: Не удалось откатить транзакцию, соединение уже было закрыто.")
+                except psycopg2.Error as rb_e:
+                    logger.warning(f"PostgresPersistence: Не удалось откатить транзакцию: {rb_e}")
             return None
         finally:
             if conn:
