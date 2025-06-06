@@ -1,10 +1,12 @@
 # Обновлённый main.py:
 # ... (все предыдущие комментарии остаются)
-# === ИСПРАВЛЕНИЯ (дата текущего изменения, v5) ===
-# - В класс PostgresPersistence добавлены все недостающие абстрактные методы,
-#   чтобы исправить ошибку TypeError при инициализации.
-# - Обновлен текст стартового сообщения в функции start согласно правкам пользователя.
-# - Обновлен REASONING_PROMPT_ADDITION согласно правкам пользователя.
+# === ИСПРАВЛЕНИЯ (дата текущего изменения, v7) ===
+# - Исправлена ошибка 'Unclosed client session'. В handle_message убрана
+#   логика создания новой сессии aiohttp, теперь используется только
+#   основная сессия, созданная при старте приложения.
+# - Исправлена ошибка TypeError в конструкторе PostgresPersistence.
+# - Обновлен текст стартового сообщения и промпта рассуждений.
+# - Добавлена поддержка PDF и корректный пересказ YouTube.
 
 import logging
 import os
@@ -61,7 +63,6 @@ except Exception as e_prompt_file:
 
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
-        # === ИСПРАВЛЕНИЕ (v6): Убираем аргументы из super().__init__(), чтобы исправить TypeError ===
         super().__init__()
         self.db_pool = None
         try:
@@ -148,22 +149,16 @@ class PostgresPersistence(BasePersistence):
     async def update_user_data(self, user_id: int, data: dict) -> None:
         self._set_pickled(f"user_data_{user_id}", data)
 
-    # === НОВЫЕ МЕТОДЫ-ЗАГЛУШКИ И РЕАЛИЗАЦИИ ДЛЯ СОВМЕСТИМОСТИ (v5) ===
-
     async def get_callback_data(self) -> dict | None:
-        # Мы не храним callback_data, возвращаем None
         return None
 
     async def update_callback_data(self, data: dict) -> None:
-        # Мы не храним callback_data, поэтому ничего не делаем
         pass
 
     async def get_conversations(self, name: str) -> dict:
-        # Мы не используем встроенный ConversationHandler, возвращаем пустой словарь
         return {}
 
     async def update_conversation(self, name: str, key: tuple, new_state: object | None) -> None:
-        # Мы не используем встроенный ConversationHandler, поэтому ничего не делаем
         pass
 
     async def drop_chat_data(self, chat_id: int) -> None:
@@ -173,10 +168,9 @@ class PostgresPersistence(BasePersistence):
         self._execute("DELETE FROM persistence_data WHERE key = %s;", (f"user_data_{user_id}",))
 
     async def refresh_bot_data(self, bot_data: dict) -> None:
-        # Данные и так всегда свежие из БД, но для полноты можно обновить объект
         data = await self.get_bot_data()
         bot_data.update(data)
-        
+
     async def refresh_chat_data(self, chat_id: int, chat_data: dict) -> None:
         data = self._get_pickled(f"chat_data_{chat_id}") or {}
         chat_data.update(data)
@@ -298,7 +292,6 @@ VIDEO_CAPABLE_KEYWORDS = ['gemini-2.5-flash-preview-05-20']
 USER_ID_PREFIX_FORMAT = "[User {user_id}]: "
 TARGET_TIMEZONE = "Europe/Moscow"
 
-# === ИЗМЕНЕНИЕ (v5) ===: Обновлено согласно вашим правкам
 REASONING_PROMPT_ADDITION = (
     "\n\nРежим углубленного анализа активен!\n"
     "Этапы размышлений и подготовки:"
@@ -309,8 +302,6 @@ REASONING_PROMPT_ADDITION = (
     "5. придумай ещё более эффективные идеи/решения;"
     "6. соблюдая все остальные требования инструкции, сформируй полноценный итоговый ответ."
 )
-
-# ... (все функции-обработчики без изменений до start)
 
 def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value):
     return context.user_data.get(key, default_value)
@@ -491,6 +482,7 @@ def _get_effective_context_for_task(
 
     return temp_context
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if 'selected_model' not in context.user_data:
@@ -506,7 +498,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     author_channel_link_raw = "https://t.me/denisobovsyom"
     date_knowledge_text_raw = "до начала 2025 года"
     
-    # === ИЗМЕНЕНИЕ (v5) ===: Обновлено согласно вашим правкам
     start_message_plain_parts = [
         f"Я - Женя, работаю на Google Gemini {raw_bot_core_model_display_name}:",
         f"- обладаю огромным объемом знаний {date_knowledge_text_raw} и могу искать в Google,",
@@ -524,8 +515,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Successfully sent start_message as plain text.")
     except Exception as e:
         logger.error(f"Failed to send start_message (Plain Text): {e}", exc_info=True)
-
-# ... (все остальные функции-обработчики до handle_message)
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -661,6 +650,258 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 
+async def perform_google_search(query: str, api_key: str, cse_id: str, num_results: int, session: aiohttp.ClientSession) -> list[str] | None:
+    search_url = "https://www.googleapis.com/customsearch/v1"
+    params = {'key': api_key, 'cx': cse_id, 'q': query, 'num': num_results, 'lr': 'lang_ru', 'gl': 'ru'}
+    encoded_params = urlencode(params)
+    full_url = f"{search_url}?{encoded_params}"
+    query_short = query[:50] + '...' if len(query) > 50 else query
+    logger.debug(f"Запрос к Google Search API для '{query_short}'...")
+    try:
+        async with session.get(full_url, timeout=aiohttp.ClientTimeout(total=10.0)) as response:
+            response_text = await response.text()
+            status = response.status
+            if status == 200:
+                try: data = json.loads(response_text)
+                except json.JSONDecodeError as e_json:
+                    logger.error(f"Google Search: Ошибка JSON для '{query_short}' ({status}) - {e_json}. Ответ: {response_text[:200]}...")
+                    return None
+                items = data.get('items', [])
+                snippets = [item.get('snippet', item.get('title', '')) for item in items if item.get('snippet') or item.get('title')]
+                if snippets:
+                    logger.info(f"Google Search: Найдено {len(snippets)} результатов для '{query_short}'.")
+                    return snippets
+                else:
+                    logger.info(f"Google Search: Нет сниппетов/заголовков для '{query_short}' ({status}).")
+                    return None
+            elif status == 400: logger.error(f"Google Search: Ошибка 400 (Bad Request) для '{query_short}'. Ответ: {response_text[:200]}...")
+            elif status == 403: logger.error(f"Google Search: Ошибка 403 (Forbidden) для '{query_short}'. Проверьте API ключ/CSE ID. Ответ: {response_text[:200]}...")
+            elif status == 429: logger.warning(f"Google Search: Ошибка 429 (Too Many Requests) для '{query_short}'. Квота? Ответ: {response_text[:200]}...")
+            elif status >= 500: logger.warning(f"Google Search: Серверная ошибка {status} для '{query_short}'. Ответ: {response_text[:200]}...")
+            else: logger.error(f"Google Search: Неожиданный статус {status} для '{query_short}'. Ответ: {response_text[:200]}...")
+            return None
+    except aiohttp.ClientConnectorError as e: logger.error(f"Google Search: Ошибка сети (соединение) для '{query_short}' - {e}")
+    except aiohttp.ClientError as e: logger.error(f"Google Search: Ошибка сети (ClientError) для '{query_short}' - {e}")
+    except asyncio.TimeoutError: logger.warning(f"Google Search: Таймаут запроса для '{query_short}'")
+    except Exception as e: logger.error(f"Google Search: Непредвиденная ошибка для '{query_short}' - {e}", exc_info=True)
+    return None
+
+def extract_youtube_id(url: str) -> str | None:
+    patterns = [
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match: return match.group(1)
+    try:
+        parsed_url = urlparse(url)
+        if parsed_url.hostname in ('youtube.com', 'www.youtube.com') and parsed_url.path == '/watch':
+            query_params = parse_qs(parsed_url.query)
+            if 'v' in query_params and query_params['v']:
+                video_id_candidate = query_params['v'][0]
+                if len(video_id_candidate) >= 11 and re.match(r'^[a-zA-Z0-9_-]+$', video_id_candidate[:11]): return video_id_candidate[:11]
+        if parsed_url.hostname in ('youtu.be',) and parsed_url.path:
+             video_id_candidate = parsed_url.path[1:]
+             if len(video_id_candidate) >= 11 and re.match(r'^[a-zA-Z0-9_-]+$', video_id_candidate[:11]): return video_id_candidate[:11]
+    except Exception as e_parse: logger.debug(f"Ошибка парсинга URL для YouTube ID: {e_parse} (URL: {url[:50]}...)")
+    return None
+
+def extract_general_url(text: str) -> str | None:
+    url_pattern = r'https?://[^\s/$.?#].[^\s]*'
+    match = re.search(url_pattern, text)
+    if match:
+        url = match.group(0)
+        if not extract_youtube_id(url):
+            return url
+    return None
+
+def get_current_time_str() -> str:
+    try:
+        tz = pytz.timezone(TARGET_TIMEZONE)
+        now = datetime.datetime.now(tz)
+        months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+        month_name = months[now.month - 1]
+        utc_offset_minutes = now.utcoffset().total_seconds() // 60
+        utc_offset_hours = int(utc_offset_minutes // 60)
+        utc_offset_sign = '+' if utc_offset_hours >= 0 else '-'
+        utc_offset_str = f"UTC{utc_offset_sign}{abs(utc_offset_hours)}"
+        time_str = now.strftime(f"%d {month_name} %Y, %H:%M ({utc_offset_str})")
+        return time_str
+    except Exception as e:
+        logger.error(f"Ошибка получения времени для пояса {TARGET_TIMEZONE}: {e}")
+        now_utc = datetime.datetime.now(pytz.utc)
+        return now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+async def _generate_gemini_response(
+    user_prompt_text_initial: str,
+    chat_history_for_model_initial: list,
+    user_id: int | str,
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    system_instruction: str,
+    log_prefix: str = "GeminiGen",
+    is_text_request_with_search: bool = False
+) -> str | None:
+    model_id = get_user_setting(context, 'selected_model', DEFAULT_MODEL)
+    temperature = get_user_setting(context, 'temperature', 1.0)
+    reply = None
+
+    search_block_pattern_to_remove = re.compile(
+        r"\n*\s*==== РЕЗУЛЬТАТЫ ПОИСКА .*?====\n.*?Используй эту информацию для ответа на вопрос пользователя \[User \d+\]:.*?\n\s*===========================================================\n\s*.*?\n",
+        re.DOTALL | re.IGNORECASE
+    )
+
+    for attempt in range(RETRY_ATTEMPTS):
+        contents_to_use = chat_history_for_model_initial
+        current_prompt_text_for_log = user_prompt_text_initial
+
+        attempted_without_search_this_cycle = False
+
+        for sub_attempt in range(2):
+            if sub_attempt == 1 and not attempted_without_search_this_cycle:
+                break
+
+            if sub_attempt == 1 and attempted_without_search_this_cycle:
+                logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Попытка {attempt + 1}, суб-попытка БЕЗ ПОИСКА.")
+
+                if not chat_history_for_model_initial or \
+                   not chat_history_for_model_initial[-1]['role'] == 'user' or \
+                   not chat_history_for_model_initial[-1]['parts'] or \
+                   not chat_history_for_model_initial[-1]['parts'][0]['text']:
+                    logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Некорректная структура chat_history_for_model_initial для удаления поиска.")
+                    reply = "❌ Ошибка: не удалось подготовить запрос без поиска из-за структуры истории."
+                    break
+
+                last_user_prompt_with_search = chat_history_for_model_initial[-1]['parts'][0]['text']
+                text_without_search = search_block_pattern_to_remove.sub("", last_user_prompt_with_search)
+
+                if text_without_search == last_user_prompt_with_search:
+                    logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Блок поиска не был удален регулярным выражением. Повторная попытка будет с тем же промптом.")
+                    break
+                else:
+                    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Блок поиска удален для повторной суб-попытки.")
+
+                new_history_for_model = [entry for entry in chat_history_for_model_initial[:-1]]
+                new_history_for_model.append({"role": "user", "parts": [{"text": text_without_search.strip()}]})
+                contents_to_use = new_history_for_model
+                current_prompt_text_for_log = text_without_search.strip()
+            elif sub_attempt == 0:
+                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Попытка {attempt + 1}, суб-попытка С ПОИСКОМ (если есть в промпте).")
+
+            try:
+                generation_config = genai.GenerationConfig(temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS)
+                model_obj = genai.GenerativeModel(model_id, safety_settings=SAFETY_SETTINGS_BLOCK_NONE, generation_config=generation_config, system_instruction=system_instruction)
+
+                response_obj = await asyncio.to_thread(model_obj.generate_content, contents_to_use)
+                reply = _get_text_from_response(response_obj, user_id, chat_id, f"{log_prefix}{'_NoSearch' if sub_attempt == 1 else ''}")
+
+                block_reason_str, finish_reason_str = 'N/A', 'N/A'
+                if not reply:
+                    try:
+                        if hasattr(response_obj, 'prompt_feedback') and response_obj.prompt_feedback and hasattr(response_obj.prompt_feedback, 'block_reason'):
+                            block_reason_enum = response_obj.prompt_feedback.block_reason
+                            block_reason_str = block_reason_enum.name if hasattr(block_reason_enum, 'name') else str(block_reason_enum)
+                        if hasattr(response_obj, 'candidates') and response_obj.candidates:
+                            first_candidate = response_obj.candidates[0]
+                            if hasattr(first_candidate, 'finish_reason'):
+                                finish_reason_enum = first_candidate.finish_reason
+                                finish_reason_str = finish_reason_enum.name if hasattr(finish_reason_enum, 'name') else str(finish_reason_enum)
+                    except Exception as e_inner_reason_extract:
+                        logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка извлечения причин пустого ответа: {e_inner_reason_extract}")
+
+                    logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Пустой ответ (попытка {attempt + 1}{', суб-попытка без поиска' if sub_attempt == 1 else ''}). Block: {block_reason_str}, Finish: {finish_reason_str}")
+
+                    is_other_or_safety_block = (block_reason_str == 'OTHER' or (hasattr(BlockReason, 'OTHER') and block_reason_str == BlockReason.OTHER.name) or \
+                                               block_reason_str == 'SAFETY' or (hasattr(BlockReason, 'SAFETY') and block_reason_str == BlockReason.SAFETY.name))
+
+                    if sub_attempt == 0 and is_text_request_with_search and is_other_or_safety_block:
+                        logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Попытка с поиском заблокирована ({block_reason_str}). Планируем суб-попытку без поиска.")
+                        attempted_without_search_this_cycle = True
+
+                        try:
+                            prompt_details_for_log = pprint.pformat(chat_history_for_model_initial)
+                            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Исходный промпт (с поиском), вызвавший {block_reason_str} (первые 2000 символов):\n{prompt_details_for_log[:2000]}")
+                        except Exception as e_log_prompt_block:
+                            logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка логирования промпта для {block_reason_str}: {e_log_prompt_block}")
+
+                        reply = None
+                        continue
+
+                    if block_reason_str not in ['UNSPECIFIED', 'N/A', '', None] and (not hasattr(BlockReason, 'BLOCK_REASON_UNSPECIFIED') or block_reason_str != BlockReason.BLOCK_REASON_UNSPECIFIED.name):
+                        reply = f"🤖 Модель не дала ответ. (Блокировка: {block_reason_str})"
+                    elif finish_reason_str not in ['STOP', 'N/A', '', None] and \
+                         (not hasattr(FinishReason, 'FINISH_REASON_STOP') or finish_reason_str != FinishReason.FINISH_REASON_STOP.name) and \
+                         finish_reason_str not in ['OTHER', FinishReason.OTHER.name if hasattr(FinishReason,'OTHER') else 'OTHER_STR'] and \
+                         finish_reason_str not in ['SAFETY', FinishReason.SAFETY.name if hasattr(FinishReason,'SAFETY') else 'SAFETY_STR']:
+                        reply = f"🤖 Модель завершила работу без ответа. (Причина: {finish_reason_str})"
+                    elif (finish_reason_str in ['OTHER', FinishReason.OTHER.name if hasattr(FinishReason,'OTHER') else 'OTHER_STR'] or \
+                          finish_reason_str in ['SAFETY', FinishReason.SAFETY.name if hasattr(FinishReason,'SAFETY') else 'SAFETY_STR']) and \
+                         (block_reason_str in ['UNSPECIFIED', 'N/A', '', None] or \
+                          (hasattr(BlockReason, 'BLOCK_REASON_UNSPECIFIED') and block_reason_str == BlockReason.BLOCK_REASON_UNSPECIFIED.name)):
+                         reply = f"🤖 Модель завершила работу по причине: {finish_reason_str}."
+                    else:
+                        reply = "🤖 Модель дала пустой ответ."
+                    break
+
+                if reply:
+                    is_error_reply_generated_by_us = reply.startswith("🤖") or reply.startswith("❌")
+                    if not is_error_reply_generated_by_us:
+                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{'_NoSearch' if sub_attempt == 1 and attempted_without_search_this_cycle else ''}) Успешная генерация на попытке {attempt + 1}.")
+                        break
+                    else:
+                        if sub_attempt == 0 and attempted_without_search_this_cycle:
+                            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Первая суб-попытка дала ошибку, но вторая (без поиска) запланирована.")
+                            reply = None
+                            continue
+                        else:
+                            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{'_NoSearch' if sub_attempt == 1 and attempted_without_search_this_cycle else ''}) Получен \"технический\" ответ об ошибке: {reply[:100]}...")
+                            break
+
+            except (BlockedPromptException, StopCandidateException) as e_block_stop_sub:
+                reason_str_sub = str(e_block_stop_sub.args[0]) if hasattr(e_block_stop_sub, 'args') and e_block_stop_sub.args else "неизвестна"
+                logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{'_NoSearch' if sub_attempt == 1 and attempted_without_search_this_cycle else ''}) Запрос заблокирован/остановлен (попытка {attempt + 1}): {e_block_stop_sub} (Причина: {reason_str_sub})")
+                reply = f"❌ Запрос заблокирован/остановлен моделью."; break
+            except Exception as e_sub:
+                error_message_sub = str(e_sub)
+                logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}{'_NoSearch' if sub_attempt == 1 and attempted_without_search_this_cycle else ''}) Ошибка генерации (попытка {attempt + 1}): {error_message_sub[:200]}...")
+                if "429" in error_message_sub: reply = f"❌ Слишком много запросов к модели. Попробуйте позже."
+                elif "400" in error_message_sub: reply = f"❌ Ошибка в запросе к модели (400 Bad Request)."
+                elif "location is not supported" in error_message_sub: reply = f"❌ Эта модель недоступна в вашем регионе."
+                else: reply = f"❌ Непредвиденная ошибка при генерации: {error_message_sub[:100]}..."
+                break
+
+        if reply and not (reply.startswith("🤖") or reply.startswith("❌")):
+            break
+
+        if attempt == RETRY_ATTEMPTS - 1:
+            logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Не удалось получить успешный ответ после {RETRY_ATTEMPTS} попыток. Финальный reply: {reply}")
+            if reply is None:
+                 reply = f"❌ Ошибка при обращении к модели после {RETRY_ATTEMPTS} попыток."
+            break
+
+        is_retryable_error_type = False
+        if reply and ("500" in reply or "503" in reply or "timeout" in reply.lower()):
+            is_retryable_error_type = True
+        elif 'last_exception' in locals() and hasattr(locals()['last_exception'], 'message') :
+             error_message_from_exception = str(locals()['last_exception'].message)
+             if "500" in error_message_from_exception or "503" in error_message_from_exception or "timeout" in error_message_from_exception.lower():
+                 is_retryable_error_type = True
+
+        if is_retryable_error_type:
+            wait_time = RETRY_DELAY_SECONDS * (2 ** attempt)
+            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ожидание {wait_time:.1f} сек перед попыткой {attempt + 2}...")
+            await asyncio.sleep(wait_time)
+        else:
+            logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Неретраябл ошибка или достигнут лимит ретраев. Финальный reply: {reply}")
+            if reply is None : reply = f"❌ Ошибка при обращении к модели после {attempt + 1} попыток."
+            break
+
+    return reply
+
 async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, file_id: str, user_question: str, original_user_id: int):
     chat_id = update.effective_chat.id
     requesting_user_id = update.effective_user.id
@@ -747,7 +988,7 @@ async def reanalyze_video(update: Update, context: ContextTypes.DEFAULT_TYPE, vi
     log_prefix_handler = "ReanalyzeVid"
     logger.info(f"UserID: {requesting_user_id} (запрос по видео от UserID: {original_user_id}), ChatID: {chat_id} | Инициирован повторный анализ видео (id: {video_id}) с вопросом: '{user_question[:50]}...'")
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    
+
     logger.warning(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Функция reanalyze_video вызвана, но анализ теперь происходит через расшифровку в handle_message. Этот вызов не должен был произойти.")
     await update.message.reply_text("🤔 Хм, что-то пошло не так при повторном анализе видео. Пожалуйста, попробуйте отправить ссылку на видео снова.")
 
@@ -881,38 +1122,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query_short = query_for_search[:50] + '...' if len(query_for_search) > 50 else query_for_search
         search_log_msg = f"Поиск Google/DDG для '{query_short}'"
         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | {search_log_msg}...")
+        
         session = context.bot_data.get('aiohttp_session')
         if not session or session.closed:
-            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Создание новой сессии aiohttp для поиска.")
-            timeout = aiohttp.ClientTimeout(total=60.0, connect=10.0, sock_connect=10.0, sock_read=30.0)
-            session = aiohttp.ClientSession(timeout=timeout)
-            context.bot_data['aiohttp_session'] = session
-        google_results = await perform_google_search(query_for_search, GOOGLE_API_KEY, GOOGLE_CSE_ID, GOOGLE_SEARCH_MAX_RESULTS, session)
-        if google_results:
-            search_provider = "Google"
-            search_context_snippets = google_results
-            search_log_msg += f" (Google: {len(search_context_snippets)} рез.)"
-            search_actually_performed = True
+            logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Критическая ошибка: основная сессия aiohttp не найдена или закрыта! Поиск для этого запроса отменен.")
         else:
-            search_log_msg += " (Google: 0 рез./ошибка)"
-            logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Google не дал результатов. Пробуем DuckDuckGo...")
-            try:
-                ddgs = DDGS()
-                results_ddg = await asyncio.to_thread(ddgs.text, query_for_search, region='ru-ru', max_results=DDG_MAX_RESULTS)
-                if results_ddg:
-                    ddg_snippets = [r.get('body', '') for r in results_ddg if r.get('body')]
-                    if ddg_snippets:
-                        search_provider = "DuckDuckGo"; search_context_snippets = ddg_snippets
-                        search_log_msg += f" (DDG: {len(search_context_snippets)} рез.)"
-                        search_actually_performed = True
-                    else: search_log_msg += " (DDG: 0 текст. рез.)"
-                else: search_log_msg += " (DDG: 0 рез.)"
-            except TimeoutError: logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Таймаут поиска DuckDuckGo."); search_log_msg += " (DDG: таймаут)"
-            except TypeError as e_type:
-                if "unexpected keyword argument 'timeout'" in str(e_type): logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Снова ошибка с аргументом timeout в DDGS.text(): {e_type}")
-                else: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка типа при поиске DuckDuckGo: {e_type}", exc_info=True)
-                search_log_msg += " (DDG: ошибка типа)"
-            except Exception as e_ddg: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка поиска DuckDuckGo: {e_ddg}", exc_info=True); search_log_msg += " (DDG: ошибка)"
+            google_results = await perform_google_search(query_for_search, GOOGLE_API_KEY, GOOGLE_CSE_ID, GOOGLE_SEARCH_MAX_RESULTS, session)
+            if google_results:
+                search_provider = "Google"
+                search_context_snippets = google_results
+                search_log_msg += f" (Google: {len(search_context_snippets)} рез.)"
+                search_actually_performed = True
+            else:
+                search_log_msg += " (Google: 0 рез./ошибка)"
+                logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Google не дал результатов. Пробуем DuckDuckGo...")
+                try:
+                    ddgs = DDGS()
+                    results_ddg = await asyncio.to_thread(ddgs.text, query_for_search, region='ru-ru', max_results=DDG_MAX_RESULTS)
+                    if results_ddg:
+                        ddg_snippets = [r.get('body', '') for r in results_ddg if r.get('body')]
+                        if ddg_snippets:
+                            search_provider = "DuckDuckGo"; search_context_snippets = ddg_snippets
+                            search_log_msg += f" (DDG: {len(search_context_snippets)} рез.)"
+                            search_actually_performed = True
+                        else: search_log_msg += " (DDG: 0 текст. рез.)"
+                    else: search_log_msg += " (DDG: 0 рез.)"
+                except TimeoutError: logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Таймаут поиска DuckDuckGo."); search_log_msg += " (DDG: таймаут)"
+                except TypeError as e_type:
+                    if "unexpected keyword argument 'timeout'" in str(e_type): logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Снова ошибка с аргументом timeout в DDGS.text(): {e_type}")
+                    else: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка типа при поиске DuckDuckGo: {e_type}", exc_info=True)
+                    search_log_msg += " (DDG: ошибка типа)"
+                except Exception as e_ddg: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка поиска DuckDuckGo: {e_ddg}", exc_info=True); search_log_msg += " (DDG: ошибка)"
 
     current_time_str_main = get_current_time_str()
     time_context_str = f"(Текущая дата и время: {current_time_str_main})\n"
@@ -1612,4 +1852,3 @@ if __name__ == '__main__':
         logger.info("Приложение прервано пользователем (KeyboardInterrupt в main).")
     except Exception as e_top:
         logger.critical("Неперехваченная ошибка на верхнем уровне asyncio.run(main).", exc_info=True)
-# --- END OF FILE main.py ---
