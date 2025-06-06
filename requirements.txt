@@ -8,3 +8,4 @@ sqlalchemy
 youtube-transcript-api
 pdfminer.six
 aiohttp
+httpx
