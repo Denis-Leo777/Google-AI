@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 import aiohttp
 import aiohttp.web
+import httpx  # <--- ВОТ ОН, РОДИМЫЙ! Добавляем недостающего гостя.
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, BotCommand
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
