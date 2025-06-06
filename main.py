@@ -1,7 +1,8 @@
 # Обновлённый main.py:
-# === ИСПРАВЛЕНИЯ (дата текущего изменения, v12 - Полная версия) ===
-# - Восстановлены все недостающие функции, которые были случайно удалены.
-# - Сохранены все предыдущие исправления (Postgres, YouTube, PDF, ошибки при выключении).
+# === ИСПРАВЛЕНИЯ (дата текущего изменения, v12 - Финальная полная версия) ===
+# - Восстановлены все функции, которые были случайно удалены в предыдущих версиях.
+# - Исправлена ошибка 'Unclosed client session' для DuckDuckGo-поиска.
+# - Сохранены все предыдущие исправления (Postgres, YouTube, PDF).
 
 import logging
 import os
@@ -301,7 +302,7 @@ REASONING_PROMPT_ADDITION = (
     "6. соблюдая все остальные требования инструкции, сформируй полноценный итоговый ответ."
 )
 
-# === ВОССТАНОВЛЕННЫЙ БЛОК КОДА ===
+# === ПОЛНЫЙ БЛОК ВСЕХ ФУНКЦИЙ-ОБРАБОТЧИКОВ И ПОМОЩНИКОВ ===
 
 def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value):
     return context.user_data.get(key, default_value)
@@ -1087,17 +1088,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 search_log_msg += " (Google: 0 рез./ошибка)"
                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Google не дал результатов. Пробуем DuckDuckGo...")
                 try:
-                    # ИСПРАВЛЕНИЕ: Используем синхронную версию в отдельном потоке для максимальной надежности
-                    # и предотвращения ошибок с незакрытыми сессиями.
-                    with DDGS() as ddgs:
-                        # Запускаем синхронную блокирующую операцию в потоке, управляемом asyncio
-                        results_ddg = await asyncio.to_thread(
-                            ddgs.text, 
-                            query_for_search, 
-                            region='ru-ru', 
+                    async with DDGS() as ddgs:
+                        results_ddg = await ddgs.text(
+                            query_for_search,
+                            region='ru-ru',
                             max_results=DDG_MAX_RESULTS
                         )
-
                     if results_ddg:
                         ddg_snippets = [r.get('body', '') for r in results_ddg if r.get('body')]
                         if ddg_snippets:
@@ -1109,6 +1105,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e_ddg: 
                     logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка поиска DuckDuckGo: {e_ddg}", exc_info=True)
                     search_log_msg += " (DDG: ошибка)"
+
     current_time_str_main = get_current_time_str()
     time_context_str = f"(Текущая дата и время: {current_time_str_main})\n"
 
@@ -1791,7 +1788,7 @@ async def main():
         if aiohttp_session_main and not aiohttp_session_main.closed:
              logger.info("Закрытие основной сессии aiohttp...");
              await aiohttp_session_main.close()
-             await asyncio.sleep(0.25) # Небольшая пауза для корректного закрытия
+             await asyncio.sleep(0.25)
              logger.info("Основная сессия aiohttp закрыта.")
         
         if application and 'persistence' in application.bot_data:
