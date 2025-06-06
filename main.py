@@ -61,7 +61,8 @@ except Exception as e_prompt_file:
 
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
-        super().__init__(store_callback_data=True, store_data=True) # <-- ИСПРАВЛЕНИЕ: Указываем, что храним данные
+        # === ИСПРАВЛЕНИЕ (v6): Убираем аргументы из super().__init__(), чтобы исправить TypeError ===
+        super().__init__()
         self.db_pool = None
         try:
             self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=database_url)
