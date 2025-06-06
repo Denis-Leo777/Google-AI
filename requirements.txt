@@ -6,4 +6,5 @@ pytz
 chardet
 psycopg2-binary
 sqlalchemy
-pdfminer.six  # <--- НОВАЯ СТРОКА
+youtube-transcript-api
+pdfminer.six
