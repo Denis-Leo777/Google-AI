@@ -304,6 +304,7 @@ REASONING_PROMPT_ADDITION = (
 )
 
 # === ВОССТАНОВЛЕННЫЙ БЛОК КОДА ===
+# (Этот код теперь включает все функции, которые были пропущены в предыдущем ответе)
 
 def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value):
     return context.user_data.get(key, default_value)
