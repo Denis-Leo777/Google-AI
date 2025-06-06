@@ -1,15 +1,16 @@
 # Обновлённый main.py:
-# === ИСПРАВЛЕНИЯ (дата текущего изменения, v12 - Полная версия) ===
-# - Восстановлены все недостающие функции, которые были случайно удалены в предыдущих версиях.
-# - Исправлена ошибка 'Unclosed client session' для DuckDuckGo-поиска
-#   путем использования асинхронного менеджера контекста.
-# - Сохранены все предыдущие исправления (Postgres, YouTube, PDF).
+# === ИСПРАВЛЕНИЯ (дата текущего изменения, v12.1 - Полная версия с исправлением HTTP-клиента) ===
+# - Полностью переработана логика управления HTTP-клиентом для совместимости с python-telegram-bot v22.1.
+# - Библиотека теперь управляет своим клиентом, а для кастомных запросов (Google Search) создается
+#   отдельный httpx-клиент, который управляется в функции main().
+# - Функция perform_google_search переписана с aiohttp на httpx.
+# - Исправлена ошибка 'AttributeError' при инициализации ApplicationBuilder.
 
 import logging
 import os
 import asyncio
 import signal
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode
 import base64
 import pprint
 import json
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 import aiohttp
 import aiohttp.web
-import httpx  # <--- ВОТ ОН, РОДИМЫЙ! Добавляем недостающего гостя.
+import httpx  # Импорт httpx для нашего кастомного клиента
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, BotCommand
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
@@ -304,9 +305,6 @@ REASONING_PROMPT_ADDITION = (
     "6. соблюдая все остальные требования инструкции, сформируй полноценный итоговый ответ."
 )
 
-# === ВОССТАНОВЛЕННЫЙ БЛОК КОДА ===
-# (Этот код теперь включает все функции, которые были пропущены в предыдущем ответе)
-
 def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value):
     return context.user_data.get(key, default_value)
 
@@ -486,6 +484,28 @@ def _get_effective_context_for_task(
 
     return temp_context
 
+def get_current_time_str() -> str:
+    now_utc = datetime.datetime.now(pytz.utc)
+    target_tz = pytz.timezone(TARGET_TIMEZONE)
+    now_target = now_utc.astimezone(target_tz)
+    return now_target.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+def extract_youtube_id(url_text: str) -> str | None:
+    regex = r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})"
+    match = re.search(regex, url_text)
+    return match.group(1) if match else None
+
+def extract_general_url(text: str) -> str | None:
+    # A more general URL regex that avoids capturing markdown links like `[text](url)`
+    regex = r'(?<![)\]])https?:\/\/[^\s<>"\'`]+'
+    match = re.search(regex, text)
+    if match:
+        url = match.group(0)
+        # Clean trailing punctuation
+        while url.endswith(('.', ',', '?', '!')):
+            url = url[:-1]
+        return url
+    return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -654,16 +674,14 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 
-async def perform_google_search(query: str, api_key: str, cse_id: str, num_results: int, session: httpx.AsyncClient) -> list[str] | None: # <--- Меняем тип сессии на httpx
+async def perform_google_search(query: str, api_key: str, cse_id: str, num_results: int, session: httpx.AsyncClient) -> list[str] | None:
     search_url = "https://www.googleapis.com/customsearch/v1"
     params = {'key': api_key, 'cx': cse_id, 'q': query, 'num': num_results, 'lr': 'lang_ru', 'gl': 'ru'}
-    # `urlencode` не нужен, httpx прекрасно работает с `params`
     query_short = query[:50] + '...' if len(query) > 50 else query
     logger.debug(f"Запрос к Google Search API для '{query_short}'...")
     try:
-        # --- Блок запроса полностью переписан под httpx ---
         response = await session.get(search_url, params=params, timeout=10.0)
-        response.raise_for_status() # <--- Проверяет на ошибки 4xx/5xx и выбрасывает исключение
+        response.raise_for_status() 
 
         data = response.json()
         items = data.get('items', [])
@@ -1079,8 +1097,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search_log_msg = f"Поиск Google/DDG для '{query_short}'"
         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | {search_log_msg}...")
         
-        session = context.bot_data.get('http_client') # <--- Меняем ключ 'aiohttp_session' на 'http_client'
-        if not session or session.is_closed: # <--- У httpx метод is_closed - это свойство
+        session = context.bot_data.get('http_client')
+        if not session or session.is_closed:
             logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Критическая ошибка: основная сессия httpx не найдена или закрыта! Поиск для этого запроса отменен.")
         else:
             google_results = await perform_google_search(query_for_search, GOOGLE_API_KEY, GOOGLE_CSE_ID, GOOGLE_SEARCH_MAX_RESULTS, session)
@@ -1605,10 +1623,7 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     else:
         logger.warning("Переменная окружения DATABASE_URL не установлена. Бот будет работать без сохранения состояния (в режиме амнезии).")
 
-    # === ИСПРАВЛЕНИЕ v12: Создаем единый HTTP клиент для всего приложения ===
-    http_client = httpx.AsyncClient()
-    
-    builder = Application.builder().token(TELEGRAM_BOT_TOKEN).httpx_client(http_client)
+    builder = Application.builder().token(TELEGRAM_BOT_TOKEN)
     if persistence:
         builder.persistence(persistence)
 
@@ -1617,10 +1632,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     if persistence:
         application.bot_data['persistence'] = persistence
     
-    # Сохраняем клиент в bot_data для доступа из других частей приложения
-    application.bot_data['http_client'] = http_client
-
-    # ... (регистрация всех обработчиков остается такой же)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CommandHandler("clear", clear_history))
@@ -1659,9 +1670,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
         return application, web_server_coro
     except Exception as e:
         logger.critical(f"Критическая ошибка при инициализации бота или установке вебхука: {e}", exc_info=True)
-        if 'http_client' in application.bot_data and not application.bot_data['http_client'].is_closed:
-            await application.bot_data['http_client'].aclose()
-            logger.info("HTTPX клиент закрыт из-за ошибки инициализации.")
         if persistence and isinstance(persistence, PostgresPersistence):
             persistence.close()
         raise
@@ -1737,7 +1745,7 @@ async def main():
     logging.getLogger('pdfminer').setLevel(logging.WARNING)
 
     logger.setLevel(log_level)
-    logger.info(f"--- Установлен уровень логгирования для '{logger.name}': {log_level_str} ({log_level}) ---")
+    logger.info(f"--- Установлен уровень логгирования для '{__name__}': {log_level_str} ({log_level}) ---")
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -1750,12 +1758,21 @@ async def main():
              logger.warning(f"Не удалось установить обработчик сигнала {sig} через loop. Использую signal.signal().")
              try: signal.signal(sig, lambda s, f: signal_handler())
              except Exception as e_signal: logger.error(f"Не удалось установить обработчик сигнала {sig} через signal.signal(): {e_signal}")
-    application = None; web_server_task = None; http_client_main = None
+             
+    application = None
+    web_server_task = None
+    http_client_custom = None
     try:
         logger.info(f"--- Запуск приложения Gemini Telegram Bot ---")
+        
+        http_client_custom = httpx.AsyncClient()
+        
         application, web_server_coro = await setup_bot_and_server(stop_event)
+        
+        application.bot_data['http_client'] = http_client_custom
+        
         web_server_task = asyncio.create_task(web_server_coro, name="WebServerTask")
-        http_client_main = application.bot_data.get('http_client')
+        
         logger.info("Приложение настроено, веб-сервер запущен. Ожидание сигнала остановки (Ctrl+C)...")
         await stop_event.wait()
     except asyncio.CancelledError:
@@ -1791,11 +1808,11 @@ async def main():
             except Exception as e_shutdown:
                 logger.error(f"Ошибка во время application.shutdown(): {e_shutdown}", exc_info=True)
         
-        if http_client_main and not http_client_main.is_closed:
-             logger.info("Закрытие основного HTTPX клиента...");
-             await http_client_main.aclose()
+        if http_client_custom and not http_client_custom.is_closed:
+             logger.info("Закрытие кастомного HTTPX клиента...");
+             await http_client_custom.aclose()
              await asyncio.sleep(0.25)
-             logger.info("Основной HTTPX клиент закрыт.")
+             logger.info("Кастомный HTTPX клиент закрыт.")
         
         if application and 'persistence' in application.bot_data:
             persistence = application.bot_data.get('persistence')
