@@ -1084,7 +1084,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 search_log_msg += f" (Google: {len(search_context_snippets)} рез.)"
                 search_actually_performed = True
             else:
-            else:
                 search_log_msg += " (Google: 0 рез./ошибка)"
                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Google не дал результатов. Пробуем DuckDuckGo...")
                 try:
