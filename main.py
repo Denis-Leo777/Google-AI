@@ -654,40 +654,42 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 
-async def perform_google_search(query: str, api_key: str, cse_id: str, num_results: int, session: aiohttp.ClientSession) -> list[str] | None:
+async def perform_google_search(query: str, api_key: str, cse_id: str, num_results: int, session: httpx.AsyncClient) -> list[str] | None: # <--- Меняем тип сессии на httpx
     search_url = "https://www.googleapis.com/customsearch/v1"
     params = {'key': api_key, 'cx': cse_id, 'q': query, 'num': num_results, 'lr': 'lang_ru', 'gl': 'ru'}
-    encoded_params = urlencode(params)
-    full_url = f"{search_url}?{encoded_params}"
+    # `urlencode` не нужен, httpx прекрасно работает с `params`
     query_short = query[:50] + '...' if len(query) > 50 else query
     logger.debug(f"Запрос к Google Search API для '{query_short}'...")
     try:
-        async with session.get(full_url, timeout=aiohttp.ClientTimeout(total=10.0)) as response:
-            response_text = await response.text()
-            status = response.status
-            if status == 200:
-                try: data = json.loads(response_text)
-                except json.JSONDecodeError as e_json:
-                    logger.error(f"Google Search: Ошибка JSON для '{query_short}' ({status}) - {e_json}. Ответ: {response_text[:200]}...")
-                    return None
-                items = data.get('items', [])
-                snippets = [item.get('snippet', item.get('title', '')) for item in items if item.get('snippet') or item.get('title')]
-                if snippets:
-                    logger.info(f"Google Search: Найдено {len(snippets)} результатов для '{query_short}'.")
-                    return snippets
-                else:
-                    logger.info(f"Google Search: Нет сниппетов/заголовков для '{query_short}' ({status}).")
-                    return None
-            elif status == 400: logger.error(f"Google Search: Ошибка 400 (Bad Request) для '{query_short}'. Ответ: {response_text[:200]}...")
-            elif status == 403: logger.error(f"Google Search: Ошибка 403 (Forbidden) для '{query_short}'. Проверьте API ключ/CSE ID. Ответ: {response_text[:200]}...")
-            elif status == 429: logger.warning(f"Google Search: Ошибка 429 (Too Many Requests) для '{query_short}'. Квота? Ответ: {response_text[:200]}...")
-            elif status >= 500: logger.warning(f"Google Search: Серверная ошибка {status} для '{query_short}'. Ответ: {response_text[:200]}...")
-            else: logger.error(f"Google Search: Неожиданный статус {status} для '{query_short}'. Ответ: {response_text[:200]}...")
+        # --- Блок запроса полностью переписан под httpx ---
+        response = await session.get(search_url, params=params, timeout=10.0)
+        response.raise_for_status() # <--- Проверяет на ошибки 4xx/5xx и выбрасывает исключение
+
+        data = response.json()
+        items = data.get('items', [])
+        snippets = [item.get('snippet', item.get('title', '')) for item in items if item.get('snippet') or item.get('title')]
+        if snippets:
+            logger.info(f"Google Search: Найдено {len(snippets)} результатов для '{query_short}'.")
+            return snippets
+        else:
+            logger.info(f"Google Search: Нет сниппетов/заголовков для '{query_short}'.")
             return None
-    except aiohttp.ClientConnectorError as e: logger.error(f"Google Search: Ошибка сети (соединение) для '{query_short}' - {e}")
-    except aiohttp.ClientError as e: logger.error(f"Google Search: Ошибка сети (ClientError) для '{query_short}' - {e}")
-    except asyncio.TimeoutError: logger.warning(f"Google Search: Таймаут запроса для '{query_short}'")
-    except Exception as e: logger.error(f"Google Search: Непредвиденная ошибка для '{query_short}' - {e}", exc_info=True)
+    except httpx.TimeoutException:
+        logger.warning(f"Google Search: Таймаут запроса для '{query_short}'")
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        response_text = e.response.text
+        if status == 400: logger.error(f"Google Search: Ошибка 400 (Bad Request) для '{query_short}'. Ответ: {response_text[:200]}...")
+        elif status == 403: logger.error(f"Google Search: Ошибка 403 (Forbidden) для '{query_short}'. Проверьте API ключ/CSE ID. Ответ: {response_text[:200]}...")
+        elif status == 429: logger.warning(f"Google Search: Ошибка 429 (Too Many Requests) для '{query_short}'. Квота? Ответ: {response_text[:200]}...")
+        elif status >= 500: logger.warning(f"Google Search: Серверная ошибка {status} для '{query_short}'. Ответ: {response_text[:200]}...")
+        else: logger.error(f"Google Search: Неожиданный статус {status} для '{query_short}'. Ответ: {response_text[:200]}...")
+    except httpx.RequestError as e:
+        logger.error(f"Google Search: Ошибка сети (RequestError) для '{query_short}' - {e}")
+    except json.JSONDecodeError as e_json:
+        logger.error(f"Google Search: Ошибка JSON для '{query_short}' - {e_json}. Ответ (вероятно, не JSON): {response.text[:200] if 'response' in locals() else 'N/A'}...")
+    except Exception as e:
+        logger.error(f"Google Search: Непредвиденная ошибка для '{query_short}' - {e}", exc_info=True)
     return None
 
 async def _generate_gemini_response(
@@ -1077,9 +1079,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search_log_msg = f"Поиск Google/DDG для '{query_short}'"
         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | {search_log_msg}...")
         
-        session = context.bot_data.get('aiohttp_session')
-        if not session or session.closed:
-            logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Критическая ошибка: основная сессия aiohttp не найдена или закрыта! Поиск для этого запроса отменен.")
+        session = context.bot_data.get('http_client') # <--- Меняем ключ 'aiohttp_session' на 'http_client'
+        if not session or session.is_closed: # <--- У httpx метод is_closed - это свойство
+            logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Критическая ошибка: основная сессия httpx не найдена или закрыта! Поиск для этого запроса отменен.")
         else:
             google_results = await perform_google_search(query_for_search, GOOGLE_API_KEY, GOOGLE_CSE_ID, GOOGLE_SEARCH_MAX_RESULTS, session)
             if google_results:
@@ -1606,7 +1608,7 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     # === ИСПРАВЛЕНИЕ v12: Создаем единый HTTP клиент для всего приложения ===
     http_client = httpx.AsyncClient()
     
-    builder = Application.builder().token(TELEGRAM_BOT_TOKEN).http_client(http_client)
+    builder = Application.builder().token(TELEGRAM_BOT_TOKEN).httpx_client(http_client)
     if persistence:
         builder.persistence(persistence)
 
