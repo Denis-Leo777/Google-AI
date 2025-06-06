@@ -1090,19 +1090,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 search_log_msg += " (Google: 0 рез./ошибка)"
                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Google не дал результатов. Пробуем DuckDuckGo...")
                 try:
-                    async with DDGS() as ddgs:
-                        results_ddg = await ddgs.text(query_for_search, region='ru-ru', max_results=DDG_MAX_RESULTS)
-                        if results_ddg:
-                            ddg_snippets = [r.get('body', '') for r in results_ddg if r.get('body')]
-                            if ddg_snippets:
-                                search_provider = "DuckDuckGo"; search_context_snippets = ddg_snippets
-                                search_log_msg += f" (DDG: {len(search_context_snippets)} рез.)"
-                                search_actually_performed = True
-                            else: search_log_msg += " (DDG: 0 текст. рез.)"
-                        else: search_log_msg += " (DDG: 0 рез.)"
-                except TimeoutError: logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Таймаут поиска DuckDuckGo."); search_log_msg += " (DDG: таймаут)"
-                except Exception as e_ddg: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка поиска DuckDuckGo: {e_ddg}", exc_info=True); search_log_msg += " (DDG: ошибка)"
+                    # ИСПРАВЛЕНИЕ: Используем синхронную версию в отдельном потоке для надежности
+                    with DDGS() as ddgs:
+                        # Запускаем синхронную блокирующую операцию в потоке, управляемом asyncio
+                        results_ddg = await asyncio.to_thread(
+                            ddgs.text, 
+                            query_for_search, 
+                            region='ru-ru', 
+                            max_results=DDG_MAX_RESULTS
+                        )
 
+                    if results_ddg:
+                        ddg_snippets = [r.get('body', '') for r in results_ddg if r.get('body')]
+                        if ddg_snippets:
+                            search_provider = "DuckDuckGo"; search_context_snippets = ddg_snippets
+                            search_log_msg += f" (DDG: {len(search_context_snippets)} рез.)"
+                            search_actually_performed = True
+                        else: search_log_msg += " (DDG: 0 текст. рез.)"
+                    else: search_log_msg += " (DDG: 0 рез.)"
+                except Exception as e_ddg: 
+                    logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка поиска DuckDuckGo: {e_ddg}", exc_info=True)
+                    search_log_msg += " (DDG: ошибка)"
     current_time_str_main = get_current_time_str()
     time_context_str = f"(Текущая дата и время: {current_time_str_main})\n"
 
@@ -1754,7 +1762,9 @@ async def main():
         logger.critical(f"Критическая ошибка во время запуска или ожидания: {e}", exc_info=True)
     finally:
         logger.info("--- Начало процесса штатной остановки приложения ---")
-        if not stop_event.is_set(): stop_event.set()
+        if not stop_event.is_set():
+            stop_event.set()
+            
         if web_server_task and not web_server_task.done():
              logger.info("Остановка веб-сервера (через stop_event)...")
              try:
@@ -1766,18 +1776,25 @@ async def main():
                  try: await web_server_task
                  except asyncio.CancelledError: logger.info("Задача веб-сервера успешно отменена.")
                  except Exception as e_cancel_ws: logger.error(f"Ошибка при ожидании отмененной задачи веб-сервера: {e_cancel_ws}", exc_info=True)
-             except asyncio.CancelledError: logger.info("Ожидание веб-сервера было отменено.")
-             except Exception as e_wait_ws: logger.error(f"Ошибка при ожидании завершения веб-сервера: {e_wait_ws}", exc_info=True)
+             except asyncio.CancelledError:
+                 logger.info("Ожидание веб-сервера было отменено.")
+             except Exception as e_wait_ws:
+                 logger.error(f"Ошибка при ожидании завершения веб-сервера: {e_wait_ws}", exc_info=True)
+        
         if application:
             logger.info("Остановка приложения Telegram бота (application.shutdown)...")
             try:
-                # await application.persistence.flush()
+                # await application.persistence.flush() # Не нужно, наш persistence пишет сразу
                 await application.shutdown()
                 logger.info("Приложение Telegram бота успешно остановлено.")
             except Exception as e_shutdown:
                 logger.error(f"Ошибка во время application.shutdown(): {e_shutdown}", exc_info=True)
+        
         if aiohttp_session_main and not aiohttp_session_main.closed:
-             logger.info("Закрытие основной сессии aiohttp..."); await aiohttp_session_main.close(); await asyncio.sleep(0.5); logger.info("Основная сессия aiohttp закрыта.")
+             logger.info("Закрытие основной сессии aiohttp...");
+             await aiohttp_session_main.close()
+             await asyncio.sleep(0.25) # Небольшая пауза для корректного закрытия
+             logger.info("Основная сессия aiohttp закрыта.")
         
         if application and 'persistence' in application.bot_data:
             persistence = application.bot_data.get('persistence')
@@ -1789,13 +1806,9 @@ async def main():
         if tasks:
             logger.info(f"Отмена {len(tasks)} оставшихся фоновых задач...")
             [task.cancel() for task in tasks]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            cancelled_count, error_count = 0, 0
-            for i, res in enumerate(results):
-                 task_name = tasks[i].get_name()
-                 if isinstance(res, asyncio.CancelledError): cancelled_count += 1
-                 elif isinstance(res, Exception): error_count += 1; logger.warning(f"Ошибка в отмененной задаче '{task_name}': {res}", exc_info=False)
-            logger.info(f"Фоновые задачи завершены (отменено: {cancelled_count}, ошибок: {error_count}).")
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info("Оставшиеся фоновые задачи завершены.")
+            
         logger.info("--- Приложение полностью остановлено ---")
 
 if __name__ == '__main__':
