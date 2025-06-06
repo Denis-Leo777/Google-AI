@@ -1,5 +1,4 @@
 python-telegram-bot[webhooks]
-aiohttp
 google-generativeai
 duckduckgo-search
 pytz
@@ -8,3 +7,4 @@ psycopg2-binary
 sqlalchemy
 youtube-transcript-api
 pdfminer.six
+httpx
