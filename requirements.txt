@@ -7,4 +7,4 @@ psycopg2-binary
 sqlalchemy
 youtube-transcript-api
 pdfminer.six
-httpx
+aiohttp
