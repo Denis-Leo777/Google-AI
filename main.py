@@ -1084,16 +1084,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 search_log_msg += f" (Google: {len(search_context_snippets)} рез.)"
                 search_actually_performed = True
             else:
+            else:
                 search_log_msg += " (Google: 0 рез./ошибка)"
                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Google не дал результатов. Пробуем DuckDuckGo...")
                 try:
-                    # ИСПРАВЛЕНИЕ: Используем асинхронный менеджер контекста для DDGS, чтобы сессия корректно закрывалась.
-                    async with DDGS() as ddgs:
-                        results_ddg = await ddgs.text(
-                            query_for_search,
-                            region='ru-ru',
+                    # ИСПРАВЛЕНИЕ: Используем синхронную версию в отдельном потоке для максимальной надежности
+                    # и предотвращения ошибок с незакрытыми сессиями.
+                    with DDGS() as ddgs:
+                        # Запускаем синхронную блокирующую операцию в потоке, управляемом asyncio
+                        results_ddg = await asyncio.to_thread(
+                            ddgs.text, 
+                            query_for_search, 
+                            region='ru-ru', 
                             max_results=DDG_MAX_RESULTS
                         )
+
                     if results_ddg:
                         ddg_snippets = [r.get('body', '') for r in results_ddg if r.get('body')]
                         if ddg_snippets:
