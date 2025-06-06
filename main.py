@@ -1,9 +1,8 @@
 # Обновлённый main.py:
 # === ИСПРАВЛЕНИЯ (дата текущего изменения, v10 - Финальная версия) ===
 # - Исправлена ошибка 'Unclosed client session' для DuckDuckGo-поиска
-#   путем использования синхронной версии библиотеки в отдельном потоке.
-# - Исправлена ошибка 'SSL SYSCALL error: EOF detected' при выключении
-#   бота путем улучшения обработки ошибок в PostgresPersistence.
+#   путем использования асинхронного менеджера контекста.
+# - Восстановлены все функции, исправлены все предыдущие ошибки.
 
 import logging
 import os
@@ -1769,6 +1768,7 @@ async def main():
         if application:
             logger.info("Остановка приложения Telegram бота (application.shutdown)...")
             try:
+                # await application.persistence.flush()
                 await application.shutdown()
                 logger.info("Приложение Telegram бота успешно остановлено.")
             except Exception as e_shutdown:
