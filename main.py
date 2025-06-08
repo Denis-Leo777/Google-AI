@@ -1104,7 +1104,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search_log_msg = f"Поиск Google/DDG для '{query_short}'"
         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | {search_log_msg}...")
         
-        session = context.bot_data.get('http_client')
+        session = getattr(context.application, 'http_client', None)
         if not session or session.is_closed:
             logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Критическая ошибка: основная сессия httpx не найдена или закрыта! Поиск для этого запроса отменен.")
         else:
@@ -1636,9 +1636,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
 
     application = builder.build()
     
-    if persistence:
-        application.bot_data['persistence'] = persistence
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CommandHandler("clear", clear_history))
@@ -1776,7 +1773,7 @@ async def main():
         
         application, web_server_coro = await setup_bot_and_server(stop_event)
         
-        application.bot_data['http_client'] = http_client_custom
+        application.http_client = http_client_custom 
         
         web_server_task = asyncio.create_task(web_server_coro, name="WebServerTask")
         
