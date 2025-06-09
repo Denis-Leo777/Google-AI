@@ -303,6 +303,7 @@ USER_ID_PREFIX_FORMAT = "[User {user_id}]: "
 TARGET_TIMEZONE = "Europe/Moscow"
 
 REASONING_PROMPT_ADDITION = (
+    "Соблюдай все требования системной инструкции."
 )
 
 def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value):
