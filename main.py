@@ -302,9 +302,7 @@ VIDEO_CAPABLE_KEYWORDS = ['gemini-2.5-flash-preview-05-20']
 USER_ID_PREFIX_FORMAT = "[User {user_id}; Name: {user_name}]: " # Теперь форматтер ожидает и ID, и имя. Имя опционально для обратной совместимости.
 TARGET_TIMEZONE = "Europe/Moscow"
 
-REASONING_PROMPT_ADDITION = (
-    "Соблюдай все требования системной инструкции."
-)
+REASONING_PROMPT_ADDITION = ("")
 
 def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value):
     return context.user_data.get(key, default_value)
@@ -548,70 +546,6 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data.clear()
     logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата очищена по команде от {user_mention}.")
     await update.message.reply_text(f"🧹 Окей, {user_mention}, история этого чата очищена.")
-
-async def set_temperature(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    user_id = user.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    try:
-        current_temp = get_user_setting(context, 'temperature', 1.0)
-        if not context.args:
-            await update.message.reply_text(f"🌡️ {user_mention}, твоя текущая температура (креативность): {current_temp:.1f}\nЧтобы изменить, напиши `/temp <значение>` (например, `/temp 0.8`)")
-            return
-        temp_str = context.args[0].replace(',', '.')
-        temp = float(temp_str)
-        if not (0.0 <= temp <= 2.0):
-            raise ValueError("Температура должна быть от 0.0 до 2.0")
-        set_user_setting(context, 'temperature', temp)
-        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Температура установлена на {temp:.1f} для {user_mention}.")
-        await update.message.reply_text(f"🌡️ Готово, {user_mention}! Твоя температура установлена на {temp:.1f}")
-    except (ValueError, IndexError) as e:
-        await update.message.reply_text(f"⚠️ Ошибка, {user_mention}. {e}. Укажи число от 0.0 до 2.0. Пример: `/temp 0.8`")
-    except Exception as e:
-        logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка в set_temperature: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Ой, {user_mention}, что-то пошло не так при установке температуры.")
-
-async def enable_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    set_user_setting(context, 'search_enabled', True)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Поиск включен для {user_mention}.")
-    await update.message.reply_text(f"🔍 Поиск Google/DDG для тебя, {user_mention}, включён.")
-
-async def disable_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    set_user_setting(context, 'search_enabled', False)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Поиск отключен для {user_mention}.")
-    await update.message.reply_text(f"🔇 Поиск Google/DDG для тебя, {user_mention}, отключён.")
-
-async def enable_reasoning(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    set_user_setting(context, 'detailed_reasoning_enabled', True)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Режим углубленных рассуждений включен для {user_mention}.")
-    await update.message.reply_text(f"🧠 Режим углубленных рассуждений для тебя, {user_mention}, включен. Модель будет стараться анализировать запросы более подробно (ход мыслей не отображается).")
-
-async def disable_reasoning(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    chat_id = update.effective_chat.id
-    first_name = user.first_name
-    user_mention = f"{first_name}" if first_name else f"User {user_id}"
-    set_user_setting(context, 'detailed_reasoning_enabled', False)
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Режим углубленных рассуждений отключен для {user_mention}.")
-    await update.message.reply_text(f"💡 Режим углубленных рассуждений для тебя, {user_mention}, отключен.")
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -911,8 +845,12 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
         return
 
     current_time_str = get_current_time_str()
+    # Получаем имя пользователя, который отправил запрос на повторный анализ
+    requesting_user = update.effective_user
+    requesting_user_name = requesting_user.first_name if requesting_user.first_name else "Пользователь"
+
     user_question_with_context = (f"(Текущая дата и время: {current_time_str})\n"
-                                  f"{USER_ID_PREFIX_FORMAT.format(user_id=requesting_user_id)}{user_question}")
+                                  f"{USER_ID_PREFIX_FORMAT.format(user_id=requesting_user_id, user_name=requesting_user_name)}{user_question}")
     if get_user_setting(context, 'detailed_reasoning_enabled', True):
         user_question_with_context += REASONING_PROMPT_ADDITION
         logger.info(f"UserID: {requesting_user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Добавлена инструкция для детального рассуждения.")
@@ -937,7 +875,7 @@ async def reanalyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
     )
 
     chat_history = context.chat_data.setdefault("history", [])
-    user_question_for_history = USER_ID_PREFIX_FORMAT.format(user_id=requesting_user_id) + user_question
+    user_question_for_history = USER_ID_PREFIX_FORMAT.format(user_id=requesting_user_id, user_name=requesting_user_name) + user_question
     history_entry_user = { "role": "user", "parts": [{"text": user_question_for_history}], "user_id": requesting_user_id, "message_id": update.message.message_id }
     chat_history.append(history_entry_user)
 
@@ -1015,9 +953,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if replied_text.startswith(IMAGE_DESCRIPTION_PREFIX) or replied_text.startswith(YOUTUBE_SUMMARY_PREFIX):
              logger.warning(f"UserID: {requesting_user_id_for_reanalyze}, ChatID: {chat_id} | ({log_prefix_handler}) Ответ на спец. сообщение, но reanalyze не запущен. Обработка как обычный текст.")
 
-    user = update.effective_user # Получаем объект пользователя
-    user_name = user.first_name if user.first_name else "Пользователь" # Извлекаем имя, если его нет - используем "Аноним" или что-то подобное 
-    user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text # Формируем префикс с ID и именем
+    user = update.effective_user
+    user_name = user.first_name if user.first_name else "Пользователь"
+    user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text
+    
     youtube_handled = False
     log_prefix_yt_summary = "YouTubeSummary"
 
@@ -1055,7 +994,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_time_str_yt = get_current_time_str()
             prompt_for_summary = (
                  f"(Текущая дата и время: {current_time_str_yt})\n"
-                 f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id)}"
+                 f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}"
                  f"Сделай краткий, но информативный конспект на основе полного текста расшифровки (субтитров) видео, который приведён ниже. "
                  f"Твоя задача — структурировать и обобщить этот текст, выделив ключевые моменты. Если в оригинальном сообщении пользователя есть вопрос, ответь на него, опираясь на текст расшифровки.\n\n"
                  f"Оригинальное сообщение пользователя: '{original_user_message_text}'\n\n"
@@ -1160,7 +1099,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if search_context_lines:
             search_context_text = "\n".join(search_context_lines)
             search_block_title = f"==== РЕЗУЛЬТАТЫ ПОИСКА ({search_provider}) ДЛЯ ОТВЕТА НА ВОПРОС ===="
-            search_block_instruction = f"Используй эту информацию для ответа на вопрос пользователя {USER_ID_PREFIX_FORMAT.format(user_id=user_id)}, особенно если он касается текущих событий или погоды."
+            search_block_instruction = f"Используй эту информацию для ответа на вопрос пользователя {USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}, особенно если он касается текущих событий или погоды."
             if detected_general_url_for_prompt:
                 search_block_title = f"==== РЕЗУЛЬТАТЫ ПОИСКА ({search_provider}) ДЛЯ ДОПОЛНИТЕЛЬНОГО КОНТЕКСТА ===="
                 search_block_instruction = f"Используй эту информацию для дополнения или проверки, особенно если информация по ссылке от пользователя ({detected_general_url_for_prompt}) недостаточна или недоступна."
@@ -1312,11 +1251,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Нет доступных моделей для анализа изображений."); return
 
     current_time_str_photo = get_current_time_str()
+    # Получаем имя пользователя
+    user = update.effective_user
+    user_name = user.first_name if user.first_name else "Пользователь"
+
     prompt_text_vision = (f"(Текущая дата и время: {current_time_str_photo})\n"
-                          f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id)}Пользователь прислал фото с подписью: \"{user_caption}\". Опиши, что видишь на изображении и как это соотносится с подписью (если применимо)."
+                          f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}Пользователь прислал фото с подписью: \"{user_caption}\". Опиши, что видишь на изображении и как это соотносится с подписью (если применимо)."
                          ) if user_caption else (
                           f"(Текущая дата и время: {current_time_str_photo})\n"
-                          f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id)}Пользователь прислал фото без подписи. Опиши, что видишь на изображении.")
+                          f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}Пользователь прислал фото без подписи. Опиши, что видишь на изображении.")
 
     if get_user_setting(context, 'detailed_reasoning_enabled', True):
         prompt_text_vision += REASONING_PROMPT_ADDITION
@@ -1343,7 +1286,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     chat_history = context.chat_data.setdefault("history", [])
-    user_text_for_history_vision = USER_ID_PREFIX_FORMAT.format(user_id=user_id) + (user_caption if user_caption else "Пользователь прислал фото.")
+    user_text_for_history_vision = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + (user_caption if user_caption else "Пользователь прислал фото.")
     history_entry_user = {
         "role": "user",
         "parts": [{"text": user_text_for_history_vision}],
@@ -1530,7 +1473,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time_str_doc = get_current_time_str()
     time_context_str_doc = f"(Текущая дата и время: {current_time_str_doc})\n"
 
-    user_prompt_doc_for_gemini = f"{time_context_str_doc}{USER_ID_PREFIX_FORMAT.format(user_id=user_id)}"
+    # Получаем имя пользователя
+    user = update.effective_user
+    user_name = user.first_name if user.first_name else "Пользователь"
+    
+    user_prompt_doc_for_gemini = f"{time_context_str_doc}{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}"
     if user_caption_original:
         escaped_caption_content = user_caption_original.replace('"', '\\"')
         user_prompt_doc_for_gemini += f"Пользователь загрузил файл `{file_name_for_prompt}` с комментарием: \"{escaped_caption_content}\". {file_context_for_prompt}\nПроанализируй, пожалуйста."
@@ -1547,7 +1494,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message_id = message.message_id
 
     document_user_history_text = user_caption_original if user_caption_original else f"Загружен документ: {file_name_for_prompt}"
-    user_message_with_id_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id) + document_user_history_text
+    user_message_with_id_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + document_user_history_text
 
     history_entry_user = {
         "role": "user",
@@ -1637,11 +1584,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CommandHandler("clear", clear_history))
-    application.add_handler(CommandHandler("temp", set_temperature))
-    application.add_handler(CommandHandler("search_on", enable_search))
-    application.add_handler(CommandHandler("search_off", disable_search))
-    application.add_handler(CommandHandler("reasoning_on", enable_reasoning))
-    application.add_handler(CommandHandler("reasoning_off", disable_reasoning))
     application.add_handler(CallbackQueryHandler(select_model_callback, pattern="^set_model_"))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -1652,11 +1594,6 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
         commands = [
             BotCommand("start", "Начать работу и инфо"),
             BotCommand("model", "Выбрать модель Gemini"),
-            BotCommand("temp", "Установить температуру (креативность)"),
-            BotCommand("search_on", "Включить поиск Google/DDG"),
-            BotCommand("search_off", "Выключить поиск Google/DDG"),
-            BotCommand("reasoning_on", "Вкл. углубленные рассуждения (по умолчанию вкл.)"),
-            BotCommand("reasoning_off", "Выкл. углубленные рассуждения"),
             BotCommand("clear", "Очистить историю чата"),
         ]
         await application.bot.set_my_commands(commands)
