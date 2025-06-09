@@ -299,7 +299,7 @@ IMAGE_DESCRIPTION_PREFIX = "[Описание изображения]: "
 YOUTUBE_SUMMARY_PREFIX = "[Конспект видео]: "
 VISION_CAPABLE_KEYWORDS = ['flash', 'pro', 'vision', 'ultra']
 VIDEO_CAPABLE_KEYWORDS = ['gemini-2.5-flash-preview-05-20']
-USER_ID_PREFIX_FORMAT = "[User {user_id}]: "
+USER_ID_PREFIX_FORMAT = "[User {user_id}; Name: {user_name}]: " # Теперь форматтер ожидает и ID, и имя. Имя опционально для обратной совместимости.
 TARGET_TIMEZONE = "Europe/Moscow"
 
 REASONING_PROMPT_ADDITION = (
@@ -1015,7 +1015,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if replied_text.startswith(IMAGE_DESCRIPTION_PREFIX) or replied_text.startswith(YOUTUBE_SUMMARY_PREFIX):
              logger.warning(f"UserID: {requesting_user_id_for_reanalyze}, ChatID: {chat_id} | ({log_prefix_handler}) Ответ на спец. сообщение, но reanalyze не запущен. Обработка как обычный текст.")
 
-    user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id) + original_user_message_text
+    user = update.effective_user # Получаем объект пользователя
+    user_name = user.first_name if user.first_name else "Пользователь" # Извлекаем имя, если его нет - используем "Аноним" или что-то подобное 
+    user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text # Формируем префикс с ID и именем
     youtube_handled = False
     log_prefix_yt_summary = "YouTubeSummary"
 
