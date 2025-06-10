@@ -926,40 +926,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_name = user.first_name if user.first_name else "Пользователь"
 
-    # --- НОВЫЙ УМНЫЙ БЛОК ЛОГИКИ: АВТОМАТИЧЕСКИЙ ПОВТОРНЫЙ АНАЛИЗ ---
+    # --- УМНЫЙ БЛОК ПОВТОРНОГО АНАЛИЗА (версия 2.0) ---
     if message.reply_to_message and message.reply_to_message.from_user.is_bot:
         replied_text = message.reply_to_message.text or ""
         replied_message_index = -1
 
-        # Шаг 1: Находим в истории точное сообщение бота, на которое ответили
         for i in range(len(chat_history) - 1, -1, -1):
             entry = chat_history[i]
             if entry.get("role") == "model" and (entry.get("parts", [{}])[0].get("text") or "") == replied_text:
                 replied_message_index = i
                 break
         
-        # Шаг 2: Если нашли, сканируем историю НАЗАД от этой точки, ищем релевантный файл
         if replied_message_index != -1:
-            # Ограничиваем глубину поиска, чтобы не сканировать бесконечно старую историю
-            SEARCH_DEPTH_LIMIT = 10 
+            SEARCH_DEPTH_LIMIT = 20
             for j in range(replied_message_index - 1, max(-1, replied_message_index - SEARCH_DEPTH_LIMIT), -1):
                 prev_entry = chat_history[j]
                 if prev_entry.get("role") == "user":
-                    # Нашли файл изображения? Запускаем повторный анализ!
                     if "image_file_id" in prev_entry:
                         file_id = prev_entry["image_file_id"]
                         original_user_id = prev_entry.get("user_id", "Unknown")
                         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) SmartScan: Найден image_file_id. Запускаю reanalyze_image.")
                         await reanalyze_image(update, context, file_id, original_user_message_text, original_user_id)
-                        return # Важно: выходим, чтобы не обрабатывать сообщение дважды
+                        return
 
-                    # Нашли файл документа? (Пока заглушка, но механизм готов)
                     if "document_file_id" in prev_entry:
                         file_id = prev_entry["document_file_id"]
                         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) SmartScan: Найден document_file_id. Reanalyze_document пока не реализован.")
-                        # Здесь будет вызов reanalyze_document, когда ты его напишешь
-                        break # Прерываем поиск, чтобы дальше обработалось как обычный текст
-
+                        break
+    
     user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text
     
     youtube_handled = False
@@ -1032,6 +1026,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             while len(chat_history) > MAX_HISTORY_MESSAGES: chat_history.pop(0)
             return
 
+    # --- ОСТАЛЬНАЯ ЧАСТЬ ФУНКЦИИ ОСТАЕТСЯ БЕЗ ИЗМЕНЕНИЙ ---
     log_prefix_text_gen = "TextGen"
     use_search = get_user_setting(context, 'search_enabled', True)
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
@@ -1045,7 +1040,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query_short = query_for_search[:50] + '...' if len(query_for_search) > 50 else query_for_search
         search_log_msg = f"Поиск Google/DDG для '{query_short}'"
         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | {search_log_msg}...")
-        
+        # Участок функции handle_message() ~строка 1362
         session = getattr(context.application, 'http_client', None)
         if not session or session.is_closed:
             logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Критическая ошибка: основная сессия httpx не найдена или закрыта! Поиск для этого запроса отменен.")
@@ -1197,7 +1192,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
          try:
              if message: await message.reply_text(final_error_message)
              else: await context.bot.send_message(chat_id=chat_id, text=final_error_message)
-         except Exception as e_final_fail: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Не удалось отправить сообщение о финальной ошибке: {e_final_fail}")
+         except Exception as e_final_fail: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Не удалось отправить сообщение о финальной ошибке (не YouTube): {e_final_fail}")
 
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         removed = chat_history.pop(0)
@@ -1568,6 +1563,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         removed_doc = chat_history.pop(0)
         logger.debug(f"ChatID: {chat_id} | ({log_prefix_handler}) Удалено старое сообщение из истории (лимит {MAX_HISTORY_MESSAGES}). Role: {removed_doc.get('role')}")
 
+# Полная, правильная версия функции
 async def setup_bot_and_server(stop_event: asyncio.Event):
     persistence = None
     if DATABASE_URL:
@@ -1585,6 +1581,8 @@ async def setup_bot_and_server(stop_event: asyncio.Event):
         builder.persistence(persistence)
 
     application = builder.build()
+    
+    # Здесь не должно быть никаких application.bot_data['...'] = ...
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("model", model_command))
@@ -1706,6 +1704,8 @@ async def main():
     application = None
     web_server_task = None
     http_client_custom = None
+
+    # Участок функции main() ~строка 1898
     try:
         logger.info(f"--- Запуск приложения Gemini Telegram Bot ---")
         
@@ -1713,9 +1713,11 @@ async def main():
         
         application, web_server_coro = await setup_bot_and_server(stop_event)
         
+        # ПРАВИЛЬНО: Клиент прикреплен к application, он не будет сериализоваться.
         application.http_client = http_client_custom 
         
         web_server_task = asyncio.create_task(web_server_coro, name="WebServerTask")
+        #...
         
         logger.info("Приложение настроено, веб-сервер запущен. Ожидание сигнала остановки (Ctrl+C)...")
         await stop_event.wait()
