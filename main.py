@@ -926,33 +926,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_name = user.first_name if user.first_name else "Пользователь"
 
-    # --- БЛОК ЛОГИКИ: АВТОМАТИЧЕСКИЙ ПОВТОРНЫЙ АНАЛИЗ ---
-    # Проверяем, является ли это сообщение ответом на сообщение бота
+    # --- НОВЫЙ УМНЫЙ БЛОК ЛОГИКИ: АВТОМАТИЧЕСКИЙ ПОВТОРНЫЙ АНАЛИЗ ---
     if message.reply_to_message and message.reply_to_message.from_user.is_bot:
         replied_text = message.reply_to_message.text or ""
-        # Ищем в истории соответствующую запись модели и предшествующую ей запись пользователя
-        for i in range(len(chat_history) - 1, -1, -1):
-            if chat_history[i].get("role") == "model" and (chat_history[i].get("parts", [{}])[0].get("text") or "") == replied_text:
-                if i > 0 and chat_history[i-1].get("role") == "user":
-                    prev_user_entry = chat_history[i-1]
-                    original_user_id = prev_user_entry.get("user_id", "Unknown")
-                    
-                    # Если это был ответ на анализ изображения
-                    if "image_file_id" in prev_user_entry:
-                        file_id = prev_user_entry["image_file_id"]
-                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Обнаружен ответ на описание изображения. Запускаю reanalyze_image с file_id: ...{file_id[-10:]}")
-                        await reanalyze_image(update, context, file_id, original_user_message_text, original_user_id)
-                        return # Прерываем дальнейшую обработку
+        replied_message_index = -1
 
-                    # Если это был ответ на анализ документа
-                    if "document_file_id" in prev_user_entry:
-                        # В текущей реализации нет reanalyze_document, но логику можно добавить здесь.
-                        # Пока что просто логируем и продолжаем как обычное сообщение.
-                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Обнаружен ответ на описание документа. Пока обрабатывается как обычный текст.")
-                        # Если бы у нас была функция reanalyze_document, вызов был бы здесь.
-                        # await reanalyze_document(update, context, prev_user_entry["document_file_id"], ...)
-                        # return
-                break # Выходим из цикла после нахождения нужного сообщения
+        # Шаг 1: Находим в истории точное сообщение бота, на которое ответили
+        for i in range(len(chat_history) - 1, -1, -1):
+            entry = chat_history[i]
+            if entry.get("role") == "model" and (entry.get("parts", [{}])[0].get("text") or "") == replied_text:
+                replied_message_index = i
+                break
+        
+        # Шаг 2: Если нашли, сканируем историю НАЗАД от этой точки, ищем релевантный файл
+        if replied_message_index != -1:
+            # Ограничиваем глубину поиска, чтобы не сканировать бесконечно старую историю
+            SEARCH_DEPTH_LIMIT = 10 
+            for j in range(replied_message_index - 1, max(-1, replied_message_index - SEARCH_DEPTH_LIMIT), -1):
+                prev_entry = chat_history[j]
+                if prev_entry.get("role") == "user":
+                    # Нашли файл изображения? Запускаем повторный анализ!
+                    if "image_file_id" in prev_entry:
+                        file_id = prev_entry["image_file_id"]
+                        original_user_id = prev_entry.get("user_id", "Unknown")
+                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) SmartScan: Найден image_file_id. Запускаю reanalyze_image.")
+                        await reanalyze_image(update, context, file_id, original_user_message_text, original_user_id)
+                        return # Важно: выходим, чтобы не обрабатывать сообщение дважды
+
+                    # Нашли файл документа? (Пока заглушка, но механизм готов)
+                    if "document_file_id" in prev_entry:
+                        file_id = prev_entry["document_file_id"]
+                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) SmartScan: Найден document_file_id. Reanalyze_document пока не реализован.")
+                        # Здесь будет вызов reanalyze_document, когда ты его напишешь
+                        break # Прерываем поиск, чтобы дальше обработалось как обычный текст
 
     user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text
     
@@ -1191,7 +1197,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
          try:
              if message: await message.reply_text(final_error_message)
              else: await context.bot.send_message(chat_id=chat_id, text=final_error_message)
-         except Exception as e_final_fail: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Не удалось отправить сообщение о финальной ошибке (не YouTube): {e_final_fail}")
+         except Exception as e_final_fail: logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_text_gen}) Не удалось отправить сообщение о финальной ошибке: {e_final_fail}")
 
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         removed = chat_history.pop(0)
