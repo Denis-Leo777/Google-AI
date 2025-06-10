@@ -926,13 +926,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_name = user.first_name if user.first_name else "Пользователь"
 
-    # --- НОВЫЙ БЛОК ЛОГИКИ: АВТОМАТИЧЕСКИЙ ПОВТОРНЫЙ АНАЛИЗ ---
+    # --- БЛОК ЛОГИКИ: АВТОМАТИЧЕСКИЙ ПОВТОРНЫЙ АНАЛИЗ ---
     # Проверяем, является ли это сообщение ответом на сообщение бота
     if message.reply_to_message and message.reply_to_message.from_user.is_bot:
         replied_text = message.reply_to_message.text or ""
         # Ищем в истории соответствующую запись модели и предшествующую ей запись пользователя
         for i in range(len(chat_history) - 1, -1, -1):
-            if chat_history[i].get("role") == "model" and (chat_history[i]["parts"][0].get("text") or "") == replied_text:
+            if chat_history[i].get("role") == "model" and (chat_history[i].get("parts", [{}])[0].get("text") or "") == replied_text:
                 if i > 0 and chat_history[i-1].get("role") == "user":
                     prev_user_entry = chat_history[i-1]
                     original_user_id = prev_user_entry.get("user_id", "Unknown")
@@ -950,7 +950,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # Пока что просто логируем и продолжаем как обычное сообщение.
                         logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Обнаружен ответ на описание документа. Пока обрабатывается как обычный текст.")
                         # Если бы у нас была функция reanalyze_document, вызов был бы здесь.
-                        # await reanalyze_document(update, context, ...)
+                        # await reanalyze_document(update, context, prev_user_entry["document_file_id"], ...)
                         # return
                 break # Выходим из цикла после нахождения нужного сообщения
 
@@ -1472,7 +1472,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time_str_doc = get_current_time_str()
     time_context_str_doc = f"(Текущая дата и время: {current_time_str_doc})\n"
 
-    # Получаем имя пользователя
     user = update.effective_user
     user_name = user.first_name if user.first_name else "Пользователь"
     
@@ -1496,13 +1495,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message_with_id_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + document_user_history_text
 
     history_entry_user = {
-    "role": "user",
-    "parts": [{"text": user_message_with_id_for_history}],
-    "user_id": user_id,
-    "message_id": user_message_id,
-    "document_name": file_name_for_prompt,
-    "document_file_id": doc.file_id # <-- Добавляем это
-}
+        "role": "user",
+        "parts": [{"text": user_message_with_id_for_history}],
+        "user_id": user_id,
+        "message_id": user_message_id,
+        "document_name": file_name_for_prompt,
+        "document_file_id": doc.file_id # <-- Важное добавление для повторного анализа
+    }
     chat_history.append(history_entry_user)
     logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Добавлено user-сообщение (о загрузке документа) в chat_history.")
 
