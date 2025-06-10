@@ -923,38 +923,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     original_user_message_text = message.text.strip()
     user_message_id = message.message_id
     chat_history = context.chat_data.setdefault("history", [])
-
-    if message.reply_to_message and message.reply_to_message.text and original_user_message_text and not original_user_message_text.startswith('/'):
-        replied_message = message.reply_to_message
-        replied_text = replied_message.text
-        user_question = original_user_message_text
-        requesting_user_id_for_reanalyze = user_id
-        found_special_context = False
-        try:
-            for i in range(len(chat_history) - 1, -1, -1):
-                model_entry = chat_history[i]
-                if model_entry.get("role") == "model" and model_entry.get("parts") and isinstance(model_entry["parts"], list) and len(model_entry["parts"]) > 0:
-                    model_text = model_entry["parts"][0].get("text", "")
-                    is_image_reply = model_text.startswith(IMAGE_DESCRIPTION_PREFIX) and replied_text.startswith(IMAGE_DESCRIPTION_PREFIX) and model_text[:100] == replied_text[:100]
-                    if is_image_reply:
-                        if i > 0:
-                            potential_user_entry = chat_history[i - 1]
-                            if potential_user_entry.get("role") == "user":
-                                original_user_id_from_hist = potential_user_entry.get("user_id", "Unknown")
-                                if is_image_reply and "image_file_id" in potential_user_entry:
-                                    found_file_id = potential_user_entry["image_file_id"]
-                                    logger.info(f"UserID: {requesting_user_id_for_reanalyze}, ChatID: {chat_id} | ({log_prefix_handler}) Найден image_file_id: ...{found_file_id[-10:]} для reanalyze_image (ориг. user: {original_user_id_from_hist}).")
-                                    await reanalyze_image(update, context, found_file_id, user_question, original_user_id_from_hist); found_special_context = True; break
-                                else: logger.warning(f"UserID: {requesting_user_id_for_reanalyze}, ChatID: {chat_id} | ({log_prefix_handler}) Найдено сообщение модели, но у предыдущего user-сообщения нет нужного ID изображения.")
-                        else: logger.warning(f"UserID: {requesting_user_id_for_reanalyze}, ChatID: {chat_id} | ({log_prefix_handler}) Найдено сообщение модели в самом начале истории.")
-                        if not found_special_context: break
-        except Exception as e_hist_search: logger.error(f"UserID: {requesting_user_id_for_reanalyze}, ChatID: {chat_id} | ({log_prefix_handler}) Ошибка при поиске ID для reanalyze в chat_history: {e_hist_search}", exc_info=True)
-        if found_special_context: return
-        if replied_text.startswith(IMAGE_DESCRIPTION_PREFIX) or replied_text.startswith(YOUTUBE_SUMMARY_PREFIX):
-             logger.warning(f"UserID: {requesting_user_id_for_reanalyze}, ChatID: {chat_id} | ({log_prefix_handler}) Ответ на спец. сообщение, но reanalyze не запущен. Обработка как обычный текст.")
-
     user = update.effective_user
     user_name = user.first_name if user.first_name else "Пользователь"
+
+    # --- НОВЫЙ БЛОК ЛОГИКИ: АВТОМАТИЧЕСКИЙ ПОВТОРНЫЙ АНАЛИЗ ---
+    # Проверяем, является ли это сообщение ответом на сообщение бота
+    if message.reply_to_message and message.reply_to_message.from_user.is_bot:
+        replied_text = message.reply_to_message.text or ""
+        # Ищем в истории соответствующую запись модели и предшествующую ей запись пользователя
+        for i in range(len(chat_history) - 1, -1, -1):
+            if chat_history[i].get("role") == "model" and (chat_history[i]["parts"][0].get("text") or "") == replied_text:
+                if i > 0 and chat_history[i-1].get("role") == "user":
+                    prev_user_entry = chat_history[i-1]
+                    original_user_id = prev_user_entry.get("user_id", "Unknown")
+                    
+                    # Если это был ответ на анализ изображения
+                    if "image_file_id" in prev_user_entry:
+                        file_id = prev_user_entry["image_file_id"]
+                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Обнаружен ответ на описание изображения. Запускаю reanalyze_image с file_id: ...{file_id[-10:]}")
+                        await reanalyze_image(update, context, file_id, original_user_message_text, original_user_id)
+                        return # Прерываем дальнейшую обработку
+
+                    # Если это был ответ на анализ документа
+                    if "document_file_id" in prev_user_entry:
+                        # В текущей реализации нет reanalyze_document, но логику можно добавить здесь.
+                        # Пока что просто логируем и продолжаем как обычное сообщение.
+                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Обнаружен ответ на описание документа. Пока обрабатывается как обычный текст.")
+                        # Если бы у нас была функция reanalyze_document, вызов был бы здесь.
+                        # await reanalyze_document(update, context, ...)
+                        # return
+                break # Выходим из цикла после нахождения нужного сообщения
+
     user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text
     
     youtube_handled = False
@@ -1497,12 +1496,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message_with_id_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + document_user_history_text
 
     history_entry_user = {
-        "role": "user",
-        "parts": [{"text": user_message_with_id_for_history}],
-        "user_id": user_id,
-        "message_id": user_message_id,
-        "document_name": file_name_for_prompt
-    }
+    "role": "user",
+    "parts": [{"text": user_message_with_id_for_history}],
+    "user_id": user_id,
+    "message_id": user_message_id,
+    "document_name": file_name_for_prompt,
+    "document_file_id": doc.file_id # <-- Добавляем это
+}
     chat_history.append(history_entry_user)
     logger.debug(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Добавлено user-сообщение (о загрузке документа) в chat_history.")
 
