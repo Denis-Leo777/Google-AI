@@ -927,33 +927,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message_id = message.message_id
     chat_history = context.chat_data.setdefault("history", [])
 
+    # ================= ВОТ ОН, НЕДОСТАЮЩИЙ БЛОК =================
     if message.reply_to_message and original_user_message_text and not original_user_message_text.startswith('/'):
         replied_to_message_id = message.reply_to_message.message_id
         user_question = original_user_message_text
         
         try:
+            # Ищем сообщение бота, на которое ответили, в нашей истории
             for i in range(len(chat_history) - 1, -1, -1):
                 history_item = chat_history[i]
                 if history_item.get("role") == "model" and history_item.get("bot_message_id") == replied_to_message_id:
+                    # Нашли! Теперь смотрим на предыдущее сообщение от пользователя
                     if i > 0:
                         previous_user_entry = chat_history[i-1]
                         if previous_user_entry.get("role") == "user":
                             original_user_id = previous_user_entry.get("user_id", user_id)
 
+                            # Проверяем, есть ли улика на картинку
                             if "image_file_id" in previous_user_entry:
                                 image_id = previous_user_entry["image_file_id"]
                                 logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Обнаружен ответ на сообщение о картинке. Запускаю reanalyze_image с file_id: ...{image_id[-10:]}")
                                 await reanalyze_image(update, context, image_id, user_question, original_user_id)
-                                return
+                                return # Важно! Завершаем выполнение
 
+                            # Проверяем, есть ли улика на документ
                             if "document_file_id" in previous_user_entry:
-                                # TODO: Реализовать reanalyze_document по аналогии с reanalyze_image
                                 logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Обнаружен ответ на сообщение о документе, но reanalyze_document не реализован.")
+                                # Здесь будет вызов reanalyze_document, когда ты его напишешь
                                 # await reanalyze_document(update, context, previous_user_entry["document_file_id"], user_question, original_user_id)
                                 # return
-                    break
+
+                    break # Выходим из цикла, так как нашли нужное сообщение
         except Exception as e_reanalyze_trigger:
             logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка в триггере повторного анализа: {e_reanalyze_trigger}", exc_info=True)
+    # ================= КОНЕЦ КЛЮЧЕВОГО БЛОКА =================
 
     user = update.effective_user
     user_name = user.first_name if user.first_name else "Пользователь"
@@ -1063,7 +1070,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ddg_snippets = [r.get('body', '') for r in results_ddg if r.get('body')]
                     if ddg_snippets:
                         search_provider = "DuckDuckGo"; search_context_snippets = ddg_snippets
-                        search_log_msg += f" (DDG: {len(search_context_snippets)} рез.)"
+                        search_log_msg += f" (DDG: {len(ddg_snippets)} рез.)"
                         search_actually_performed = True
             except Exception as e_ddg: 
                 logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Ошибка поиска DuckDuckGo: {e_ddg}", exc_info=True)
