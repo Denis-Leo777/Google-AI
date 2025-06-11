@@ -920,46 +920,63 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     original_user_message_text = message.text.strip()
     chat_history = context.chat_data.setdefault("history", [])
 
+    # Сохраняем данные для использования в do_reanalyze_image
     context.user_data['id'] = user_id
     context.user_data['first_name'] = user.first_name
     context.chat_data['id'] = chat_id
 
-    # ТРИГГЕР ПОВТОРНОГО АНАЛИЗА
+    # НАДЁЖНЫЙ ТРИГГЕР ПОВТОРНОГО АНАЛИЗА
     if message.reply_to_message and original_user_message_text and not original_user_message_text.startswith('/'):
-        replied_text = message.reply_to_message.text or ""
-        if replied_text.startswith(IMAGE_DESCRIPTION_PREFIX):
-            last_image_bytes = next((e.get("image_bytes") for e in reversed(chat_history) if e.get("role") == "user" and "image_bytes" in e), None)
-            if last_image_bytes:
-                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-                new_reply_text = await asyncio.to_thread(do_reanalyze_image, last_image_bytes, original_user_message_text, context)
-                
-                # Обновляем историю
-                user_name = user.first_name or "Пользователь"
-                chat_history.append({"role": "user", "parts": [{"text": USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text}], "user_id": user_id, "message_id": message.message_id})
-                sent_message = await send_reply(message, new_reply_text, context)
-                chat_history.append({"role": "model", "parts": [{"text": new_reply_text}], "bot_message_id": sent_message.message_id if sent_message else None})
-                
-                while len(chat_history) > MAX_HISTORY_MESSAGES: chat_history.pop(0)
-                return
+        replied_to_id = message.reply_to_message.message_id
+        
+        # Ищем в истории сообщение бота, на которое ответили
+        for i in range(len(chat_history) - 1, -1, -1):
+            history_item = chat_history[i]
+            if history_item.get("role") == "model" and history_item.get("bot_message_id") == replied_to_id:
+                # Нашли! Теперь смотрим на предыдущее сообщение
+                if i > 0:
+                    prev_entry = chat_history[i-1]
+                    # Если предыдущее сообщение от юзера и содержит картинку - это наш клиент!
+                    if prev_entry.get("role") == "user" and "image_bytes" in prev_entry:
+                        image_bytes_to_reanalyze = prev_entry["image_bytes"]
+                        user_question = original_user_message_text
+                        
+                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Запускаю повторный анализ изображения. Вопрос: '{user_question}'")
+                        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # --- СТАНДАРТНАЯ ОБРАБОТКА ---
-    user_name = user.first_name if user.first_name else "Пользователь"
-    user_message_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text
+                        new_reply_text = await asyncio.to_thread(
+                            do_reanalyze_image, image_bytes_to_reanalyze, user_question, context
+                        )
+                        
+                        # Обновляем историю новым диалогом
+                        user_name = user.first_name or "Пользователь"
+                        chat_history.append({"role": "user", "parts": [{"text": USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + user_question}], "user_id": user_id, "message_id": message.message_id})
+                        sent_message = await send_reply(message, new_reply_text, context)
+                        chat_history.append({"role": "model", "parts": [{"text": new_reply_text}], "bot_message_id": sent_message.message_id if sent_message else None})
+                        
+                        while len(chat_history) > MAX_HISTORY_MESSAGES: chat_history.pop(0)
+                        return # Завершаем обработку
+                break # выходим из цикла, т.к. нашли нужное сообщение
+
+    # --- СТАНДАРТНАЯ ОБРАБОТКА (если не был запущен повторный анализ) ---
     
-    # Обработка YouTube
+    # ... (весь остальной код функции handle_message без изменений) ...
+    user_name = user.first_name if user.first_name else "Пользователь"
+    user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text
+    
     youtube_id = extract_youtube_id(original_user_message_text)
     if youtube_id:
-        # ... (здесь твой код для YouTube, он в целом правильный, я его сократил для ясности)
-        # В конце обработки YouTube не забудь сделать return
+        # ... твой код для обработки YouTube ...
         return
 
-    # Обработка обычного текста
+    # ... твой код для поиска и обычного ответа ...
+    log_prefix_text_gen = "TextGen"
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     
     # 1. Добавляем текущее сообщение пользователя в историю СРАЗУ
     chat_history.append({
         "role": "user",
-        "parts": [{"text": user_message_for_history}],
+        "parts": [{"text": user_message_with_id}],
         "user_id": user_id,
         "message_id": message.message_id
     })
@@ -977,11 +994,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_prompt_parts = [f"(Текущая дата и время: {current_time_str})\n"]
     if search_context_snippets:
         final_prompt_parts.append("\n==== РЕЗУЛЬТАТЫ ПОИСКА ====\n" + "\n".join(f"- {s}" for s in search_context_snippets))
-    final_prompt_parts.append(f"\n{user_message_for_history}")
+    
+    # ВАЖНО: передаем в промпт user_message_with_id, а не весь final_user_prompt
+    final_prompt_parts.append(f"\n{user_message_with_id}")
     final_user_prompt = "".join(final_prompt_parts)
 
     # 3. Собираем контекст с помощью новой утилиты
-    # Важно: передаем ВЕСЬ chat_history, утилита сама отрежет лишнее
     context_for_model = build_context_for_model(chat_history, final_user_prompt)
     
     # 4. Вызываем модель
@@ -1004,7 +1022,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         chat_history.pop(0)
 
-# Замени свою старую handle_photo на эту
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user
@@ -1029,14 +1046,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_caption = message.caption or ""
     
-    # Первичный анализ изображения
-    # Код для этого блока остается таким же: подготовка промпта, вызов _generate_gemini_response
-    # ...
-    # Предположим, что вызов _generate_gemini_response вернул нам `reply_photo`
-    # ... (весь твой код для вызова _generate_gemini_response из старой handle_photo)
-
+    # --- Блок первичного анализа ---
     effective_context_photo = _get_effective_context_for_task("vision", context, user_id, chat_id, log_prefix_handler)
-    # ... (весь код до вызова _generate_gemini_response)
     user_name = user.first_name if user.first_name else "Пользователь"
     current_time_str_photo = get_current_time_str()
     prompt_text_vision = (f"(Текущая дата и время: {current_time_str_photo})\n"
@@ -1053,45 +1064,41 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mime_type = "image/jpeg" if file_bytes.startswith(b'\xff\xd8\xff') else "image/png"
     parts_photo = [{"text": prompt_text_vision}, {"inline_data": {"mime_type": mime_type, "data": b64_data}}]
-    content_for_vision_photo_direct = [{"role": "user", "parts": parts_photo}]
-
+    
     reply_photo = await _generate_gemini_response(
         user_prompt_text_initial=prompt_text_vision,
-        chat_history_for_model_initial=content_for_vision_photo_direct,
+        chat_history_for_model_initial=[{"role": "user", "parts": parts_photo}],
         user_id=user_id, chat_id=chat_id, context=effective_context_photo,
         system_instruction=system_instruction_text, log_prefix="PhotoVisionGen"
     )
-    # --- Конец блока генерации ---
+    # --- Конец блока анализа ---
 
     # Формируем и сохраняем историю
     chat_history = context.chat_data.setdefault("history", [])
     
+    # Запись пользователя. ВАЖНО: мы сохраняем байты картинки здесь!
     user_text_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + (user_caption or "Пользователь прислал фото.")
-    
-    # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Сохраняем БАЙТЫ картинки в историю
     history_entry_user = {
         "role": "user",
         "parts": [{"text": user_text_for_history}],
-        "image_bytes": file_bytes,  # <-- ВОТ ОНО!
+        "image_bytes": file_bytes,  # <-- Улика для повторного анализа
         "user_id": user_id,
         "message_id": message.message_id
     }
     chat_history.append(history_entry_user)
 
+    # Формируем ответ для пользователя
     reply_for_user_display = f"{IMAGE_DESCRIPTION_PREFIX}{reply_photo}" if reply_photo and not reply_photo.startswith(("🤖", "❌")) else (reply_photo or "🤖 Не удалось проанализировать изображение.")
     
     sent_message = await send_reply(message, reply_for_user_display, context)
 
-    # Сохраняем ответ модели, по-прежнему с ID сообщения для справки
+    # Запись модели
     history_entry_model = {
         "role": "model",
         "parts": [{"text": reply_for_user_display}],
         "bot_message_id": sent_message.message_id if sent_message else None
     }
     chat_history.append(history_entry_model)
-
-    if not sent_message:
-        logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Не удалось отправить ответ.")
     
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         chat_history.pop(0)
