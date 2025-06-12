@@ -946,7 +946,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         replied_to_id = message.reply_to_message.message_id
         old_bot_response = message.reply_to_message.text or ""
         
-        # Ищем в истории наш диалог
         for i in range(len(chat_history) - 1, -1, -1):
             if chat_history[i].get("role") == "model" and chat_history[i].get("bot_message_id") == replied_to_id:
                 if i > 0 and chat_history[i-1].get("role") == "user":
@@ -964,21 +963,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         elif content_type == "document":
                             logger.info(f"Запускаю reanalyze для document: {content_id}")
                             new_reply_text = await reanalyze_document_from_id(content_id, old_bot_response, original_user_message_text, context)
-                        # Тут можно добавить elif для "url" и т.д.
 
                         if new_reply_text:
-                            # Обновляем историю
                             user_name = user.first_name or "Пользователь"
                             chat_history.append({"role": "user", "parts": [{"text": USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text}], "user_id": user_id, "message_id": message.message_id})
                             sent_message = await send_reply(message, new_reply_text, context)
                             chat_history.append({"role": "model", "parts": [{"text": new_reply_text}], "bot_message_id": sent_message.message_id if sent_message else None})
+                            
+                            if context.application.persistence:
+                                await context.application.persistence.update_chat_data(chat_id, context.chat_data)
+                                logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата (reanalyze) принудительно сохранена.")
+
                             return
                 break
 
-    # --- СТАНДАРТНАЯ ОБРАБОТКА (если не был запущен повторный анализ) ---
-    
+    # --- СТАНДАРТНАЯ ОБРАБОТКА ---
     user_name = user.first_name if user.first_name else "Пользователь"
-    user_message_with_id = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text
+    user_message_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text
     
     # Обработка YouTube
     youtube_id = extract_youtube_id(original_user_message_text)
@@ -1029,33 +1030,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обработка обычного текста
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     
-    chat_history.append({
-        "role": "user",
-        "parts": [{"text": user_message_with_id}],
-        "user_id": user_id,
-        "message_id": message.message_id
-    })
-
-    search_context_snippets, search_actually_performed = [], False
+    search_context_str = ""
+    search_actually_performed = False
     session = getattr(context.application, 'http_client', None)
     if session and not session.is_closed:
         google_results = await perform_google_search(original_user_message_text, GOOGLE_API_KEY, GOOGLE_CSE_ID, GOOGLE_SEARCH_MAX_RESULTS, session)
         if google_results:
-            search_context_snippets = google_results
+            search_context_str = "\n\n==== РЕЗУЛЬТАТЫ ПОИСКА ====\n" + "\n".join(f"- {s.strip()}" for s in google_results)
             search_actually_performed = True
-    else:
-        logger.error(f"UserID: {user_id}, ChatID: {chat_id} | HTTPX сессия не найдена, поиск пропущен.")
     
-    current_time_str = get_current_time_str()
-    final_prompt_parts = [f"(Текущая дата и время: {current_time_str})\n"]
-    if search_context_snippets:
-        final_prompt_parts.append("\n==== РЕЗУЛЬТАТЫ ПОИСКА ====\n" + "\n".join(f"- {s}" for s in search_context_snippets))
-    
-    final_prompt_parts.append(f"\n{user_message_with_id}")
-    final_user_prompt = "".join(final_prompt_parts)
+    # Промпт для модели включает поиск, но в историю он не попадет
+    final_user_prompt = f"{user_message_for_history}{search_context_str}"
 
-    context_for_model = build_context_for_model(chat_history, final_user_prompt)
+    # Добавляем в историю ЧИСТОЕ сообщение пользователя
+    chat_history.append({
+        "role": "user",
+        "parts": [{"text": user_message_for_history}], # <-- Без поиска!
+        "user_id": user_id,
+        "message_id": message.message_id
+    })
     
+    # Собираем контекст из истории. Последнее сообщение будет заменено на промпт с поиском
+    context_for_model = build_context_for_model(chat_history)
+    if context_for_model and context_for_model[-1]["role"] == "user":
+        context_for_model[-1]["parts"][0]["text"] = final_user_prompt
+
     gemini_reply_text = await _generate_gemini_response(
         user_prompt_text_initial=final_user_prompt,
         chat_history_for_model_initial=context_for_model,
@@ -1070,6 +1069,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "parts": [{"text": gemini_reply_text or "🤖 Не удалось получить ответ."}],
         "bot_message_id": sent_message.message_id if sent_message else None
     })
+
+    if context.application.persistence:
+        await context.application.persistence.update_chat_data(chat_id, context.chat_data)
+        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата (текст) принудительно сохранена.")
 
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         chat_history.pop(0)
@@ -1148,6 +1151,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     chat_history.append(history_entry_model)
     
+    if context.application.persistence:
+        await context.application.persistence.update_chat_data(chat_id, context.chat_data)
+        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата (фото) принудительно сохранена.")
+
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         chat_history.pop(0)
 
@@ -1193,7 +1200,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Не удалось извлечь текст из PDF-файла `{doc.file_name}`.")
             return
     else:
-        # Простая логика декодирования
         try:
             text = file_bytes.decode('utf-8')
         except UnicodeDecodeError:
@@ -1215,7 +1221,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                   f"Проанализируй текст из файла. Мой комментарий: \"{user_caption_original}\".\n{file_context_for_prompt}")
     user_prompt_doc_for_gemini += REASONING_PROMPT_ADDITION
 
-    # ВОТ ОН, ИСПРАВЛЕННЫЙ БЛОК
     gemini_reply_doc = await _generate_gemini_response(
         user_prompt_text_initial=user_prompt_doc_for_gemini,
         chat_history_for_model_initial=[{"role": "user", "parts": [{"text": user_prompt_doc_for_gemini}]}],
@@ -1245,6 +1250,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     history_entry_model = {"role": "model", "parts": [{"text": gemini_reply_doc or "🤖 Не удалось обработать документ."}], "bot_message_id": sent_message.message_id if sent_message else None}
     chat_history.append(history_entry_model)
+
+    if context.application.persistence:
+        await context.application.persistence.update_chat_data(chat_id, context.chat_data)
+        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата (документ) принудительно сохранена.")
 
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         chat_history.pop(0)
