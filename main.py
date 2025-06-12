@@ -1210,14 +1210,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_caption_original = message.caption or ""
-    file_context_for_prompt = f"Содержимое файла `{doc.file_name or 'файл'}`:\n```\n{text[:10000]}\n```" # Ограничим размер для промпта
+    file_context_for_prompt = f"Содержимое файла `{doc.file_name or 'файл'}`:\n```\n{text[:10000]}\n```"
 
     user_name = user.first_name if user.first_name else "Пользователь"
     user_prompt_doc_for_gemini = (f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}"
                                   f"Проанализируй текст из файла. Мой комментарий: \"{user_caption_original}\".\n{file_context_for_prompt}")
     user_prompt_doc_for_gemini += REASONING_PROMPT_ADDITION
 
-    # ВЫЗОВ МОДЕЛИ, КОТОРОГО НЕ БЫЛО
+    # ВОТ ОН, ИСПРАВЛЕННЫЙ БЛОК
     gemini_reply_doc = await _generate_gemini_response(
         user_prompt_text_initial=user_prompt_doc_for_gemini,
         chat_history_for_model_initial=[{"role": "user", "parts": [{"text": user_prompt_doc_for_gemini}]}],
