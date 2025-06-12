@@ -525,13 +525,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date_knowledge_text_raw = "до начала 2025 года"
     
     start_message_plain_parts = [
-        f"Меня зовут Женя, работаю на Google Gemini {raw_bot_core_model_display_name}:",
-        f"- обладаю огромным объемом знаний {date_knowledge_text_raw} и могу искать в Google,",
-        f"- использую рассуждения и улучшенные настройки от автора бота,",
-        f"- умею читать и понимать изображения, txt, pdf и ссылки на веб-страницы.",
-        f"Пишите сюда и добавляйте меня в группы, я отдельно запоминаю контекст каждого чата и пользователей.",
-        f"Канал автора: {author_channel_link_raw}",
-        f"Пользуясь данным ботом, вы автоматически соглашаетесь на отправку ваших запросов через Google API для получения ответов моделей Google Gemini."
+        f"Меня зовут Женя, работаю на Google Gemini {raw_bot_core_model_display_name} с настройками от автора бота: {author_channel_link_raw}",
+        f"- обладаю огромным объемом знаний {date_knowledge_text_raw} и поиском Google,",
+        f"- умею понимать и обсуждать изображения, txt, pdf и веб-страницы,",
+        f"- знаю ваше имя, помню историю чата. Пишите лично и добавляйте меня в группы.",
+        f"(!) Пользуясь данным ботом, вы автоматически соглашаетесь на отправку ваших сообщений через Google API для получения ответов моделей Gemini."
     ]
 
     start_message_plain = "\n".join(start_message_plain_parts)
