@@ -53,25 +53,38 @@ except Exception as e_prompt_file:
     system_instruction_text = "Ты — полезный ассистент."
     exit(1)
 
+# Замени весь класс PostgresPersistence на этот
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
         super().__init__()
         self.db_pool = None
+        self.dsn = database_url
         try:
-            self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=database_url)
+            self._connect()
             self._initialize_db()
             logger.info("PostgresPersistence: Соединение с базой данных установлено и таблица проверена.")
         except psycopg2.Error as e:
             logger.critical(f"PostgresPersistence: Не удалось подключиться к базе данных PostgreSQL: {e}")
             raise
 
+    def _connect(self):
+        """Инициализирует или пересоздает пул соединений."""
+        if self.db_pool:
+            try:
+                self.db_pool.closeall()
+            except Exception as e:
+                logger.warning(f"PostgresPersistence: Ошибка при закрытии старого пула: {e}")
+        self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=self.dsn)
+        logger.info("PostgresPersistence: Пул соединений успешно (пере)создан.")
+
+
     def _execute(self, query: str, params: tuple = None, fetch: str = None):
         if not self.db_pool:
             raise ConnectionError("PostgresPersistence: Пул соединений не инициализирован.")
 
-        conn = None
         last_exception = None
-        for attempt in range(2):
+        for attempt in range(3):  # Увеличим до 3 попыток
+            conn = None
             try:
                 conn = self.db_pool.getconn()
                 with conn.cursor() as cur:
@@ -91,9 +104,10 @@ class PostgresPersistence(BasePersistence):
                 logger.warning(f"PostgresPersistence: Ошибка соединения (попытка {attempt + 1}): {e}. Попытка переподключения...")
                 last_exception = e
                 if conn:
-                    self.db_pool.putconn(conn, close=True)
-                    conn = None
-                time.sleep(1)
+                    self.db_pool.putconn(conn, close=True) # Закрываем "сломанное" соединение
+                if attempt < 2: # Перед последней попыткой пересоздаем весь пул
+                    self._connect()
+                time.sleep(1 + attempt) # Увеличиваем задержку
                 continue
             except psycopg2.Error as e:
                 logger.error(f"PostgresPersistence: Невосстановимая ошибка SQL: {e}")
@@ -124,7 +138,8 @@ class PostgresPersistence(BasePersistence):
         self._execute(query, (key, pickled_data, pickled_data))
 
     async def get_bot_data(self) -> dict:
-        return await asyncio.to_thread(self._get_pickled, "bot_data") or {}
+        bot_data = await asyncio.to_thread(self._get_pickled, "bot_data")
+        return bot_data or {}
 
     async def update_bot_data(self, data: dict) -> None:
         await asyncio.to_thread(self._set_pickled, "bot_data", data)
@@ -158,39 +173,25 @@ class PostgresPersistence(BasePersistence):
 
     async def update_user_data(self, user_id: int, data: dict) -> None:
         await asyncio.to_thread(self._set_pickled, f"user_data_{user_id}", data)
-
-    async def get_callback_data(self) -> dict | None:
-        return None
-
-    async def update_callback_data(self, data: dict) -> None:
-        pass
-
-    async def get_conversations(self, name: str) -> dict:
-        return {}
-
-    async def update_conversation(self, name: str, key: tuple, new_state: object | None) -> None:
-        pass
+    
+    # ... (остальные неиспользуемые, но обязательные методы BasePersistence) ...
+    async def get_callback_data(self) -> dict | None: return None
+    async def update_callback_data(self, data: dict) -> None: pass
+    async def get_conversations(self, name: str) -> dict: return {}
+    async def update_conversation(self, name: str, key: tuple, new_state: object | None) -> None: pass
 
     async def drop_chat_data(self, chat_id: int) -> None:
+        logger.info(f"PostgresPersistence: Принудительное удаление данных для чата {chat_id}")
         await asyncio.to_thread(self._execute, "DELETE FROM persistence_data WHERE key = %s;", (f"chat_data_{chat_id}",))
 
     async def drop_user_data(self, user_id: int) -> None:
+        logger.info(f"PostgresPersistence: Принудительное удаление данных для пользователя {user_id}")
         await asyncio.to_thread(self._execute, "DELETE FROM persistence_data WHERE key = %s;", (f"user_data_{user_id}",))
 
-    async def refresh_bot_data(self, bot_data: dict) -> None:
-        data = await self.get_bot_data()
-        bot_data.update(data)
-
-    async def refresh_chat_data(self, chat_id: int, chat_data: dict) -> None:
-        data = await asyncio.to_thread(self._get_pickled, f"chat_data_{chat_id}") or {}
-        chat_data.update(data)
-
-    async def refresh_user_data(self, user_id: int, user_data: dict) -> None:
-        data = await asyncio.to_thread(self._get_pickled, f"user_data_{user_id}") or {}
-        user_data.update(data)
-
-    async def flush(self) -> None:
-        pass
+    async def refresh_bot_data(self, bot_data: dict) -> None: data = await self.get_bot_data(); bot_data.update(data)
+    async def refresh_chat_data(self, chat_id: int, chat_data: dict) -> None: data = await asyncio.to_thread(self._get_pickled, f"chat_data_{chat_id}") or {}; chat_data.update(data)
+    async def refresh_user_data(self, user_id: int, user_data: dict) -> None: data = await asyncio.to_thread(self._get_pickled, f"user_data_{user_id}") or {}; user_data.update(data)
+    async def flush(self) -> None: pass
 
     def close(self):
         if self.db_pool:
@@ -541,14 +542,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to send start_message (Plain Text): {e}", exc_info=True)
 
+# Замени свою старую clear_history на эту
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user
     user_id = user.id
     first_name = user.first_name
     user_mention = f"{first_name}" if first_name else f"User {user_id}"
+    
+    # 1. Очищаем состояние в оперативной памяти
     context.chat_data.clear()
-    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата очищена по команде от {user_mention}.")
+    logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата в памяти очищена по команде от {user_mention}.")
+    
+    # 2. Принудительно удаляем данные из персистентного хранилища
+    if context.application.persistence:
+        await context.application.persistence.drop_chat_data(chat_id)
+        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | История чата в базе данных удалена.")
+
     await update.message.reply_text(f"🧹 Окей, {user_mention}, история этого чата очищена.")
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
