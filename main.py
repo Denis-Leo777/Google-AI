@@ -823,52 +823,74 @@ async def _generate_gemini_response(
 
     return reply
 
-# Эта функция заменяет старую do_reanalyze_image
-async def reanalyze_image_from_id(file_id: str, user_question: str, context: ContextTypes.DEFAULT_TYPE) -> str | None:
-    """
-    Асинхронно скачивает изображение по file_id и выполняет его повторный анализ.
-    """
+# Вставьте этот блок перед handle_message
+
+async def reanalyze_image_from_id(file_id: str, old_bot_response: str, user_question: str, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """Асинхронно скачивает изображение и выполняет его повторный анализ с полным контекстом."""
     user_id = context.user_data.get('id', 'Unknown')
     chat_id = context.chat_data.get('id', 'Unknown')
-    log_prefix_handler = "ReanalyzeFromId"
+    log_prefix = "ReanalyzeImgV3"
     
     try:
         img_file = await context.bot.get_file(file_id)
-        image_bytes = await img_file.download_as_bytearray()
-        if not image_bytes:
-            return "❌ Не удалось получить исходное изображение для повторного анализа (файл пуст)."
+        file_bytes = await img_file.download_as_bytearray()
+        if not file_bytes:
+            return "❌ Не удалось получить исходное изображение (файл пуст)."
     except Exception as e:
-        logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Ошибка скачивания файла {file_id}: {e}", exc_info=True)
-        return f"❌ Ошибка при получении изображения для повторного анализа: {e}"
+        logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка скачивания {file_id}: {e}")
+        return f"❌ Ошибка при получении изображения: {e}"
 
-    try:
-        b64_data = base64.b64encode(image_bytes).decode()
-    except Exception as e_b64:
-        logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Ошибка Base64: {e_b64}")
-        return "❌ Ошибка при обработке изображения."
-        
-    effective_context = _get_effective_context_for_task("vision", context, user_id, chat_id, log_prefix_handler)
+    b64_data = base64.b64encode(file_bytes).decode()
+    effective_context = _get_effective_context_for_task("vision", context, user_id, chat_id, log_prefix)
     user_name = context.user_data.get('first_name', 'Пользователь')
 
     prompt_text = (
-        f"Это дополнительный вопрос к изображению, которое ты уже анализировала.\n"
-        f"НОВЫЙ ВОПРОС ОТ ПОЛЬЗОВАТЕЛЯ ({user_name}): \"{user_question}\"\n\n"
-        f"Твоя задача: Пожалуйста, внимательно пересмотри приложенное изображение и ответь на новый вопрос. "
-        f"Не описывай картинку заново, просто дай краткий и точный ответ на конкретный вопрос."
+        f"Это уточняющий вопрос к изображению, которое ты уже видела.\n"
+        f"ТВОЙ ПРЕДЫДУЩИЙ ОТВЕТ:\n---\n{old_bot_response}\n---\n\n"
+        f"НОВЫЙ ВОПРОС ОТ {user_name}: \"{user_question}\"\n\n"
+        f"ЗАДАЧА: Внимательно посмотри на изображение ещё раз и ответь на новый вопрос. Будь краткой и точной."
     )
-
-    mime_type = "image/jpeg" if image_bytes.startswith(b'\xff\xd8\xff') else "image/png"
-    parts = [{"text": prompt_text}, {"inline_data": {"mime_type": mime_type, "data": b64_data}}]
+    parts = [{"text": prompt_text}, {"inline_data": {"mime_type": "image/jpeg", "data": b64_data}}]
     
-    # Мы можем вызвать _generate_gemini_response, так как находимся в асинхронной среде
-    reply = await _generate_gemini_response(
+    return await _generate_gemini_response(
         user_prompt_text_initial=prompt_text,
         chat_history_for_model_initial=[{"role": "user", "parts": parts}],
         user_id=user_id, chat_id=chat_id, context=effective_context,
-        system_instruction=system_instruction_text, log_prefix=log_prefix_handler
+        system_instruction=system_instruction_text, log_prefix=log_prefix
+    )
+
+async def reanalyze_document_from_id(file_id: str, old_bot_response: str, user_question: str, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """Асинхронно скачивает документ и выполняет его повторный анализ."""
+    user_id = context.user_data.get('id', 'Unknown')
+    chat_id = context.chat_data.get('id', 'Unknown')
+    log_prefix = "ReanalyzeDocV1"
+    
+    try:
+        doc_file = await context.bot.get_file(file_id)
+        file_bytes = await doc_file.download_as_bytearray()
+        # Тут должна быть ваша логика декодирования, как в handle_document
+        text = file_bytes.decode('utf-8', errors='ignore')
+    except Exception as e:
+        logger.error(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Ошибка скачивания/чтения {file_id}: {e}")
+        return f"❌ Ошибка при получении документа: {e}"
+
+    user_name = context.user_data.get('first_name', 'Пользователь')
+    prompt_text = (
+        f"Это уточняющий вопрос к документу, который ты уже читала.\n"
+        f"ТВОЙ ПРЕДЫДУЩИЙ ОТВЕТ:\n---\n{old_bot_response}\n---\n\n"
+        f"СОДЕРЖИМОЕ ДОКУМЕНТА (для справки):\n---\n{text[:5000]}\n---\n\n"
+        f"НОВЫЙ ВОПРОС ОТ {user_name}: \"{user_question}\"\n\n"
+        f"ЗАДАЧА: Внимательно перечитай документ и ответь на новый вопрос."
     )
     
-    return reply or "🤖 Модель не дала ответа на уточняющий вопрос."
+    return await _generate_gemini_response(
+        user_prompt_text_initial=prompt_text,
+        chat_history_for_model_initial=[{"role": "user", "parts": [{"text": prompt_text}]}],
+        user_id=user_id, chat_id=chat_id, context=context,
+        system_instruction=system_instruction_text, log_prefix=log_prefix
+    )
+
+# Ваша старая do_reanalyze_image больше не нужна, её можно удалить.
 
 def build_context_for_model(chat_history: list, final_user_prompt: str) -> list:
     """
@@ -909,55 +931,51 @@ def build_context_for_model(chat_history: list, final_user_prompt: str) -> list:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user
-    if not user:
-        logger.warning(f"ChatID: {chat_id} | Не удалось определить пользователя в update. Игнорирование сообщения.")
-        return
+    if not user: return
     user_id = user.id
     message = update.message
-    log_prefix_handler = "HandleMsg"
-    if not message or not message.text:
-        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) Получено сообщение без текста. Пропускается.")
-        return
+    if not message or not message.text: return
 
     original_user_message_text = message.text.strip()
     chat_history = context.chat_data.setdefault("history", [])
 
-    # Сохраняем ID и имя для использования в других функциях
     context.user_data['id'] = user_id
     context.user_data['first_name'] = user.first_name
     context.chat_data['id'] = chat_id
 
-    # ТРИГГЕР ПОВТОРНОГО АНАЛИЗА V4
+    # УНИВЕРСАЛЬНЫЙ ТРИГГЕР ПОВТОРНОГО АНАЛИЗА
     if message.reply_to_message and original_user_message_text and not original_user_message_text.startswith('/'):
         replied_to_id = message.reply_to_message.message_id
+        old_bot_response = message.reply_to_message.text or ""
         
-        # Ищем в истории сообщение бота, на которое ответили
+        # Ищем в истории наш диалог
         for i in range(len(chat_history) - 1, -1, -1):
-            history_item = chat_history[i]
-            if history_item.get("role") == "model" and history_item.get("bot_message_id") == replied_to_id:
-                # Нашли! Теперь смотрим на предыдущее сообщение
-                if i > 0:
-                    prev_entry = chat_history[i-1]
-                    # Если предыдущее сообщение от юзера и содержит картинку - это наш клиент!
-                    if prev_entry.get("role") == "user" and "image_file_id" in prev_entry:
-                        file_id_to_reanalyze = prev_entry["image_file_id"]
-                        user_question = original_user_message_text
-                        
-                        logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Запускаю reanalyze_image_from_id. file_id: ...{file_id_to_reanalyze[-10:]}")
+            if chat_history[i].get("role") == "model" and chat_history[i].get("bot_message_id") == replied_to_id:
+                if i > 0 and chat_history[i-1].get("role") == "user":
+                    prev_user_entry = chat_history[i-1]
+                    content_type = prev_user_entry.get("content_type")
+                    content_id = prev_user_entry.get("content_id")
+                    
+                    if content_type and content_id:
+                        new_reply_text = None
                         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+                        
+                        if content_type == "image":
+                            logger.info(f"Запускаю reanalyze для image: {content_id}")
+                            new_reply_text = await reanalyze_image_from_id(content_id, old_bot_response, original_user_message_text, context)
+                        elif content_type == "document":
+                            logger.info(f"Запускаю reanalyze для document: {content_id}")
+                            new_reply_text = await reanalyze_document_from_id(content_id, old_bot_response, original_user_message_text, context)
+                        # Тут можно добавить elif для "url" и т.д.
 
-                        # Напрямую вызываем новую асинхронную функцию
-                        new_reply_text = await reanalyze_image_from_id(file_id_to_reanalyze, user_question, context)
-                        
-                        # Обновляем историю новым диалогом
-                        user_name = user.first_name or "Пользователь"
-                        chat_history.append({"role": "user", "parts": [{"text": USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + user_question}], "user_id": user_id, "message_id": message.message_id})
-                        sent_message = await send_reply(message, new_reply_text, context)
-                        chat_history.append({"role": "model", "parts": [{"text": new_reply_text}], "bot_message_id": sent_message.message_id if sent_message else None})
-                        
-                        while len(chat_history) > MAX_HISTORY_MESSAGES: chat_history.pop(0)
-                        return # <--- Важнейший выход из функции
-                break # выходим из цикла, т.к. нашли нужное сообщение
+                        if new_reply_text:
+                            # Обновляем историю
+                            user_name = user.first_name or "Пользователь"
+                            chat_history.append({"role": "user", "parts": [{"text": USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + original_user_message_text}], "user_id": user_id, "message_id": message.message_id})
+                            sent_message = await send_reply(message, new_reply_text, context)
+                            chat_history.append({"role": "model", "parts": [{"text": new_reply_text}], "bot_message_id": sent_message.message_id if sent_message else None})
+                            return
+                break
 
     # --- СТАНДАРТНАЯ ОБРАБОТКА (если не был запущен повторный анализ) ---
     
@@ -1107,26 +1125,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_history = context.chat_data.setdefault("history", [])
     
-    # ВАЖНО: Храним именно image_file_id
-    user_text_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + (user_caption or "Пользователь прислал фото.")
+    user_name = update.effective_user.first_name or "Пользователь"
+    user_text_for_history = USER_ID_PREFIX_FORMAT.format(user_id=update.effective_user.id, user_name=user_name) + (update.message.caption or "Пользователь прислал фото.")
+    
+    # ВАЖНО: Универсальная улика
     history_entry_user = {
         "role": "user",
         "parts": [{"text": user_text_for_history}],
-        "image_file_id": photo_file_id,
-        "user_id": user_id,
-        "message_id": message.message_id
+        "content_type": "image",
+        "content_id": update.message.photo[-1].file_id,
+        "user_id": update.effective_user.id,
+        "message_id": update.message.message_id
     }
     chat_history.append(history_entry_user)
 
     reply_for_user_display = f"{IMAGE_DESCRIPTION_PREFIX}{reply_photo}" if reply_photo and not reply_photo.startswith(("🤖", "❌")) else (reply_photo or "🤖 Не удалось проанализировать изображение.")
     
-    sent_message = await send_reply(message, reply_for_user_display, context)
+    sent_message = await send_reply(update.message, reply_for_user_display, context)
 
-    history_entry_model = {
-        "role": "model",
-        "parts": [{"text": reply_for_user_display}],
-        "bot_message_id": sent_message.message_id if sent_message else None
-    }
+    history_entry_model = {"role": "model", "parts": [{"text": reply_for_user_display}], "bot_message_id": sent_message.message_id if sent_message else None}
     chat_history.append(history_entry_model)
     
     while len(chat_history) > MAX_HISTORY_MESSAGES:
@@ -1195,35 +1212,26 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_prompt_doc_for_gemini += REASONING_PROMPT_ADDITION
 
     chat_history = context.chat_data.setdefault("history", [])
-    document_user_history_text = user_caption_original or f"Загружен документ: {doc.file_name}"
+
+    user_name = update.effective_user.first_name or "Пользователь"
+    doc_caption = update.message.caption or f"Загружен документ: {update.message.document.file_name}"
+    user_message_with_id_for_history = USER_ID_PREFIX_FORMAT.format(user_id=update.effective_user.id, user_name=user_name) + doc_caption
+
+    # ВАЖНО: Универсальная улика
     history_entry_user = {
-        "role": "user", "parts": [{"text": USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + document_user_history_text}],
-        "user_id": user_id, "message_id": message.message_id, "document_file_id": doc.file_id, "document_name": doc.file_name
+        "role": "user",
+        "parts": [{"text": user_message_with_id_for_history}],
+        "content_type": "document",
+        "content_id": update.message.document.file_id,
+        "user_id": update.effective_user.id,
+        "message_id": update.message.message_id,
     }
     chat_history.append(history_entry_user)
 
-    history_for_model = list(reversed(chat_history[:-1]))
-    history_for_model.append({"role": "user", "parts": [{"text": user_prompt_doc_for_gemini}]})
-    
-    gemini_reply_doc = await _generate_gemini_response(
-        user_prompt_text_initial=user_prompt_doc_for_gemini,
-        chat_history_for_model_initial=list(reversed(history_for_model)),
-        user_id=user_id,
-        chat_id=chat_id,
-        context=context,
-        system_instruction=system_instruction_text,
-        log_prefix="DocGen"
-    )
+    sent_message = await send_reply(update.message, gemini_reply_doc, context)
 
-    sent_message = None
-    if gemini_reply_doc:
-        sent_message = await send_reply(message, gemini_reply_doc, context)
-
-    history_entry_model_doc = {"role": "model", "parts": [{"text": gemini_reply_doc or "🤖 К сожалению, не удалось обработать документ."}], "bot_message_id": sent_message.message_id if sent_message else None}
-    chat_history.append(history_entry_model_doc)
-
-    if not sent_message:
-         await message.reply_text("🤖 К сожалению, не удалось обработать документ.")
+    history_entry_model = {"role": "model", "parts": [{"text": gemini_reply_doc or "🤖 Не удалось обработать документ."}], "bot_message_id": sent_message.message_id if sent_message else None}
+    chat_history.append(history_entry_model)
 
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         chat_history.pop(0)
