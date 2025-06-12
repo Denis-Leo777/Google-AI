@@ -890,40 +890,37 @@ async def reanalyze_document_from_id(file_id: str, old_bot_response: str, user_q
 
 # Ваша старая do_reanalyze_image больше не нужна, её можно удалить.
 
-def build_context_for_model(chat_history: list, final_user_prompt: str) -> list:
+def build_context_for_model(chat_history: list) -> list:
     """
-    Собирает и фильтрует историю чата, добавляет финальный промпт пользователя.
+    Собирает и фильтрует историю чата для передачи модели.
     Обеспечивает, чтобы история не превышала лимиты и содержала только релевантные части.
     """
-    
-    # 1. Фильтруем историю, оставляя только "чистые" сообщения user и model
     clean_history = []
+    # Собираем только 'чистые' сообщения
     for entry in chat_history:
-        # Убеждаемся, что у записи есть роль и части, и это не системная запись
         if entry.get("role") in ("user", "model") and isinstance(entry.get("parts"), list):
-            # Убираем все лишние ключи, оставляя только 'role' и 'parts'
+            # Копируем только нужные поля, отсекая служебные
             clean_entry = {"role": entry["role"], "parts": []}
             for part in entry["parts"]:
                 if isinstance(part, dict) and "text" in part:
                     clean_entry["parts"].append({"text": part["text"]})
-            # Добавляем, только если есть текстовые части
             if clean_entry["parts"]:
                 clean_history.append(clean_entry)
 
-    # 2. Обрезаем историю по максимальной длине, оставляя место для финального промпта
+    # Обрезаем по длине, начиная с самых свежих сообщений
     history_for_model = []
-    current_chars = len(final_user_prompt)
+    current_chars = 0
     for entry in reversed(clean_history):
         entry_text = "".join(p.get("text", "") for p in entry.get("parts", []))
+        # Простая проверка, чтобы не обрезать посреди сообщения
         if current_chars + len(entry_text) > MAX_CONTEXT_CHARS:
+            logger.info(f"Обрезка истории по символам. Учтено {len(history_for_model)} сообщений из {len(clean_history)}.")
             break
         history_for_model.append(entry)
         current_chars += len(entry_text)
     
-    # 3. Возвращаем в правильном порядке и добавляем финальный промпт
+    # Возвращаем в правильном хронологическом порядке
     history_for_model.reverse()
-    history_for_model.append({"role": "user", "parts": [{"text": final_user_prompt}]})
-    
     return history_for_model
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
