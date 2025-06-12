@@ -1080,15 +1080,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user
     if not user:
-        return
+        logger.warning(f"ChatID: {chat_id} | handle_photo: Не удалось определить пользователя."); return
     user_id = user.id
     message = update.message
+    log_prefix_handler = "PhotoVision"
+
     if not message or not message.photo:
-        return
+        logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix_handler}) В handle_photo не найдено фото."); return
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     
-    # Используем file_id напрямую, это надежнее
     photo_file_id = message.photo[-1].file_id
     
     try:
@@ -1102,11 +1103,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_caption = message.caption or ""
     
-    effective_context_photo = _get_effective_context_for_task("vision", context, user_id, chat_id, "PhotoVision")
+    effective_context_photo = _get_effective_context_for_task("vision", context, user_id, chat_id, log_prefix_handler)
     user_name = user.first_name if user.first_name else "Пользователь"
     current_time_str_photo = get_current_time_str()
     prompt_text_vision = (f"(Текущая дата и время: {current_time_str_photo})\n"
                           f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}Опиши это изображение. Подпись от пользователя: \"{user_caption}\"")
+    prompt_text_vision += REASONING_PROMPT_ADDITION
     
     try:
         b64_data = base64.b64encode(file_bytes).decode()
@@ -1125,25 +1127,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_history = context.chat_data.setdefault("history", [])
     
-    user_name = update.effective_user.first_name or "Пользователь"
-    user_text_for_history = USER_ID_PREFIX_FORMAT.format(user_id=update.effective_user.id, user_name=user_name) + (update.message.caption or "Пользователь прислал фото.")
+    user_text_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + (user_caption or "Пользователь прислал фото.")
     
-    # ВАЖНО: Универсальная улика
     history_entry_user = {
         "role": "user",
         "parts": [{"text": user_text_for_history}],
         "content_type": "image",
-        "content_id": update.message.photo[-1].file_id,
-        "user_id": update.effective_user.id,
-        "message_id": update.message.message_id
+        "content_id": photo_file_id,
+        "user_id": user_id,
+        "message_id": message.message_id
     }
     chat_history.append(history_entry_user)
 
     reply_for_user_display = f"{IMAGE_DESCRIPTION_PREFIX}{reply_photo}" if reply_photo and not reply_photo.startswith(("🤖", "❌")) else (reply_photo or "🤖 Не удалось проанализировать изображение.")
     
-    sent_message = await send_reply(update.message, reply_for_user_display, context)
+    sent_message = await send_reply(message, reply_for_user_display, context)
 
-    history_entry_model = {"role": "model", "parts": [{"text": reply_for_user_display}], "bot_message_id": sent_message.message_id if sent_message else None}
+    history_entry_model = {
+        "role": "model",
+        "parts": [{"text": reply_for_user_display}],
+        "bot_message_id": sent_message.message_id if sent_message else None
+    }
     chat_history.append(history_entry_model)
     
     while len(chat_history) > MAX_HISTORY_MESSAGES:
@@ -1151,9 +1155,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    if not update.effective_user:
+    user = update.effective_user
+    if not user:
         logger.warning(f"ChatID: {chat_id} | handle_document: Не удалось определить пользователя."); return
-    user_id = update.effective_user.id
+    user_id = user.id
     message = update.message
     log_prefix_handler = "DocHandler"
     if not message or not message.document:
@@ -1190,45 +1195,55 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Не удалось извлечь текст из PDF-файла `{doc.file_name}`.")
             return
     else:
-        encodings_to_try = ['utf-8-sig', 'utf-8', 'cp1251']
-        for encoding in encodings_to_try:
+        # Простая логика декодирования
+        try:
+            text = file_bytes.decode('utf-8')
+        except UnicodeDecodeError:
             try:
-                text = file_bytes.decode(encoding)
-                break
+                text = file_bytes.decode('cp1251')
             except UnicodeDecodeError:
-                continue
+                await update.message.reply_text(f"❌ Не удалось прочитать текстовый файл `{doc.file_name}`. Попробуйте кодировку UTF-8 или CP1251.")
+                return
     
     if text is None:
-        await update.message.reply_text(f"❌ Не удалось прочитать файл `{doc.file_name}`. Попробуйте UTF-8.")
+        await update.message.reply_text(f"❌ Не удалось извлечь текст из файла `{doc.file_name}`.")
         return
 
-    user_caption_original = message.caption if message.caption else ""
-    file_context_for_prompt = f"Содержимое файла `{doc.file_name or 'файл'}`:\n```\n{text[:MAX_CONTEXT_CHARS//2]}\n```"
+    user_caption_original = message.caption or ""
+    file_context_for_prompt = f"Содержимое файла `{doc.file_name or 'файл'}`:\n```\n{text[:10000]}\n```" # Ограничим размер для промпта
 
-    user = update.effective_user
     user_name = user.first_name if user.first_name else "Пользователь"
     user_prompt_doc_for_gemini = (f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}"
-                                  f"Проанализируй текст из файла. Комментарий: \"{user_caption_original}\".\n{file_context_for_prompt}")
+                                  f"Проанализируй текст из файла. Мой комментарий: \"{user_caption_original}\".\n{file_context_for_prompt}")
     user_prompt_doc_for_gemini += REASONING_PROMPT_ADDITION
+
+    # ВЫЗОВ МОДЕЛИ, КОТОРОГО НЕ БЫЛО
+    gemini_reply_doc = await _generate_gemini_response(
+        user_prompt_text_initial=user_prompt_doc_for_gemini,
+        chat_history_for_model_initial=[{"role": "user", "parts": [{"text": user_prompt_doc_for_gemini}]}],
+        user_id=user_id,
+        chat_id=chat_id,
+        context=context,
+        system_instruction=system_instruction_text,
+        log_prefix="DocGen"
+    )
 
     chat_history = context.chat_data.setdefault("history", [])
 
-    user_name = update.effective_user.first_name or "Пользователь"
-    doc_caption = update.message.caption or f"Загружен документ: {update.message.document.file_name}"
-    user_message_with_id_for_history = USER_ID_PREFIX_FORMAT.format(user_id=update.effective_user.id, user_name=user_name) + doc_caption
+    doc_caption_for_history = user_caption_original or f"Загружен документ: {doc.file_name}"
+    user_message_with_id_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + doc_caption_for_history
 
-    # ВАЖНО: Универсальная улика
     history_entry_user = {
         "role": "user",
         "parts": [{"text": user_message_with_id_for_history}],
         "content_type": "document",
-        "content_id": update.message.document.file_id,
-        "user_id": update.effective_user.id,
-        "message_id": update.message.message_id,
+        "content_id": doc.file_id,
+        "user_id": user_id,
+        "message_id": message.message_id,
     }
     chat_history.append(history_entry_user)
 
-    sent_message = await send_reply(update.message, gemini_reply_doc, context)
+    sent_message = await send_reply(message, gemini_reply_doc, context)
 
     history_entry_model = {"role": "model", "parts": [{"text": gemini_reply_doc or "🤖 Не удалось обработать документ."}], "bot_message_id": sent_message.message_id if sent_message else None}
     chat_history.append(history_entry_model)
