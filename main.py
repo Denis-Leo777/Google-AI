@@ -1036,20 +1036,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             search_context_str = "\n\n==== РЕЗУЛЬТАТЫ ПОИСКА ====\n" + "\n".join(f"- {s.strip()}" for s in google_results)
             search_actually_performed = True
     
-    # Промпт для модели включает поиск, но в историю он не попадет
-    final_user_prompt = f"{user_message_for_history}{search_context_str}"
+    # === ИСПРАВЛЕНИЕ НАЧИНАЕТСЯ ЗДЕСЬ ===
+
+    # Получаем текущее время
+    current_time_str = get_current_time_str()
+    time_prefix_for_prompt = f"(Текущая дата и время: {current_time_str})\n"
+
+    # Промпт для модели теперь всегда будет содержать время
+    final_user_prompt = f"{time_prefix_for_prompt}{user_message_for_history}{search_context_str}"
 
     # Добавляем в историю ЧИСТОЕ сообщение пользователя
     chat_history.append({
         "role": "user",
-        "parts": [{"text": user_message_for_history}], # <-- Без поиска!
+        "parts": [{"text": user_message_for_history}], # <-- Без поиска и времени!
         "user_id": user_id,
         "message_id": message.message_id
     })
     
+    # === ИСПРАВЛЕНИЕ ЗАКАНЧИВАЕТСЯ ЗДЕСЬ ===
+
     # Собираем контекст из истории. Последнее сообщение будет заменено на промпт с поиском
     context_for_model = build_context_for_model(chat_history)
     if context_for_model and context_for_model[-1]["role"] == "user":
+        # Заменяем последнее чистое сообщение на полный промпт для модели
         context_for_model[-1]["parts"][0]["text"] = final_user_prompt
 
     gemini_reply_text = await _generate_gemini_response(
@@ -1211,10 +1220,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_caption_original = message.caption or ""
+    # === ИСПРАВЛЕНИЕ ===
+    current_time_str_doc = get_current_time_str()
+    time_prefix_for_prompt_doc = f"(Текущая дата и время: {current_time_str_doc})\n"
+    # === КОНЕЦ ИСПРАВЛЕНИЯ ===
+
     file_context_for_prompt = f"Содержимое файла `{doc.file_name or 'файл'}`:\n```\n{text[:10000]}\n```"
 
     user_name = user.first_name if user.first_name else "Пользователь"
-    user_prompt_doc_for_gemini = (f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}"
+    # Добавляем префикс времени в начало промпта
+    user_prompt_doc_for_gemini = (f"{time_prefix_for_prompt_doc}"
+                                  f"{USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)}"
                                   f"Проанализируй текст из файла. Мой комментарий: \"{user_caption_original}\".\n{file_context_for_prompt}")
     user_prompt_doc_for_gemini += REASONING_PROMPT_ADDITION
 
