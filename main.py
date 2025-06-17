@@ -284,12 +284,12 @@ if missing_vars:
 genai.configure(api_key=GOOGLE_API_KEY)
 
 AVAILABLE_MODELS = {
-    'gemini-2.5-flash-preview-05-20': '2.5 Flash - 20.05.25',
+    'gemini-2.5-flash': '2.5 Flash',
     'gemini-2.0-flash': '2.0 Flash',
 }
-DEFAULT_MODEL = 'gemini-2.5-flash-preview-05-20' if 'gemini-2.5-flash-preview-05-20' in AVAILABLE_MODELS else 'gemini-2.0-flash'
+DEFAULT_MODEL = 'gemini-2.5-flash' if 'gemini-2.5-flash' in AVAILABLE_MODELS else 'gemini-2.0-flash'
 
-MAX_CONTEXT_CHARS = 200000
+MAX_CONTEXT_CHARS = 100000
 MAX_HISTORY_MESSAGES = 100
 MAX_OUTPUT_TOKENS = 65536
 DDG_MAX_RESULTS = 10
@@ -298,8 +298,8 @@ RETRY_ATTEMPTS = 5
 RETRY_DELAY_SECONDS = 1
 IMAGE_DESCRIPTION_PREFIX = "[Описание изображения]: "
 YOUTUBE_SUMMARY_PREFIX = "[Конспект видео]: "
-VISION_CAPABLE_KEYWORDS = ['flash', 'pro', 'vision', 'ultra']
-VIDEO_CAPABLE_KEYWORDS = ['gemini-2.5-flash-preview-05-20']
+VISION_CAPABLE_KEYWORDS = ['gemini-2.5-flash', 'pro', 'vision', 'ultra']
+VIDEO_CAPABLE_KEYWORDS = ['gemini-2.5-flash']
 USER_ID_PREFIX_FORMAT = "[User {user_id}; Name: {user_name}]: "
 TARGET_TIMEZONE = "Europe/Moscow"
 
