@@ -15,8 +15,7 @@ from collections import defaultdict
 import psycopg2
 from psycopg2 import pool
 import io
-import html # <-- Убедитесь, что этот импорт есть в начале вашего файла!
-
+import html
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -314,78 +313,29 @@ def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value
 def set_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, value):
     context.user_data[key] = value
 
-# <<< НАЧАЛО ФИНАЛЬНОГО БЛОКА (ВЕРСИЯ 5.0 - ПРОМЫШЛЕННЫЙ СТАНДАРТ) >>>
-def prepare_html_for_telegram(text: str) -> str:
-    """
-    Финальная, надежная функция для подготовки текста к отправке в Telegram в режиме HTML,
-    использующая стандартную библиотеку html.
-    """
-    if not isinstance(text, str) or not text:
-        return ""
-
-    # 1. Заменяем остатки Markdown, если модель их сгенерировала.
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
-    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text, flags=re.DOTALL)
-    text = re.sub(r'```(.*?)```', r'<code>\1</code>', text, flags=re.DOTALL)
-    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text, flags=re.DOTALL)
-
-    # 2. Экранируем ВЕСЬ текст с помощью стандартной, надежной функции.
-    # Это превратит все спецсимволы, включая наши теги, в безопасные HTML-сущности.
-    # Например: <b> -> <b>  и  A<B -> A<B
-    escaped_text = html.escape(text)
-
-    # 3. Теперь, когда все безопасно, "разрешаем" (разэкранируем) только нужные нам теги.
-    # Расширенный список тегов, которые поддерживает Telegram.
-    allowed_tags_map = {
-        '<b>': '<b>', '</b>': '</b>',
-        '<i>': '<i>', '</i>': '</i>',
-        '<code>': '<code>', '</code>': '</code>',
-        '<pre>': '<pre>', '</pre>': '</pre>',
-        '<u>': '<u>', '</u>': '</u>',
-        '<s>': '<s>', '</s>': '</s>',
-        '<sup>': '<sup>', '</sup>': '</sup>',
-        '<sub>': '<sub>', '</sub>': '</sub>',
-        # Тег для спойлера
-        '<span class="tg-spoiler">': '<span class="tg-spoiler">', '</span>': '</span>',
-    }
-    
-    final_text = escaped_text
-    for escaped, unescaped in allowed_tags_map.items():
-        final_text = final_text.replace(escaped, unescaped)
-        
-    return final_text
-
-
 async def send_reply(target_message: Message, text: str, context: ContextTypes.DEFAULT_TYPE) -> Message | None:
     MAX_MESSAGE_LENGTH = 4096
 
     def smart_chunker(text_to_chunk, chunk_size):
         chunks = []
-        if not text_to_chunk: return [""]
         remaining_text = text_to_chunk
         while len(remaining_text) > 0:
             if len(remaining_text) <= chunk_size:
                 chunks.append(remaining_text)
                 break
-            split_pos = -1
-            for delimiter in ['\n', ' ', '.']:
-                pos = remaining_text.rfind(delimiter, 0, chunk_size)
-                if pos != -1:
-                    split_pos = pos + 1 if delimiter == '.' else pos
-                    break
+
+            split_pos = remaining_text.rfind('\n', 0, chunk_size)
+            if split_pos == -1:
+                split_pos = remaining_text.rfind(' ', 0, chunk_size)
+
             if split_pos == -1 or split_pos == 0:
                 split_pos = chunk_size
+
             chunks.append(remaining_text[:split_pos])
             remaining_text = remaining_text[split_pos:].lstrip()
         return chunks
-    
-    if not text:
-        logger.warning("Попытка отправить пустой ответ. Отменено.")
-        return None
 
-    final_safe_text = prepare_html_for_telegram(text)
-
-    reply_chunks = smart_chunker(final_safe_text, MAX_MESSAGE_LENGTH)
+    reply_chunks = smart_chunker(text, MAX_MESSAGE_LENGTH)
     sent_message = None
     chat_id = target_message.chat_id
     message_id = target_message.message_id
@@ -393,34 +343,50 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
 
     try:
         for i, chunk in enumerate(reply_chunks):
-            if not chunk or chunk.isspace(): continue
             if i == 0:
                 sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, reply_to_message_id=message_id, parse_mode=ParseMode.HTML)
             else:
                 sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML)
             await asyncio.sleep(0.1)
         return sent_message
-    except BadRequest as e_html:
-        if "Can't parse entities" in str(e_html).lower():
-            logger.critical(f"UserID: {current_user_id}, ChatID: {chat_id} | ФИНАЛЬНАЯ ЗАЩИТА НЕ СРАБОТАЛА! Ошибка: {e_html}. Отправляю как обычный текст.")
+    except BadRequest as e_md:
+        if "Can't parse entities" in str(e_md) or "can't parse" in str(e_md).lower() or "reply message not found" in str(e_md).lower():
+            problematic_chunk_preview = "N/A"
+            if 'i' in locals() and i < len(reply_chunks):
+                problematic_chunk_preview = reply_chunks[i][:500].replace('\n', '\\n')
+
+            logger.warning(f"UserID: {current_user_id}, ChatID: {chat_id} | Ошибка парсинга Markdown или ответа на сообщение ({message_id}): {e_md}. Проблемный чанк (начало): '{problematic_chunk_preview}...'. Попытка отправить как обычный текст.")
             try:
-                plain_text = re.sub(r'<[^>]*>', '', text)
-                plain_chunks = smart_chunker(plain_text, MAX_MESSAGE_LENGTH)
+                sent_message = None
+                full_text_plain = text
+                plain_chunks = [full_text_plain[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(full_text_plain), MAX_MESSAGE_LENGTH)]
+
                 for i_plain, chunk_plain in enumerate(plain_chunks):
-                     if not chunk_plain or chunk_plain.isspace(): continue
-                     if i_plain == 0: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain, reply_to_message_id=message_id)
-                     else: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain)
+                     if i_plain == 0:
+                         sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain, reply_to_message_id=message_id)
+                     else:
+                         sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain)
                      await asyncio.sleep(0.1)
                 return sent_message
             except Exception as e_plain:
                 logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить даже как обычный текст: {e_plain}", exc_info=True)
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text="❌ Не удалось отправить ответ.")
+                except Exception as e_final_send:
+                    logger.critical(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить сообщение об ошибке: {e_final_send}")
         else:
-            logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Неизвестная ошибка BadRequest (HTML): {e_html}", exc_info=True)
+            logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Ошибка при отправке ответа (Markdown): {e_md}", exc_info=True)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка при отправке ответа: {str(e_md)[:100]}...")
+            except Exception as e_error_send:
+                logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить сообщение об ошибке отправки: {e_error_send}")
     except Exception as e_other:
         logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Непредвиденная ошибка при отправке ответа: {e_other}", exc_info=True)
+        try:
+            await context.bot.send_message(chat_id=chat_id, text="❌ Произошла непредвиденная ошибка при отправке ответа.")
+        except Exception as e_unexp_send:
+            logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить сообщение о непредвиденной ошибке: {e_unexp_send}")
     return None
-
-# <<< КОНЕЦ ФИНАЛЬНОГО БЛОКА >>>
 
 def _get_text_from_response(response_obj, user_id_for_log, chat_id_for_log, log_prefix_for_func) -> str | None:
     reply_text = None
