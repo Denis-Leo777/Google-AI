@@ -313,26 +313,33 @@ def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value
 def set_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, value):
     context.user_data[key] = value
 
-# <<< НАЧАЛО БЛОКА ИСПРАВЛЕНИЯ (ФИНАЛЬНАЯ ВЕРСИЯ) >>>
+# <<< НАЧАЛО БЛОКА ИСПРАВЛЕНИЯ (ВЕРСИЯ 4.0 - БРОНЕБОЙНАЯ) >>>
 def prepare_html_for_telegram(text: str) -> str:
     """
     Финальная, надежная функция для подготовки текста к отправке в Telegram в режиме HTML.
     Сначала заменяет Markdown, потом экранирует ВСЕ спецсимволы,
     а затем "разэкранирует" только разрешенные HTML-теги.
     """
-    # 1. Заменяем остатки Markdown, если модель их сгенерировала
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    text = re.sub(r'```(.*?)```', r'<code>\1</code>', text, flags=re.DOTALL)
-    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
+    # 0. Исходный текст от модели
+    # Пример: "Текст с **markdown** и формулой A<B."
     
+    # 1. Заменяем остатки Markdown, если модель их сгенерировала
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\\1</b>', text)
+    text = re.sub(r'\*(.*?)\*', r'<i>\\1</i>', text)
+    text = re.sub(r'```(.*?)```', r'<code>\\1</code>', text, flags=re.DOTALL)
+    text = re.sub(r'`(.*?)`', r'<code>\\1</code>', text)
+    # Теперь текст: "Текст с <b>markdown</b> и формулой A<B."
+
     # 2. Экранируем амперсанд в первую очередь, т.к. он используется для экранирования
     text = text.replace('&', '&')
-    
-    # 3. Экранируем угловые скобки
+    # Текст не изменился, т.к. амперсандов не было.
+
+    # 3. Экранируем угловые скобки. Это "обезвредит" и теги, и случайные символы
     text = text.replace('<', '<')
     text = text.replace('>', '>')
-    
+    # Теперь текст: "Текст с <b>markdown</b> и формулой A<B."
+    # На этом этапе текст полностью безопасен для отправки.
+
     # 4. Теперь, когда все "опасно", "разрешаем" наши теги обратно
     allowed_tags_map = {
         '<b>': '<b>', '</b>': '</b>',
@@ -341,14 +348,15 @@ def prepare_html_for_telegram(text: str) -> str:
     }
     for escaped, unescaped in allowed_tags_map.items():
         text = text.replace(escaped, unescaped)
-        
+    
+    # Финальный, безопасный текст: "Текст с <b>markdown</b> и формулой A<B."
+    # Этот текст Telegram обработает корректно.
     return text
 
 async def send_reply(target_message: Message, text: str, context: ContextTypes.DEFAULT_TYPE) -> Message | None:
     MAX_MESSAGE_LENGTH = 4096
 
     def smart_chunker(text_to_chunk, chunk_size):
-        # Эта внутренняя функция остается без изменений
         chunks = []
         remaining_text = text_to_chunk
         while len(remaining_text) > 0:
@@ -380,15 +388,17 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
             await asyncio.sleep(0.1)
         return sent_message
     except BadRequest as e_html:
+        # Этот блок теперь должен срабатывать только в самых исключительных, непредсказуемых случаях.
         if "Can't parse entities" in str(e_html).lower():
             problematic_chunk_preview = "N/A"
             if 'i' in locals() and i < len(reply_chunks):
                 problematic_chunk_preview = reply_chunks[i][:500].replace('\n', '\\n')
-            logger.critical(f"UserID: {current_user_id}, ChatID: {chat_id} | ФИНАЛЬНАЯ ЗАЩИТА НЕ СРАБОТАЛА! Ошибка: {e_html}. ИСХОДНЫЙ ТЕКСТ: '{text[:500]}...'. Проблемный чанк: '{problematic_chunk_preview}...'. Отправляю как обычный текст.")
+            logger.critical(f"UserID: {current_user_id}, ChatID: {chat_id} | ЭКРАНИРОВАНИЕ НЕ СРАБОТАЛО! Ошибка: {e_html}. ИСХОДНЫЙ ТЕКСТ: '{text[:500]}...'. Проблемный чанк: '{problematic_chunk_preview}...'. Отправляю как обычный текст.")
             
             try:
                 sent_message = None
-                plain_text = re.sub(r'<[^>]*>', '', text) # Удаляем все теги из исходного текста
+                # Для запасного варианта удаляем все теги из ИСХОДНОГО текста
+                plain_text = re.sub(r'<[^>]*>', '', text)
                 plain_chunks = [plain_text[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(plain_text), MAX_MESSAGE_LENGTH)]
                 for i_plain, chunk_plain in enumerate(plain_chunks):
                      if i_plain == 0: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain, reply_to_message_id=message_id)
@@ -399,7 +409,7 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
                 logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить даже как обычный текст: {e_plain}", exc_info=True)
                 await context.bot.send_message(chat_id=chat_id, text="❌ Не удалось отправить ответ.")
         else:
-            logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Ошибка при отправке ответа (HTML): {e_html}", exc_info=True)
+            logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Неизвестная ошибка BadRequest (HTML): {e_html}", exc_info=True)
     except Exception as e_other:
         logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Непредвиденная ошибка при отправке ответа: {e_other}", exc_info=True)
     return None
