@@ -344,9 +344,9 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
     try:
         for i, chunk in enumerate(reply_chunks):
             if i == 0:
-                sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, reply_to_message_id=message_id, parse_mode=ParseMode.MARKDOWN)
+                sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, reply_to_message_id=message_id, parse_mode=ParseMode.HTML)
             else:
-                sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.MARKDOWN)
+                sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML)
             await asyncio.sleep(0.1)
         return sent_message
     except BadRequest as e_md:
@@ -635,7 +635,7 @@ async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 5. Отправляем результат пользователю
     logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Транскрипция успешна.")
-    await message.reply_text(f"📝 *Транскрипт:*\n\n{transcribed_text}", parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text(f"📝 *Транскрипт:*\n\n{transcribed_text}", parse_mode=ParseMode.HMTL)
 
 # <<< КОНЕЦ: НОВЫЙ БЛОК ДЛЯ КОМАНДЫ ТРАНСКРИПЦИИ >>>
 
@@ -656,7 +656,7 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
             reply_text = f"Ок, {user_mention}, твоя модель установлена: **{model_name}**"
             logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Модель установлена на {model_name} для {user_mention}.")
             try:
-                await query.edit_message_text(reply_text, parse_mode=ParseMode.MARKDOWN)
+                await query.edit_message_text(reply_text, parse_mode=ParseMode.HTML)
             except BadRequest as e_md:
                  if "Message is not modified" in str(e_md):
                      logger.info(f"UserID: {user_id}, ChatID: {chat_id} | Пользователь {user_mention} выбрал ту же модель: {model_name}")
@@ -667,10 +667,10 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
                          await query.edit_message_text(reply_text.replace('**', ''))
                      except Exception as e_edit_plain:
                           logger.error(f"UserID: {user_id}, ChatID: {chat_id} | Не удалось изменить сообщение даже как простой текст для {user_mention}: {e_edit_plain}. Отправляю новое.")
-                          await context.bot.send_message(chat_id=chat_id, text=reply_text, parse_mode=ParseMode.MARKDOWN)
+                          await context.bot.send_message(chat_id=chat_id, text=reply_text, parse_mode=ParseMode.HTML)
             except Exception as e:
                 logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Не удалось изменить сообщение (другая ошибка) для {user_mention}: {e}. Отправляю новое.", exc_info=True)
-                await context.bot.send_message(chat_id=chat_id, text=reply_text, parse_mode=ParseMode.MARKDOWN)
+                await context.bot.send_message(chat_id=chat_id, text=reply_text, parse_mode=ParseMode.HTML)
         else:
             logger.warning(f"UserID: {user_id}, ChatID: {chat_id} | Пользователь {user_mention} выбрал неизвестную модель: {selected}")
             try:
@@ -1292,7 +1292,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     allowed_mime_types = ('application/pdf', 'application/json', 'application/xml', 'application/csv')
     mime_type = doc.mime_type or "application/octet-stream"
     if not (any(mime_type.startswith(p) for p in allowed_mime_prefixes) or mime_type in allowed_mime_types):
-        await update.message.reply_text(f"⚠️ Пока могу читать только текстовые файлы и PDF... Ваш тип: `{mime_type}`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(f"⚠️ Пока могу читать только текстовые файлы и PDF... Ваш тип: `{mime_type}`", parse_mode=ParseMode.HTML)
         return
 
     if doc.file_size > 15 * 1024 * 1024:
