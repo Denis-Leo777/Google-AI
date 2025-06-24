@@ -1012,10 +1012,16 @@ async def perform_web_search(query: str, context: ContextTypes.DEFAULT_TYPE) -> 
         
     return None, None
 
+# Было (упрощенная схема)
+# 1. user_message_for_history = "Привет"
+# 2. search_context_str = "Результаты поиска..."
+# 3. final_user_prompt = "Время... Привет... Результаты поиска..."
+# 4. chat_history.append({"text": "Привет"}) # Добавили в историю "чистый" текст
+# 5. context_for_model = build_context_for_model(chat_history)
+# 6. context_for_model[-1]["parts"][0]["text"] = final_user_prompt # Подменили последнее сообщение
+
+# Станет (новая, более чистая логика)
 async def process_text_query(update: Update, context: ContextTypes.DEFAULT_TYPE, text_to_process: str):
-    """
-    Основная логика обработки текстового запроса. Выполняет поиск, вызывает модель и отправляет ответ.
-    """
     chat_id = update.effective_chat.id
     user = update.effective_user
     message = update.message
@@ -1023,23 +1029,24 @@ async def process_text_query(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     chat_history = context.chat_data.setdefault("history", [])
     user_name = user.first_name if user.first_name else "Пользователь"
-    user_message_for_history = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name) + text_to_process
-
-    # --- Универсальный Поиск ---
+    
+    # --- Сначала готовим ВСЕ части промпта ---
     search_context_str = ""
     search_actually_performed = False
     search_results, search_source = await perform_web_search(text_to_process, context)
     if search_results:
         search_context_str = f"\n\n==== РЕЗУЛЬТАТЫ ПОИСКА ({search_source}) ====\n{search_results}"
         search_actually_performed = True
-            
-    # --- Формирование промпта и вызов модели ---
+        
     current_time_str = get_current_time_str()
     time_prefix_for_prompt = f"(Текущая дата и время: {current_time_str})\n"
-    final_user_prompt = f"{time_prefix_for_prompt}{user_message_for_history}{search_context_str}"
+    user_message_prefix = USER_ID_PREFIX_FORMAT.format(user_id=user_id, user_name=user_name)
+    
+    # --- Собираем ИТОГОВЫЙ промпт, который пойдет в модель И в историю ---
+    final_user_prompt_for_model_and_history = f"{time_prefix_for_prompt}{user_message_prefix}{text_to_process}{search_context_str}"
 
     history_entry_user = {
-        "role": "user", "parts": [{"text": user_message_for_history}],
+        "role": "user", "parts": [{"text": final_user_prompt_for_model_and_history}], # Используем итоговый промпт
         "user_id": user_id, "message_id": message.message_id
     }
     if message.voice:
@@ -1047,12 +1054,13 @@ async def process_text_query(update: Update, context: ContextTypes.DEFAULT_TYPE,
         history_entry_user["content_id"] = message.voice.file_id
     chat_history.append(history_entry_user)
 
+    # --- Теперь история и данные для модели идентичны ---
     context_for_model = build_context_for_model(chat_history)
-    if context_for_model and context_for_model[-1]["role"] == "user":
-        context_for_model[-1]["parts"][0]["text"] = final_user_prompt
+    
+    # Больше не нужно модифицировать context_for_model[-1]
 
     gemini_reply_text = await _generate_gemini_response(
-        user_prompt_text_initial=final_user_prompt,
+        user_prompt_text_initial=final_user_prompt_for_model_and_history, # Передаем тот же самый текст для логов
         chat_history_for_model_initial=context_for_model,
         user_id=user_id, chat_id=chat_id, context=context, system_instruction=system_instruction_text,
         is_text_request_with_search=search_actually_performed
@@ -1070,7 +1078,6 @@ async def process_text_query(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     while len(chat_history) > MAX_HISTORY_MESSAGES:
         chat_history.pop(0)
-
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1133,7 +1140,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['id'] = chat_id
     
     # --- 1. Обработка уточняющих вопросов (re-analyze) ---
-    if message.reply_to_message and not original_text.startswith('/'):
+    if message.reply_to_message and message.reply_to_message.from_user.id == context.bot.id and not original_text.startswith('/'):
         # Логика re-analyze остается без изменений
         replied_to_id = message.reply_to_message.message_id
         old_bot_response = message.reply_to_message.text or ""
