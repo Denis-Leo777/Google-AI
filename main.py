@@ -15,6 +15,7 @@ from collections import defaultdict
 import psycopg2
 from psycopg2 import pool
 import io
+import html # <-- Убедитесь, что этот импорт есть в начале вашего файла!
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -313,42 +314,46 @@ def get_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, default_value
 def set_user_setting(context: ContextTypes.DEFAULT_TYPE, key: str, value):
     context.user_data[key] = value
 
-# <<< НАЧАЛО ФИНАЛЬНОГО БЛОКА ОБРАБОТКИ ОТВЕТА >>>
-
+# <<< НАЧАЛО ФИНАЛЬНОГО БЛОКА (ВЕРСИЯ 5.0 - ПРОМЫШЛЕННЫЙ СТАНДАРТ) >>>
 def prepare_html_for_telegram(text: str) -> str:
     """
-    Финальная, надежная функция для подготовки текста к отправке в Telegram в режиме HTML.
-    Сначала заменяет Markdown, потом экранирует ВСЕ спецсимволы,
-    а затем "разэкранирует" только разрешенные HTML-теги.
+    Финальная, надежная функция для подготовки текста к отправке в Telegram в режиме HTML,
+    использующая стандартную библиотеку html.
     """
-    if not text:
+    if not isinstance(text, str) or not text:
         return ""
 
     # 1. Заменяем остатки Markdown, если модель их сгенерировала.
-    # ИСПРАВЛЕНА КРИТИЧЕСКАЯ ОШИБКА: было \\1, стало \1
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
     text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text, flags=re.DOTALL)
     text = re.sub(r'```(.*?)```', r'<code>\1</code>', text, flags=re.DOTALL)
     text = re.sub(r'`(.*?)`', r'<code>\1</code>', text, flags=re.DOTALL)
 
-    # 2. Экранируем амперсанд в первую очередь, т.к. он используется для экранирования
-    text = text.replace('&', '&')
-    
-    # 3. Экранируем угловые скобки. Это "обезвредит" и теги, и случайные символы
-    text = text.replace('<', '<')
-    text = text.replace('>', '>')
-    
-    # 4. Теперь, когда все "опасно", "разрешаем" наши теги обратно
-    # Важно: заменяем сначала полные теги, потом одиночные, если они есть.
+    # 2. Экранируем ВЕСЬ текст с помощью стандартной, надежной функции.
+    # Это превратит все спецсимволы, включая наши теги, в безопасные HTML-сущности.
+    # Например: <b> -> <b>  и  A<B -> A<B
+    escaped_text = html.escape(text)
+
+    # 3. Теперь, когда все безопасно, "разрешаем" (разэкранируем) только нужные нам теги.
+    # Расширенный список тегов, которые поддерживает Telegram.
     allowed_tags_map = {
         '<b>': '<b>', '</b>': '</b>',
         '<i>': '<i>', '</i>': '</i>',
         '<code>': '<code>', '</code>': '</code>',
+        '<pre>': '<pre>', '</pre>': '</pre>',
+        '<u>': '<u>', '</u>': '</u>',
+        '<s>': '<s>', '</s>': '</s>',
+        '<sup>': '<sup>', '</sup>': '</sup>',
+        '<sub>': '<sub>', '</sub>': '</sub>',
+        # Тег для спойлера
+        '<span class="tg-spoiler">': '<span class="tg-spoiler">', '</span>': '</span>',
     }
+    
+    final_text = escaped_text
     for escaped, unescaped in allowed_tags_map.items():
-        text = text.replace(escaped, unescaped)
+        final_text = final_text.replace(escaped, unescaped)
         
-    return text
+    return final_text
 
 
 async def send_reply(target_message: Message, text: str, context: ContextTypes.DEFAULT_TYPE) -> Message | None:
@@ -362,23 +367,14 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
             if len(remaining_text) <= chunk_size:
                 chunks.append(remaining_text)
                 break
-            # Ищем разделитель, предпочитая перенос строки
             split_pos = -1
-            # Ищем сначала по переносу строки, потом по пробелу, потом по точке
             for delimiter in ['\n', ' ', '.']:
-                split_pos = remaining_text.rfind(delimiter, 0, chunk_size)
-                if split_pos != -1:
-                    # Для переноса строки и пробела, берем позицию разделителя
-                    if delimiter in ['\n', ' ']:
-                        break
-                    # Для точки, берем позицию ПОСЛЕ точки
-                    else:
-                        split_pos += 1
-                        break
-            
+                pos = remaining_text.rfind(delimiter, 0, chunk_size)
+                if pos != -1:
+                    split_pos = pos + 1 if delimiter == '.' else pos
+                    break
             if split_pos == -1 or split_pos == 0:
                 split_pos = chunk_size
-
             chunks.append(remaining_text[:split_pos])
             remaining_text = remaining_text[split_pos:].lstrip()
         return chunks
@@ -387,7 +383,6 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
         logger.warning("Попытка отправить пустой ответ. Отменено.")
         return None
 
-    # Применяем единую, надежную функцию очистки
     final_safe_text = prepare_html_for_telegram(text)
 
     reply_chunks = smart_chunker(final_safe_text, MAX_MESSAGE_LENGTH)
@@ -398,7 +393,7 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
 
     try:
         for i, chunk in enumerate(reply_chunks):
-            if not chunk: continue
+            if not chunk or chunk.isspace(): continue
             if i == 0:
                 sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk, reply_to_message_id=message_id, parse_mode=ParseMode.HTML)
             else:
@@ -406,21 +401,21 @@ async def send_reply(target_message: Message, text: str, context: ContextTypes.D
             await asyncio.sleep(0.1)
         return sent_message
     except BadRequest as e_html:
-        # Этот блок теперь должен быть крайней мерой
-        logger.critical(f"UserID: {current_user_id}, ChatID: {chat_id} | БРОНЕБОЙНАЯ ЗАЩИТА НЕ СРАБОТАЛА! Ошибка: {e_html}. Отправляю как обычный текст.")
-        try:
-            sent_message = None
-            plain_text = re.sub(r'<[^>]*>', '', text) # Удаляем все теги из ИСХОДНОГО текста
-            plain_chunks = smart_chunker(plain_text, MAX_MESSAGE_LENGTH)
-            for i_plain, chunk_plain in enumerate(plain_chunks):
-                 if not chunk_plain: continue
-                 if i_plain == 0: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain, reply_to_message_id=message_id)
-                 else: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain)
-                 await asyncio.sleep(0.1)
-            return sent_message
-        except Exception as e_plain:
-            logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить даже как обычный текст: {e_plain}", exc_info=True)
-            await context.bot.send_message(chat_id=chat_id, text="❌ Произошла критическая ошибка форматирования. Не удалось отправить ответ.")
+        if "Can't parse entities" in str(e_html).lower():
+            logger.critical(f"UserID: {current_user_id}, ChatID: {chat_id} | ФИНАЛЬНАЯ ЗАЩИТА НЕ СРАБОТАЛА! Ошибка: {e_html}. Отправляю как обычный текст.")
+            try:
+                plain_text = re.sub(r'<[^>]*>', '', text)
+                plain_chunks = smart_chunker(plain_text, MAX_MESSAGE_LENGTH)
+                for i_plain, chunk_plain in enumerate(plain_chunks):
+                     if not chunk_plain or chunk_plain.isspace(): continue
+                     if i_plain == 0: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain, reply_to_message_id=message_id)
+                     else: sent_message = await context.bot.send_message(chat_id=chat_id, text=chunk_plain)
+                     await asyncio.sleep(0.1)
+                return sent_message
+            except Exception as e_plain:
+                logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Не удалось отправить даже как обычный текст: {e_plain}", exc_info=True)
+        else:
+            logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Неизвестная ошибка BadRequest (HTML): {e_html}", exc_info=True)
     except Exception as e_other:
         logger.error(f"UserID: {current_user_id}, ChatID: {chat_id} | Непредвиденная ошибка при отправке ответа: {e_other}", exc_info=True)
     return None
