@@ -635,7 +635,7 @@ async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 5. Отправляем результат пользователю
     logger.info(f"UserID: {user_id}, ChatID: {chat_id} | ({log_prefix}) Транскрипция успешна.")
-    await message.reply_text(f"📝 *Транскрипт:*\n\n{transcribed_text}", parse_mode=ParseMode.HMTL)
+    await message.reply_text(f"📝 *Транскрипт:*\n\n{transcribed_text}", parse_mode=ParseMode.HTML)
 
 # <<< КОНЕЦ: НОВЫЙ БЛОК ДЛЯ КОМАНДЫ ТРАНСКРИПЦИИ >>>
 
