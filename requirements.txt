@@ -9,3 +9,4 @@ youtube-transcript-api
 pdfminer.six
 aiohttp
 httpx
+beautifulsoup4
