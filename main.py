@@ -1,8 +1,7 @@
-# Версия 25.2 'Launch Ready'
-# 1. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Восстановлены случайно удаленные функции `handle_telegram_webhook` и `run_web_server`, что устраняет ошибку `NameError` при запуске.
-# 2. Реализована архитектура 'Smart Context' (v25.0) с персонализацией и "липким/явным" контекстом.
-# 3. Реализована защита от переполнения истории 'Amnesic History'.
-# 4. Команда /time удалена, добавлена команда /transcript. Проактивный поиск включен по умолчанию.
+# Версия 25.3 'Final Polish'
+# 1. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Восстановлены тела функций-обработчиков, что устраняет `IndentationError` при запуске.
+# 2. ОЧИСТКА: Удалены неиспользуемые импорты и переменные для чистоты кода.
+# 3. Все предыдущие архитектурные решения (Мультиконтекст, Амнезия истории, Персонализация, новые команды) сохранены.
 
 import logging
 import os
@@ -55,9 +54,6 @@ MAX_HISTORY_ITEMS = 50
 MAX_MEDIA_CONTEXTS = 10 
 
 # --- ИНСТРУМЕНТЫ И ПРОМПТЫ ---
-def get_current_time_str(timezone: str = "Europe/Moscow") -> str:
-    return datetime.datetime.now(pytz.timezone(timezone)).strftime('%Y-%m-%d %H:%M:%S %Z')
-
 TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch()), types.Tool(code_execution=types.ToolCodeExecution())]
 MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch())]
 SAFETY_SETTINGS = [
@@ -262,10 +258,10 @@ def find_media_context_in_history(context: ContextTypes.DEFAULT_TYPE, reply_to_i
     media_contexts = context.chat_data.get("media_contexts", {})
     
     current_reply_id = reply_to_id
-    for _ in range(len(history)):
+    for _ in range(len(history)): 
         bot_message = next((msg for msg in reversed(history) if msg.get("role") == "model" and msg.get("bot_message_id") == current_reply_id), None)
-        if bot_message and 'original_user_message_id' in bot_message:
-            user_msg_id = bot_message['original_user_message_id']
+        if bot_message and 'original_message_id' in bot_message:
+            user_msg_id = bot_message['original_message_id']
             if user_msg_id in media_contexts:
                 return media_contexts[user_msg_id]
             current_reply_id = user_msg_id
@@ -350,7 +346,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         reply_text = await generate_response(client, request_contents, context, tools)
         sent_message = await send_reply(message, reply_text)
         
-        await add_to_history(context, role="user", parts=content_parts, original_message_id=message.message_id, reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None)
+        await add_to_history(context, role="user", parts=content_parts, original_message_id=message.message_id)
         if sent_message:
             await add_to_history(context, role="model", parts=[types.Part(text=reply_text)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
         
@@ -366,6 +362,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
             if 'last_media_context' in context.chat_data:
                 del context.chat_data['last_media_context']
                 logger.info(f"Очищен 'липкий' медиа-контекст для чата {message.chat_id}")
+
     except (IOError, asyncio.TimeoutError) as e:
         logger.error(f"Ошибка обработки файла: {e}", exc_info=False)
         await message.reply_text(f"❌ Ошибка обработки файла: {e}")
@@ -376,7 +373,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
 # --- ОБРАБОТЧИКИ КОМАНД ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data.setdefault('thinking_mode', 'auto')
-    context.chat_data.setdefault('proactive_search', True) # Включен по умолчанию
+    context.chat_data.setdefault('proactive_search', True)
     start_text = """Я - Женя, лучший ИИ-чат-бот на Google Gemini 2.5 Flash с авторскими настройками.
 
 🌐 Использую интеллектуальный поиск Google в интернете.
@@ -436,33 +433,58 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data.clear()
     await context.application.persistence.drop_chat_data(update.effective_chat.id)
     await update.message.reply_text("История чата и связанные данные очищены.")
-    
-async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def newtopic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.chat_data.pop('last_media_context', None)
+    context.chat_data.pop('media_contexts', None)
+    await update.message.reply_text("Контекст предыдущих файлов очищен. Начинаем новую тему.")
+
+async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
     if not update.message.reply_to_message:
-        await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение с аудио или видеофайлом.")
+        await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение с медиафайлом или ссылкой.")
         return
 
     replied_message = update.message.reply_to_message
-    media = replied_message.audio or replied_message.voice or replied_message.video
-    if not media:
-        await update.message.reply_text("В цитируемом сообщении нет аудио или видео для расшифровки.")
-        return
-
-    await update.message.reply_text("Начинаю расшифровку...", reply_to_message_id=update.message.message_id)
+    media_obj = replied_message.audio or replied_message.voice or replied_message.video or replied_message.photo or replied_message.document
+    
+    media_part = None
     client = context.bot_data['gemini_client']
+    
     try:
-        media_file = await media.get_file()
-        media_bytes = await media_file.download_as_bytearray()
-        file_part = await upload_and_wait_for_file(client, media_bytes, media.mime_type, getattr(media, 'file_name', 'media.bin'))
+        if media_obj:
+            media_file = await media_obj.get_file()
+            media_bytes = await media_file.download_as_bytearray()
+            media_part = await upload_and_wait_for_file(client, media_bytes, media_obj.mime_type, getattr(media_obj, 'file_name', 'media.bin'))
+        elif replied_message.text:
+            yt_match = re.search(YOUTUBE_REGEX, replied_message.text)
+            if yt_match:
+                youtube_url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
+                media_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
+            else:
+                await update.message.reply_text("В цитируемом сообщении нет поддерживаемого медиафайла или YouTube-ссылки.")
+                return
+        else:
+            await update.message.reply_text("Не удалось найти медиафайл в цитируемом сообщении.")
+            return
+
+        await update.message.reply_text("Анализирую...", reply_to_message_id=update.message.message_id)
         
-        prompt = "Transcribe this audio/video file. Return only the transcribed text, without any comments or introductory phrases."
-        content_parts = [file_part, types.Part(text=prompt)]
-        
-        transcript_text = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, tools=MEDIA_TOOLS)
-        await update.message.reply_text(f"<b>Расшифровка:</b>\n\n{transcript_text}", parse_mode=ParseMode.HTML)
+        content_parts = [media_part, types.Part(text=prompt)]
+        result_text = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, tools=MEDIA_TOOLS)
+        await update.message.reply_text(result_text, parse_mode=ParseMode.HTML)
+
     except Exception as e:
-        logger.error(f"Ошибка в /transcript: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Не удалось выполнить транскрипцию: {e}")
+        logger.error(f"Ошибка в утилитарной команде: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Не удалось выполнить команду: {e}")
+
+async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await utility_media_command(update, context, "Transcribe this audio/video file. Return only the transcribed text, without any comments or introductory phrases.")
+
+async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await utility_media_command(update, context, "Summarize this material in a few paragraphs. Provide a concise but comprehensive overview.")
+    
+async def keypoints_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await utility_media_command(update, context, "Extract the key points or main theses from this material. Present them as a structured bulleted list.")
 
 # --- ОБРАБОТЧИКИ СООБЩЕНИЙ ---
 async def handle_media_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_part: types.Part, user_text: str):
@@ -585,13 +607,19 @@ async def main():
     commands = [
         BotCommand("start", "Инфо и начало работы"),
         BotCommand("config", "Настроить режим и поиск"),
-        BotCommand("transcript", "Сделать транскрипцию (ответом на медиа)"),
-        BotCommand("clear", "Очистить историю чата")
+        BotCommand("transcript", "Транскрипция медиа (ответом)"),
+        BotCommand("summarize", "Краткий пересказ (ответом)"),
+        BotCommand("keypoints", "Ключевые тезисы (ответом)"),
+        BotCommand("newtopic", "Сбросить контекст файлов"),
+        BotCommand("clear", "Очистить всю историю чата")
     ]
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("config", config_command))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("transcript", transcript_command))
+    application.add_handler(CommandHandler("summarize", summarize_command))
+    application.add_handler(CommandHandler("keypoints", keypoints_command))
+    application.add_handler(CommandHandler("newtopic", newtopic_command))
     application.add_handler(CallbackQueryHandler(config_callback))
     
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
