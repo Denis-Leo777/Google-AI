@@ -45,7 +45,6 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 MODEL_NAME = 'gemini-2.5-flash'
 YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})'
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
-# ## ИЗМЕНЕНО: Детектор времени полностью удален
 MAX_CONTEXT_CHARS = 200000
 MAX_HISTORY_RESPONSE_LEN = 2000
 MAX_HISTORY_ITEMS = 50
@@ -414,8 +413,9 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         if not is_first_message: date_prefix += "This is an ongoing conversation.)\n"
         else: date_prefix += "This is the first message.)\n"
 
+        # ## ИЗМЕНЕНО: Добавлено явное указание про использование даты
         grounding_instruction = """
-ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела. Не отвечай на основе памяти, если вопрос подразумевает факты (события, личности, даты, статистика и т.д.). Ты ОБЯЗАН ВСЕГДА АКТИВНО использовать инструмент Grounding with Google Search. Тебе уже предоставлена точная текущая дата и время в системной заметке, используй эти данные, не пытайся вычислить их самостоятельно. Не анонсируй свои внутренние действия. Выполняй их в скрытом режиме.
+ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела. Не отвечай на основе памяти, если вопрос подразумевает факты (события, личности, даты, статистика и т.д.). Ты ОБЯЗАН ВСЕГДА АКТИВНО использовать инструмент Grounding with Google Search. Тебе уже предоставлена точная дата и время в системной заметке, используй эти данные, не пытайся вычислить их самостоятельно. Не анонсируй свои внутренние действия. Выполняй их в скрытом режиме.
 """
         
         current_request_parts = []
@@ -446,7 +446,6 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
             await add_to_history(context, role="user", parts=content_parts, user=user, original_message_id=message.message_id)
             await add_to_history(context, role="model", parts=[types.Part(text=full_response_for_history)], original_message_id=message.message_id, bot_message_id=sent_message.message_id, is_media_response=is_media_request)
             
-            # ## ИЗМЕНЕНО: Возвращена логика "липкого" контекста
             if is_media_request:
                 media_part = next((p for p in content_parts if p.file_data), None)
                 if media_part:
@@ -560,7 +559,6 @@ async def keypoints_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- ОБРАБОТЧИКИ СООБЩЕНИЙ ---
 async def handle_media_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_part: types.Part, user_text: str):
-    # ## ИЗМЕНЕНО: Убираем очистку липкого контекста отсюда
     content_parts = [file_part, types.Part(text=user_text)]
     await process_request(update, context, content_parts, is_media_request=True)
 
@@ -785,11 +783,11 @@ async def main():
     application.add_handler(CommandHandler("keypoints", keypoints_command))
     application.add_handler(CommandHandler("newtopic", newtopic_command))
     
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    application.add_handler(MessageHandler(filters.VOICE, handle_audio))
-    application.add_handler(MessageHandler(filters.AUDIO, handle_audio))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
+    application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
+    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_audio))
+    application.add_handler(MessageHandler(filters.AUDIO & ~filters.COMMAND, handle_audio))
+    application.add_handler(MessageHandler(filters.Document.ALL & ~filters.COMMAND, handle_document))
 
     url_filter = filters.Entity("url") | filters.Entity("text_link")
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
