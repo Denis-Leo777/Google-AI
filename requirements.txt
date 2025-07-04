@@ -1,7 +1,5 @@
 python-telegram-bot[webhooks]
 google-genai
-pytz
 psycopg2-binary
-httpx
 aiohttp
-duckduckgo-search
+pytz
