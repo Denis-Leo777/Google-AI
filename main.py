@@ -638,15 +638,15 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 @ignore_if_processing
 async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await utility_media_command(update, context, "Transcribe this audio/video file. Return only the transcribed text, without any comments or introductory phrases.")
+    await utility_media_command(update, context, "Транскрибируй этот файл аудио/видео. Предоставь только извлеченный текст без заголовков, вступительных фраз и комментариев.")
 
 @ignore_if_processing
 async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await utility_media_command(update, context, "Summarize this material in a few paragraphs. Provide a concise but comprehensive overview.")
+    await utility_media_command(update, context, "Сделай содержательный конспект из этого материала.")
 
 @ignore_if_processing
 async def keypoints_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await utility_media_command(update, context, "Extract the key points or main theses from this material. Present them as a structured bulleted list.")
+    await utility_media_command(update, context, "Извлеки ключевые моменты или главные тезисы из этого материала. Представь их в структурном виде.")
 
 # --- ОБРАБОТЧИКИ СООБЩЕНИЙ ---
 async def handle_media_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_part: types.Part, user_text: str):
@@ -671,7 +671,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_file = await photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         file_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], photo_bytes, 'image/jpeg', photo_file.file_unique_id + ".jpg")
-        await handle_media_request(update, context, file_part, message.caption or "В ПЕРВУЮ ОЧЕРЕДЬ проанализируй содержимое этого изображения. Лаконично перескажи, что на нем, и ответь на вопросы, если они подразумеваются. ПОСЛЕ ЭТОГО выскажи свое мнение.")
+        await handle_media_request(update, context, file_part, message.caption or "Посмотри изображение, сделай краткое описание и предоставь непредвзятое мнение на основе результатов своего объективного анализа.")
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке фото: {e}")
         await message.reply_text(f"❌ Ошибка обработки изображения: {e}")
@@ -701,7 +701,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         doc_file = await doc.get_file()
         doc_bytes = await doc_file.download_as_bytearray()
         file_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], doc_bytes, doc.mime_type, doc.file_name or "document")
-        await handle_media_request(update, context, file_part, message.caption or "В ПЕРВУЮ ОЧЕРЕДЬ проанализируй содержимое этого документа. Лаконично перескажи его суть и ответь на вопросы, если они подразумеваются. ПОСЛЕ ЭТОГО выскажи свое мнение.")
+        await handle_media_request(update, context, file_part, message.caption or "Посмотри содержимое документа, сделай краткий пересказ, ответь на имеющиеся вопросы и предоставь непредвзятое мнение на основе результатов своего объективного анализа.")
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке документа: {e}")
         await message.reply_text(f"❌ Ошибка обработки документа: {e}")
@@ -728,7 +728,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_file = await video.get_file()
         video_bytes = await video_file.download_as_bytearray()
         video_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], video_bytes, video.mime_type, video.file_name or "video.mp4")
-        await handle_media_request(update, context, video_part, message.caption or "В ПЕРВУЮ ОЧЕРЕДЬ проанализируй содержимое этого видео. Лаконично перескажи его суть и ответь на вопросы, если они подразумеваются. ПОСЛЕ ЭТОГО выскажи свое мнение. Не вставляй транскрипт и таймкоды, если я не просил.")
+        await handle_media_request(update, context, video_part, message.caption or "Посмотри видео, сделай краткий пересказ, ответь на имеющиеся вопросы и предоставь непредвзятое мнение на основе результатов своего объективного анализа. Не вставляй транскрипт и таймкоды, если я не просил.")
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке видео: {e}")
         await message.reply_text(f"❌ Ошибка обработки видео: {e}")
@@ -752,7 +752,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, audio
          return
 
     file_name = getattr(audio, 'file_name', 'voice_message.ogg')
-    user_text = message.caption or "В ПЕРВУЮ ОЧЕРЕДЬ проанализируй и ответь на это голосовое сообщение. ПОСЛЕ ЭТОГО выскажи свое мнение. Не вставляй транскрипт и таймкоды, если я не просил."
+    user_text = message.caption or "Послушай голосовое сообщение, ответь на имеющиеся вопросы и предоставь непредвзятое мнение на основе результатов своего объективного анализа. Не вставляй транскрипт и таймкоды, если я не просил."
     
     try:
         audio_file = await audio.get_file()
@@ -779,7 +779,7 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         youtube_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
         
-        user_prompt = text.replace(match.group(0), "").strip() or "В ПЕРВУЮ ОЧЕРЕДЬ проанализируй видео по этой ссылке. Лаконично перескажи его суть и ответь на вопросы, если они подразумеваются. ПОСЛЕ ЭТОГО выскажи свое мнение. Не вставляй транскрипт и таймкоды, если я не просил."
+        user_prompt = text.replace(match.group(0), "").strip() or "Посмотри видео по ссылке, сделай краткий пересказ, ответь на имеющиеся вопросы и предоставь непредвзятое мнение на основе результатов своего объективного анализа. Не вставляй транскрипт и таймкоды, если я не просил."
         
         await handle_media_request(update, context, youtube_part, user_prompt)
     except Exception as e:
