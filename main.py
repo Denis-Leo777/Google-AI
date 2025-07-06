@@ -1,4 +1,4 @@
-# Версия 11.8 (возвращение к надежному декоратору)
+# Версия 11.9.1 (с исправлением отступов)
 
 import logging
 import os
@@ -233,15 +233,12 @@ def isolated_request(handler_func):
         logger.info(f"ChatID: {chat_id} | Изолированный запрос для {handler_func.__name__}. Временно очищаем историю для API.")
         
         original_history = list(context.chat_data.get("history", []))
-        # Используем "фальшивый" первый ход, чтобы модель не думала, что это начало диалога.
         context.chat_data["history"] = [{"role": "user", "parts": [{"type": "text", "content": "..."}]}]
         
         try:
             await handler_func(update, context, *args, **kwargs)
         finally:
-            # Получаем историю, добавленную изолированным запросом (обычно это [фальшивый_user,] user+model)
             newly_added_history = context.chat_data.get("history", [])
-            # Убираем наш "фальшивый" ход и добавляем реальную новую историю к оригинальной
             context.chat_data["history"] = original_history + newly_added_history[1:]
             
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
@@ -423,7 +420,7 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
 
         full_text = "".join(text_parts)
         
-        squeezed_text = re.sub(r'\n{3,}', '\n\n', full_text)
+        squeezed_text = re.sub(r'(\s*\n){3,}', '\n\n', full_text)
         sanitized_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         user_prefix_pattern = r'\[\d+;\s*Name:\s*.*?\]:\s*'
         sanitized_text = re.sub(user_prefix_pattern, '', sanitized_text)
@@ -468,13 +465,13 @@ async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: l
     chat_history = context.chat_data.setdefault("history", [])
     
     entry_parts = []
-    # В постоянную историю сохраняем только текст
     for part in parts:
         if part.text:
             entry_parts.append(part_to_dict(part))
 
-    if not entry_parts: return # Не сохраняем в историю сообщения без текста
-            
+    if not entry_parts and not any(p.file_data for p in parts):
+        return
+
     entry = {"role": role, "parts": entry_parts, **kwargs}
     if role == 'user' and user:
         entry['user_id'] = user.id
@@ -490,7 +487,6 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     chat_id = message.chat_id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Шаг 1: Предварительная проверка на запрос времени/даты. Вынесена из try-except.
     text_part_content = next((p.text for p in content_parts if p.text), None)
     if text_part_content and re.search(DATE_TIME_REGEX, text_part_content, re.IGNORECASE):
         logger.info("Обнаружен запрос о времени/дате. Отвечаем напрямую.")
@@ -498,11 +494,10 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         response_text = f"{user.first_name}, {time_str[0].lower()}{time_str[1:]}"
         sent_message = await send_reply(message, response_text)
         if sent_message:
-            await add_to_history(context, role="user", parts=content_parts, user=user, original_message_id=message.message_id)
-            await add_to_history(context, role="model", parts=[types.Part(text=response_text)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
-        return # Завершаем выполнение здесь
+            await add_to_history(context, "user", content_parts, user, original_message_id=message.message_id)
+            await add_to_history(context, "model", [types.Part(text=response_text)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
+        return
 
-    # Шаг 2: Основная логика в блоке try-except
     try:
         history_for_api = build_history_for_request(context.chat_data.get("history", []))
         
@@ -512,23 +507,24 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         has_media_data = any(p.file_data for p in content_parts)
         has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
 
+        final_prompt_text = f"{user_prefix}{prompt_text}"
         if not has_media_data and not has_url_in_text:
             grounding_instruction = """
 ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Учитывая текущую дату и время (уже предоставлены в System Note, используй их и не пытайся вычислять самостоятельно), ТЫ ОБЯЗАН АКТИВНО использовать инструмент Grounding with Google Search для поиска в интернете.
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
-        else:
-            final_prompt_text = f"{user_prefix}{prompt_text}"
-
+        
         current_request_parts = []
-        text_part_found = False
         for part in content_parts:
-            if part.text and not text_part_found:
-                if final_prompt_text:
-                    current_request_parts.append(types.Part(text=final_prompt_text))
-                text_part_found = True
-            elif not part.text:
+            if part.file_data:
                 current_request_parts.append(part)
+        
+        if prompt_text.strip():
+            current_request_parts.append(types.Part(text=final_prompt_text))
+        
+        if not current_request_parts:
+            logger.warning("Попытка отправить пустой запрос к API. Отменено.")
+            return
 
         request_contents = history_for_api + [types.Content(parts=current_request_parts, role="user")]
         
@@ -549,8 +545,8 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         sent_message = await send_reply(message, reply_text, add_context_hint=is_media_request)
         
         if sent_message:
-            await add_to_history(context, role="user", parts=content_parts, user=user, original_message_id=message.message_id)
-            await add_to_history(context, role="model", parts=[types.Part(text=full_response_for_history)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
+            await add_to_history(context, "user", content_parts, user, original_message_id=message.message_id)
+            await add_to_history(context, "model", [types.Part(text=full_response_for_history)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
             
             if is_media_request:
                 media_part = next((p for p in content_parts if p.file_data), None)
@@ -876,7 +872,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, cus
     content_parts = [types.Part(text=text)]
     is_media_request = False
     
-    # Не ищем медиа-контекст при ответе на кастомный текст (например, от аудио)
     if custom_text is None and message.reply_to_message:
         media_context = find_media_context_in_history(context, message.reply_to_message.message_id)
         if media_context:
