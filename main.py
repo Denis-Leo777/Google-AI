@@ -50,13 +50,13 @@ DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время
 MAX_CONTEXT_CHARS = 150000
 MAX_HISTORY_RESPONSE_LEN = 3000
 MAX_HISTORY_ITEMS = 50
-MAX_MEDIA_CONTEXTS = 10
+MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ И ПРОМПТЫ ---
 TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
-MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch())] 
+MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
 
 SAFETY_SETTINGS = [
     types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
