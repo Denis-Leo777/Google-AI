@@ -1,4 +1,4 @@
-# Версия 11.7 (финальная архитектура с мета-инструкциями)
+# Версия 11.8 (возвращение к надежному декоратору)
 
 import logging
 import os
@@ -225,7 +225,7 @@ def ignore_if_processing(func):
 def isolated_request(handler_func):
     """
     Декоратор, который изолирует выполнение обработчика от основной истории чата,
-    чтобы предотвратить контекстуальные галлюцинации модели.
+    используя "фальшивую" историю для подавления приветствий.
     """
     @wraps(handler_func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -233,13 +233,17 @@ def isolated_request(handler_func):
         logger.info(f"ChatID: {chat_id} | Изолированный запрос для {handler_func.__name__}. Временно очищаем историю для API.")
         
         original_history = list(context.chat_data.get("history", []))
-        context.chat_data["history"] = []
+        # Используем "фальшивый" первый ход, чтобы модель не думала, что это начало диалога.
+        context.chat_data["history"] = [{"role": "user", "parts": [{"type": "text", "content": "..."}]}]
         
         try:
             await handler_func(update, context, *args, **kwargs)
         finally:
+            # Получаем историю, добавленную изолированным запросом (обычно это [фальшивый_user,] user+model)
             newly_added_history = context.chat_data.get("history", [])
-            context.chat_data["history"] = original_history + newly_added_history
+            # Убираем наш "фальшивый" ход и добавляем реальную новую историю к оригинальной
+            context.chat_data["history"] = original_history + newly_added_history[1:]
+            
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
                 context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
             logger.info(f"ChatID: {chat_id} | Анализ в {handler_func.__name__} завершен. История восстановлена.")
@@ -272,7 +276,6 @@ def build_history_for_request(chat_history: list) -> list[types.Content]:
                 user_prefix = f"[{user_id}; Name: {user_name}]: "
                 
                 for part_dict in entry["parts"]:
-                    # В историю для API отправляется только текст
                     if part_dict.get('type') == 'text':
                         prefixed_text = f"{user_prefix}{part_dict.get('content', '')}"
                         entry_api_parts.append(types.Part(text=prefixed_text))
@@ -419,10 +422,8 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
             return "Я получила нетекстовый ответ, который не могу отобразить."
 
         full_text = "".join(text_parts)
-
-        # ИСПРАВЛЕНИЕ: Сжимаем множественные переносы строк до максимум двух
-        squeezed_text = re.sub(r'\n{3,}', '\n\n', full_text)
         
+        squeezed_text = re.sub(r'\n{3,}', '\n\n', full_text)
         sanitized_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         user_prefix_pattern = r'\[\d+;\s*Name:\s*.*?\]:\s*'
         sanitized_text = re.sub(user_prefix_pattern, '', sanitized_text)
@@ -725,11 +726,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         doc_file = await doc.get_file()
         doc_bytes = await doc_file.download_as_bytearray()
         file_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], doc_bytes, doc.mime_type, doc.file_name or "document")
-        
-        user_prompt = message.caption or ""
-        final_prompt = f"Это новый, независимый запрос. {user_prompt}".strip()
-        await handle_media_request(update, context, file_part, final_prompt)
-
+        await handle_media_request(update, context, file_part, message.caption or "")
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке документа: {e}")
         await message.reply_text(f"❌ Ошибка обработки документа: {e}")
@@ -757,11 +754,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_file = await video.get_file()
         video_bytes = await video_file.download_as_bytearray()
         video_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], video_bytes, video.mime_type, video.file_name or "video.mp4")
-        
-        user_prompt = message.caption or ""
-        final_prompt = f"Это новый, независимый запрос. {user_prompt}".strip()
-        await handle_media_request(update, context, video_part, final_prompt)
-        
+        await handle_media_request(update, context, video_part, message.caption or "")
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке видео: {e}")
         await message.reply_text(f"❌ Ошибка обработки видео: {e}")
@@ -857,11 +850,8 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text("Анализирую видео с YouTube...", reply_to_message_id=message.id)
     try:
         youtube_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
-        
         user_prompt = text.replace(match.group(0), "").strip()
-        final_prompt = f"Это новый, независимый запрос. {user_prompt}".strip()
-        await handle_media_request(update, context, youtube_part, final_prompt)
-
+        await handle_media_request(update, context, youtube_part, user_prompt)
     except Exception as e:
         logger.error(f"Ошибка при обработке YouTube URL {youtube_url}: {e}", exc_info=True)
         await message.reply_text("❌ Не удалось обработать ссылку на YouTube. Возможно, видео недоступно или имеет ограничения.")
