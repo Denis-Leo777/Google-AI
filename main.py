@@ -1,4 +1,4 @@
-# Версия 11.3 (с твоими правками)
+# Версия 11.4 (с полной реализацией планов)
 
 import logging
 import os
@@ -50,13 +50,13 @@ DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время
 MAX_CONTEXT_CHARS = 150000
 MAX_HISTORY_RESPONSE_LEN = 3000
 MAX_HISTORY_ITEMS = 50
-MAX_MEDIA_CONTEXTS = 50
+MAX_MEDIA_CONTEXTS = 100
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ И ПРОМПТЫ ---
 TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
-MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
+MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())] 
 
 SAFETY_SETTINGS = [
     types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
@@ -70,7 +70,7 @@ try:
 except FileNotFoundError:
     logger.error("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
     SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)
-    ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела. Не отвечай на основе памяти, если вопрос подразумевает факты (события, личности, даты, статистика и т.д.) и любые данные, которые могут меняться со временем. Ты ОБЯЗАН ВСЕГДА АКТИВНО использовать инструмент Grounding with Google Search. Не анонсируй свои внутренние действия. Выполняй их в скрытом режиме.
+    ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Ты ОБЯЗАН ВСЕГДА АКТИВНО использовать инструмент Grounding with Google Search для поиска актуальных ВСЕВОЗМОЖНЫХ и ВСЕСТОРОННИХ ДАННЫХ, СОХРАНЯЯ все источники. Не анонсируй внутренние действия, выполняй их скрыто.
     АБСОЛЮТНЫЕ ЗАПРЕТЫ: НИКОГДА не показывай `tool_code`, `thought` или другие внутренние рассуждения. НИКОГДА не начинай ответ с префикса пользователя (например, `[12345; Name: User]:`). Отвечай только по существу.
     """
 
@@ -221,6 +221,29 @@ def ignore_if_processing(func):
         finally:
             processing_messages.discard(processing_key)
             
+    return wrapper
+
+def isolated_request(handler_func):
+    """
+    Декоратор, который изолирует выполнение обработчика от основной истории чата,
+    чтобы предотвратить контекстуальные галлюцинации модели.
+    """
+    @wraps(handler_func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        chat_id = update.effective_chat.id
+        logger.info(f"ChatID: {chat_id} | Изолированный запрос для {handler_func.__name__}. Временно очищаем историю для API.")
+        
+        original_history = list(context.chat_data.get("history", []))
+        context.chat_data["history"] = []
+        
+        try:
+            await handler_func(update, context, *args, **kwargs)
+        finally:
+            newly_added_history = context.chat_data.get("history", [])
+            context.chat_data["history"] = original_history + newly_added_history
+            if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
+                context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
+            logger.info(f"ChatID: {chat_id} | Анализ в {handler_func.__name__} завершен. История восстановлена.")
     return wrapper
 
 def part_to_dict(part: types.Part) -> dict:
@@ -487,7 +510,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
 
         if not has_media:
             grounding_instruction = """
-ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела. Не отвечай на основе памяти, если вопрос подразумевает факты (события, личности, даты, статистика и т.д.). Ты ОБЯЗАН ВСЕГДА АКТИВНО использовать инструмент Grounding with Google Search. Тебе уже предоставлены точная дата и время в System Note, используй эти данные и не пытайся вычислять их самостоятельно. Не анонсируй свои внутренние действия, а выполняй их в скрытом режиме.
+ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Ты ОБЯЗАН ВСЕГДА АКТИВНО использовать инструмент Grounding with Google Search. Тебе уже предоставлены точная дата и время в System Note, используй их и не пытайся вычислять самостоятельно. Не анонсируй внутренние действия, выполняй их скрыто.
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
         else:
@@ -680,6 +703,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Произошла внутренняя ошибка при обработке изображения.")
 
 @ignore_if_processing
+@isolated_request
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.document: return
@@ -690,11 +714,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if doc.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
         await message.reply_text(f"📑 Файл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать. Отвечу на текст, если он есть.")
         if message.caption:
+            # Вызываем handle_message напрямую, т.к. этот обработчик изолирован
             await handle_message(update, context, custom_text=message.caption)
         return
 
     if doc.mime_type and doc.mime_type.startswith("audio/"):
+        # Аудио из документов обрабатывается стандартным, неизолированным обработчиком
+        # Снимаем изоляцию для этого случая
+        original_history = context.chat_data.pop("_original_history_for_isolation", None)
+        if original_history is not None:
+             context.chat_data["history"] = original_history
         return await handle_audio(update, context, doc)
+
     
     await message.reply_text(f"Загружаю документ '{doc.file_name}'...", reply_to_message_id=message.id)
     try:
@@ -710,6 +741,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Внутренняя ошибка при обработке документа.")
 
 @ignore_if_processing
+@isolated_request
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.video: return
@@ -746,19 +778,46 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, audio
     if not audio: return
 
     if audio.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-         await message.reply_text(f"🎧 Аудиофайл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать. Отвечу на текст, если он есть.")
-         if message.caption:
+        await message.reply_text(f"🎧 Аудиофайл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать. Отвечу на текст, если он есть.")
+        if message.caption:
             await handle_message(update, context, custom_text=message.caption)
-         return
+        return
 
-    file_name = getattr(audio, 'file_name', 'voice_message.ogg')
-    user_text = message.caption or "Послушай голосовое сообщение, ответь на имеющиеся вопросы и предоставь непредвзятое мнение на основе результатов своего объективного анализа. Не вставляй транскрипт и таймкоды, если я не просил."
+    await message.reply_text("Расшифровываю голосовое...", reply_to_message_id=message.id)
     
     try:
         audio_file = await audio.get_file()
         audio_bytes = await audio_file.download_as_bytearray()
+        file_name = getattr(audio, 'file_name', 'voice_message.ogg')
         audio_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], audio_bytes, audio.mime_type, file_name)
-        await handle_media_request(update, context, audio_part, user_text)
+
+        # Этап 1: Транскрипция
+        transcription_prompt = "Transcribe this audio file. Return only the transcribed text, without any comments or introductory phrases."
+        transcription_request_contents = [types.Content(parts=[audio_part, types.Part(text=transcription_prompt)], role="user")]
+        
+        response_obj = await generate_response(context.bot_data['gemini_client'], transcription_request_contents, context, MEDIA_TOOLS)
+        
+        transcript_text = ""
+        if isinstance(response_obj, str):
+            # Если произошла ошибка API, сообщаем пользователю
+            await message.reply_text(f"Не удалось расшифровать аудио: {response_obj}")
+            return
+        else:
+            transcript_text = format_gemini_response(response_obj)
+
+        if not transcript_text:
+            await message.reply_text("Не удалось распознать речь в аудиофайле.")
+            return
+        
+        logger.info(f"Аудио успешно расшифровано для чата {message.chat_id}")
+
+        # Этап 2: Формируем текст для истории и отвечаем на него
+        full_user_prompt = f"[Голосовое сообщение]: {transcript_text}\n\n{message.caption or ''}".strip()
+        
+        # Передаем управление стандартному обработчику текста
+        # Он сам добавит все в историю и вызовет process_request
+        await handle_message(update, context, custom_text=full_user_prompt)
+
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке аудио: {e}")
         await message.reply_text(f"❌ Ошибка обработки аудио: {e}")
@@ -767,6 +826,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, audio
         await message.reply_text("❌ Внутренняя ошибка при обработке аудио.")
 
 @ignore_if_processing
+@isolated_request
 async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message, text = update.message, update.message.text or ""
     
@@ -806,6 +866,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, cus
     content_parts = [types.Part(text=text)]
     is_media_request = False
     
+    # Не ищем медиа-контекст при ответе на кастомный текст (например, от аудио)
     if custom_text is None and message.reply_to_message:
         media_context = find_media_context_in_history(context, message.reply_to_message.message_id)
         if media_context:
