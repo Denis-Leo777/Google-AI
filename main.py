@@ -1,4 +1,4 @@
-# Версия 12.1 (с финальным протоколом очистки)
+# Версия 12.2 (с исправлением deadlock'а в обработке голоса)
 
 import logging
 import os
@@ -421,9 +421,7 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
         full_text = "".join(text_parts)
         
         # --- ПРОТОКОЛ ПОЛНОЙ САНИТАРНОЙ ОБРАБОТКИ ---
-        # Шаг 1: Удаляем любые строки, состоящие ИСКЛЮЧИТЕЛЬНО из пробелов/табов.
         clean_text = re.sub(r'^\s+$', '', full_text, flags=re.MULTILINE)
-        # Шаг 2: Сжимаем любые 3+ последовательных переноса строки до двух.
         squeezed_text = re.sub(r'\n{3,}', '\n\n', clean_text)
         
         # --- Дальнейшая очистка ---
@@ -767,50 +765,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @ignore_if_processing
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик только для голосовых сообщений (транскрипция и ответ)."""
-    message = update.message
-    if not message or not message.voice: return
-    
-    context.chat_data['id'] = message.chat_id
-    voice = message.voice
-    
-    if voice.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-        await message.reply_text(f"🎤 Голосовое сообщение слишком большое (> {TELEGRAM_FILE_LIMIT_MB} MB).")
-        return
-
-    await message.reply_text("Расшифровываю...", reply_to_message_id=message.id)
-    
-    try:
-        voice_file = await voice.get_file()
-        voice_bytes = await voice_file.download_as_bytearray()
-        voice_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], voice_bytes, voice.mime_type, "voice_message.ogg")
-
-        transcription_prompt = "Transcribe this audio file. Return only the transcribed text."
-        transcription_request_contents = [types.Content(parts=[voice_part, types.Part(text=transcription_prompt)], role="user")]
-        
-        response_obj = await generate_response(context.bot_data['gemini_client'], transcription_request_contents, context, MEDIA_TOOLS)
-        
-        transcript_text = ""
-        if isinstance(response_obj, str):
-            await message.reply_text(f"Не удалось расшифровать: {response_obj}")
-            return
-        else:
-            transcript_text = format_gemini_response(response_obj).strip()
-
-        if not transcript_text:
-            await message.reply_text("Не удалось распознать речь.")
-            await add_to_history(context, "user", [types.Part(text="[Пустое или неразборчивое голосовое сообщение]")], message.from_user, original_message_id=message.message_id)
-            return
-        
-        logger.info(f"Голосовое успешно расшифровано для чата {message.chat_id}")
-        full_user_prompt = f"[Голосовое сообщение]: {transcript_text}"
-        await handle_message(update, context, custom_text=full_user_prompt)
-
-    except (BadRequest, IOError) as e:
-        logger.error(f"Ошибка при обработке голосового: {e}")
-        await message.reply_text(f"❌ Ошибка обработки голосового: {e}")
-    except Exception as e:
-        logger.error(f"Непредвиденная ошибка при обработке голосового: {e}", exc_info=True)
-        await message.reply_text("❌ Внутренняя ошибка при обработке голосового сообщения.")
+    await _internal_handle_voice_logic(update, context)
 
 @ignore_if_processing
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -860,12 +815,55 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @ignore_if_processing
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    context.chat_data['id'] = message.chat_id
-    await process_request(update, context, [types.Part(text=message.text)])
+    await _internal_handle_message_logic(update, context)
 
-@ignore_if_processing
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_text: str = None):
+async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if not message or not message.voice: return
+    
+    context.chat_data['id'] = message.chat_id
+    voice = message.voice
+    
+    if voice.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+        await message.reply_text(f"🎤 Голосовое сообщение слишком большое (> {TELEGRAM_FILE_LIMIT_MB} MB).")
+        return
+
+    await message.reply_text("Расшифровываю...", reply_to_message_id=message.id)
+    
+    try:
+        voice_file = await voice.get_file()
+        voice_bytes = await voice_file.download_as_bytearray()
+        voice_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], voice_bytes, voice.mime_type, "voice_message.ogg")
+
+        transcription_prompt = "Transcribe this audio file. Return only the transcribed text."
+        transcription_request_contents = [types.Content(parts=[voice_part, types.Part(text=transcription_prompt)], role="user")]
+        
+        response_obj = await generate_response(context.bot_data['gemini_client'], transcription_request_contents, context, MEDIA_TOOLS)
+        
+        transcript_text = ""
+        if isinstance(response_obj, str):
+            await message.reply_text(f"Не удалось расшифровать: {response_obj}")
+            return
+        else:
+            transcript_text = format_gemini_response(response_obj).strip()
+
+        if not transcript_text:
+            await message.reply_text("Не удалось распознать речь.")
+            await add_to_history(context, "user", [types.Part(text="[Пустое или неразборчивое голосовое сообщение]")], message.from_user, original_message_id=message.message_id)
+            return
+        
+        logger.info(f"Голосовое успешно расшифровано для чата {message.chat_id}")
+        full_user_prompt = f"[Голосовое сообщение]: {transcript_text}"
+        await _internal_handle_message_logic(update, context, custom_text=full_user_prompt)
+
+    except (BadRequest, IOError) as e:
+        logger.error(f"Ошибка при обработке голосового: {e}")
+        await message.reply_text(f"❌ Ошибка обработки голосового: {e}")
+    except Exception as e:
+        logger.error(f"Непредвиденная ошибка при обработке голосового: {e}", exc_info=True)
+        await message.reply_text("❌ Внутренняя ошибка при обработке голосового сообщения.")
+
+async def _internal_handle_message_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_text: str = None):
     message = update.message
     if not message or not message.from_user: return
     
@@ -888,6 +886,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, cus
                 logger.info(f"Применен ЯВНЫЙ медиа-контекст (через reply) для чата {chat_id}")
 
     await process_request(update, context, content_parts, is_media_request=is_media_request)
+
+@ignore_if_processing
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _internal_handle_message_logic(update, context)
 
 # --- ЗАПУСК БОТА ---
 async def handle_health_check(request: aiohttp.web.Request) -> aiohttp.web.Response:
