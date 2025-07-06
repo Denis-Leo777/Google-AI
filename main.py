@@ -1,4 +1,4 @@
-# Версия 11.7
+# Версия 11.7 (финальная архитектура с мета-инструкциями)
 
 import logging
 import os
@@ -233,17 +233,13 @@ def isolated_request(handler_func):
         logger.info(f"ChatID: {chat_id} | Изолированный запрос для {handler_func.__name__}. Временно очищаем историю для API.")
         
         original_history = list(context.chat_data.get("history", []))
-        # Вместо полной очистки, создаем "фальшивый" первый ход, чтобы модель не думала, что это начало диалога.
-        context.chat_data["history"] = [{"role": "user", "parts": [{"type": "text", "content": "..."}]}]
+        context.chat_data["history"] = []
         
         try:
             await handler_func(update, context, *args, **kwargs)
         finally:
-            # Получаем историю, добавленную изолированным запросом (обычно это user+model)
             newly_added_history = context.chat_data.get("history", [])
-            # Убираем наш "фальшивый" ход и добавляем реальную новую историю к оригинальной
-            context.chat_data["history"] = original_history + newly_added_history[1:]
-            
+            context.chat_data["history"] = original_history + newly_added_history
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
                 context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
             logger.info(f"ChatID: {chat_id} | Анализ в {handler_func.__name__} завершен. История восстановлена.")
@@ -423,8 +419,11 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
             return "Я получила нетекстовый ответ, который не могу отобразить."
 
         full_text = "".join(text_parts)
+
+        # ИСПРАВЛЕНИЕ: Сжимаем множественные переносы строк до максимум двух
+        squeezed_text = re.sub(r'\n{3,}', '\n\n', full_text)
         
-        sanitized_text = re.sub(r'tool_code\n.*?thought\n', '', full_text, flags=re.DOTALL)
+        sanitized_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         user_prefix_pattern = r'\[\d+;\s*Name:\s*.*?\]:\s*'
         sanitized_text = re.sub(user_prefix_pattern, '', sanitized_text)
         
@@ -509,9 +508,10 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         user_prefix = f"[{user.id}; Name: {user.first_name}]: "
         prompt_text = next((p.text for p in content_parts if p.text), "")
         
-        has_media = any(p.file_data for p in content_parts)
+        has_media_data = any(p.file_data for p in content_parts)
+        has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
 
-        if not has_media:
+        if not has_media_data and not has_url_in_text:
             grounding_instruction = """
 ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Учитывая текущую дату и время (уже предоставлены в System Note, используй их и не пытайся вычислять самостоятельно), ТЫ ОБЯЗАН АКТИВНО использовать инструмент Grounding with Google Search для поиска в интернете.
 """
@@ -725,7 +725,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         doc_file = await doc.get_file()
         doc_bytes = await doc_file.download_as_bytearray()
         file_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], doc_bytes, doc.mime_type, doc.file_name or "document")
-        await handle_media_request(update, context, file_part, message.caption or "")
+        
+        user_prompt = message.caption or ""
+        final_prompt = f"Это новый, независимый запрос. {user_prompt}".strip()
+        await handle_media_request(update, context, file_part, final_prompt)
+
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке документа: {e}")
         await message.reply_text(f"❌ Ошибка обработки документа: {e}")
@@ -753,7 +757,11 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_file = await video.get_file()
         video_bytes = await video_file.download_as_bytearray()
         video_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], video_bytes, video.mime_type, video.file_name or "video.mp4")
-        await handle_media_request(update, context, video_part, message.caption or "")
+        
+        user_prompt = message.caption or ""
+        final_prompt = f"Это новый, независимый запрос. {user_prompt}".strip()
+        await handle_media_request(update, context, video_part, final_prompt)
+        
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке видео: {e}")
         await message.reply_text(f"❌ Ошибка обработки видео: {e}")
@@ -795,7 +803,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not transcript_text:
             await message.reply_text("Не удалось распознать речь.")
-            # Добавим в историю, что была попытка, но она провалилась
             await add_to_history(context, "user", [types.Part(text="[Пустое или неразборчивое голосовое сообщение]")], message.from_user, original_message_id=message.message_id)
             return
         
@@ -850,8 +857,11 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text("Анализирую видео с YouTube...", reply_to_message_id=message.id)
     try:
         youtube_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
+        
         user_prompt = text.replace(match.group(0), "").strip()
-        await handle_media_request(update, context, youtube_part, user_prompt)
+        final_prompt = f"Это новый, независимый запрос. {user_prompt}".strip()
+        await handle_media_request(update, context, youtube_part, final_prompt)
+
     except Exception as e:
         logger.error(f"Ошибка при обработке YouTube URL {youtube_url}: {e}", exc_info=True)
         await message.reply_text("❌ Не удалось обработать ссылку на YouTube. Возможно, видео недоступно или имеет ограничения.")
