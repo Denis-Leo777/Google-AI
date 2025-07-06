@@ -1,4 +1,4 @@
-# Версия 12.2 (с исправлением deadlock'а в обработке голоса)
+# Версия 12.3 (с исправленной логикой обработки голоса)
 
 import logging
 import os
@@ -808,14 +808,10 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         youtube_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
         user_prompt = text.replace(match.group(0), "").strip()
-        await handle_media_request(update, context, youtube_part, user_prompt)
+        await handle_media_request(update, context, user_prompt)
     except Exception as e:
         logger.error(f"Ошибка при обработке YouTube URL {youtube_url}: {e}", exc_info=True)
         await message.reply_text("❌ Не удалось обработать ссылку на YouTube. Возможно, видео недоступно или имеет ограничения.")
-
-@ignore_if_processing
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _internal_handle_message_logic(update, context)
 
 async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -828,7 +824,7 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
         await message.reply_text(f"🎤 Голосовое сообщение слишком большое (> {TELEGRAM_FILE_LIMIT_MB} MB).")
         return
 
-    await message.reply_text("Расшифровываю...", reply_to_message_id=message.id)
+    await message.reply_text("Слушаю...", reply_to_message_id=message.id)
     
     try:
         voice_file = await voice.get_file()
@@ -853,8 +849,13 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
             return
         
         logger.info(f"Голосовое успешно расшифровано для чата {message.chat_id}")
-        full_user_prompt = f"[Голосовое сообщение]: {transcript_text}"
-        await _internal_handle_message_logic(update, context, custom_text=full_user_prompt)
+        
+        # Сохраняем "сырой" транскрипт в историю, чтобы модель его помнила
+        await add_to_history(context, "user", [types.Part(text=f"[Голосовое сообщение]: {transcript_text}")], message.from_user, original_message_id=message.message_id)
+        
+        # Формируем новый, умный промпт для ответа
+        final_prompt = f"Пользователь отправил голосовое сообщение. Вот его точная расшифровка: «{transcript_text}». Основываясь на этой расшифровке и предыдущем диалоге, дай прямой и полный ответ."
+        await _internal_handle_message_logic(update, context, custom_text=final_prompt)
 
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке голосового: {e}")
@@ -886,6 +887,10 @@ async def _internal_handle_message_logic(update: Update, context: ContextTypes.D
                 logger.info(f"Применен ЯВНЫЙ медиа-контекст (через reply) для чата {chat_id}")
 
     await process_request(update, context, content_parts, is_media_request=is_media_request)
+
+@ignore_if_processing
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _internal_handle_message_logic(update, context)
 
 @ignore_if_processing
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -963,7 +968,6 @@ async def main():
 
     # 3. Текстовые обработчики (должны идти последними)
     url_filter = filters.Entity("url") | filters.Entity("text_link")
-    # Исключаем YouTube ссылки, т.к. для них есть свой изолированный обработчик
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
     
