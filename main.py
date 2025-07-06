@@ -1,4 +1,4 @@
-# Версия 12.3 (с исправленной логикой обработки голоса)
+# Версия 12.4 (финальная, с исправленной логикой голоса)
 
 import logging
 import os
@@ -763,11 +763,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Внутренняя ошибка при обработке видео.")
 
 @ignore_if_processing
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик только для голосовых сообщений (транскрипция и ответ)."""
-    await _internal_handle_voice_logic(update, context)
-
-@ignore_if_processing
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик для аудиофайлов (музыка, звуки) - анализ, а не транскрипция."""
     message = update.message
@@ -808,7 +803,7 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         youtube_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
         user_prompt = text.replace(match.group(0), "").strip()
-        await handle_media_request(update, context, user_prompt)
+        await handle_media_request(update, context, youtube_part, user_prompt)
     except Exception as e:
         logger.error(f"Ошибка при обработке YouTube URL {youtube_url}: {e}", exc_info=True)
         await message.reply_text("❌ Не удалось обработать ссылку на YouTube. Возможно, видео недоступно или имеет ограничения.")
@@ -832,6 +827,7 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
         voice_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], voice_bytes, voice.mime_type, "voice_message.ogg")
 
         transcription_prompt = "Transcribe this audio file. Return only the transcribed text."
+        # Делаем "стерильный" запрос на транскрипцию без основной истории
         transcription_request_contents = [types.Content(parts=[voice_part, types.Part(text=transcription_prompt)], role="user")]
         
         response_obj = await generate_response(context.bot_data['gemini_client'], transcription_request_contents, context, MEDIA_TOOLS)
@@ -850,12 +846,8 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
         
         logger.info(f"Голосовое успешно расшифровано для чата {message.chat_id}")
         
-        # Сохраняем "сырой" транскрипт в историю, чтобы модель его помнила
-        await add_to_history(context, "user", [types.Part(text=f"[Голосовое сообщение]: {transcript_text}")], message.from_user, original_message_id=message.message_id)
-        
-        # Формируем новый, умный промпт для ответа
-        final_prompt = f"Пользователь отправил голосовое сообщение. Вот его точная расшифровка: «{transcript_text}». Основываясь на этой расшифровке и предыдущем диалоге, дай прямой и полный ответ."
-        await _internal_handle_message_logic(update, context, custom_text=final_prompt)
+        # Передаем чистый транскрипт на обработку как обычный текст
+        await _internal_handle_message_logic(update, context, custom_text=transcript_text)
 
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке голосового: {e}")
@@ -889,11 +881,18 @@ async def _internal_handle_message_logic(update: Update, context: ContextTypes.D
     await process_request(update, context, content_parts, is_media_request=is_media_request)
 
 @ignore_if_processing
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Публичный обработчик для голосовых, защищенный декоратором."""
+    await _internal_handle_voice_logic(update, context)
+
+@ignore_if_processing
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Публичный обработчик для URL, защищенный декоратором."""
     await _internal_handle_message_logic(update, context)
 
 @ignore_if_processing
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Публичный обработчик для текста, защищенный декоратором."""
     await _internal_handle_message_logic(update, context)
 
 # --- ЗАПУСК БОТА ---
@@ -968,6 +967,7 @@ async def main():
 
     # 3. Текстовые обработчики (должны идти последними)
     url_filter = filters.Entity("url") | filters.Entity("text_link")
+    # Исключаем YouTube ссылки, т.к. для них есть свой изолированный обработчик
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
     
