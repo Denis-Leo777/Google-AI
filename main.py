@@ -1,4 +1,4 @@
-# Версия 12.0 (финальная, стабильная)
+# Версия 12.1 (с финальным протоколом очистки)
 
 import logging
 import os
@@ -420,12 +420,18 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
 
         full_text = "".join(text_parts)
         
-        squeezed_text = re.sub(r'(\s*\n){3,}', '\n\n', full_text)
-        clean_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
-        clean_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', clean_text)
-        clean_text = re.sub(r'^\s*HTML:\s*User,\s*', '', clean_text, flags=re.IGNORECASE)
+        # --- ПРОТОКОЛ ПОЛНОЙ САНИТАРНОЙ ОБРАБОТКИ ---
+        # Шаг 1: Удаляем любые строки, состоящие ИСКЛЮЧИТЕЛЬНО из пробелов/табов.
+        clean_text = re.sub(r'^\s+$', '', full_text, flags=re.MULTILINE)
+        # Шаг 2: Сжимаем любые 3+ последовательных переноса строки до двух.
+        squeezed_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+        
+        # --- Дальнейшая очистка ---
+        final_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
+        final_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', final_text)
+        final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
 
-        return clean_text.strip()
+        return final_text.strip()
         
     except (AttributeError, IndexError) as e:
         logger.error(f"Ошибка при парсинге ответа Gemini: {e}", exc_info=True)
@@ -955,6 +961,7 @@ async def main():
 
     # 3. Текстовые обработчики (должны идти последними)
     url_filter = filters.Entity("url") | filters.Entity("text_link")
+    # Исключаем YouTube ссылки, т.к. для них есть свой изолированный обработчик
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
     
