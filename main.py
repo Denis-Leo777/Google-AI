@@ -233,13 +233,17 @@ def isolated_request(handler_func):
         logger.info(f"ChatID: {chat_id} | Изолированный запрос для {handler_func.__name__}. Временно очищаем историю для API.")
         
         original_history = list(context.chat_data.get("history", []))
-        context.chat_data["history"] = []
+        # Вместо полной очистки, создаем "фальшивый" первый ход, чтобы модель не думала, что это начало диалога.
+        context.chat_data["history"] = [{"role": "user", "parts": [{"type": "text", "content": "..."}]}]
         
         try:
             await handler_func(update, context, *args, **kwargs)
         finally:
+            # Получаем историю, добавленную изолированным запросом (обычно это user+model)
             newly_added_history = context.chat_data.get("history", [])
-            context.chat_data["history"] = original_history + newly_added_history
+            # Убираем наш "фальшивый" ход и добавляем реальную новую историю к оригинальной
+            context.chat_data["history"] = original_history + newly_added_history[1:]
+            
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
                 context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
             logger.info(f"ChatID: {chat_id} | Анализ в {handler_func.__name__} завершен. История восстановлена.")
