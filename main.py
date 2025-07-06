@@ -1,4 +1,4 @@
-# Версия 11.4 (с полной реализацией планов)
+# Версия 11.7
 
 import logging
 import os
@@ -70,8 +70,7 @@ try:
 except FileNotFoundError:
     logger.error("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
     SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)
-    ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Ты ОБЯЗАН ВСЕГДА АКТИВНО использовать инструмент Grounding with Google Search для поиска актуальных ВСЕВОЗМОЖНЫХ и ВСЕСТОРОННИХ ДАННЫХ, СОХРАНЯЯ все источники. Не анонсируй внутренние действия, выполняй их скрыто.
-    АБСОЛЮТНЫЕ ЗАПРЕТЫ: НИКОГДА не показывай `tool_code`, `thought` или другие внутренние рассуждения. НИКОГДА не начинай ответ с префикса пользователя (например, `[12345; Name: User]:`). Отвечай только по существу.
+    ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Учитывая текущую дату и время (уже предоставлены в System Note, используй их и не пытайся вычислять самостоятельно), ТЫ ОБЯЗАН АКТИВНО использовать инструмент Grounding with Google Search для поиска в интернете. АБСОЛЮТНЫЕ ЗАПРЕТЫ: НИКОГДА не показывай `tool_code`, `thought` или другие внутренние рассуждения. НИКОГДА не начинай ответ с префикса пользователя (например, `[12345; Name: User]:`).
     """
 
 # --- КЛАСС PERSISTENCE ---
@@ -510,7 +509,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
 
         if not has_media:
             grounding_instruction = """
-ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Ты ОБЯЗАН ВСЕГДА АКТИВНО использовать инструмент Grounding with Google Search. Тебе уже предоставлены точная дата и время в System Note, используй их и не пытайся вычислять самостоятельно. Не анонсируй внутренние действия, выполняй их скрыто.
+ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Учитывая текущую дату и время (уже предоставлены в System Note, используй их и не пытайся вычислять самостоятельно), ТЫ ОБЯЗАН АКТИВНО использовать инструмент Grounding with Google Search для поиска в интернете.
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
         else:
@@ -694,7 +693,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_file = await photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         file_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], photo_bytes, 'image/jpeg', photo_file.file_unique_id + ".jpg")
-        await handle_media_request(update, context, file_part, message.caption or "Посмотри изображение, сделай краткое описание и предоставь непредвзятое мнение на основе результатов своего объективного анализа.")
+        await handle_media_request(update, context, file_part, message.caption or "")
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке фото: {e}")
         await message.reply_text(f"❌ Ошибка обработки изображения: {e}")
@@ -714,25 +713,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if doc.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
         await message.reply_text(f"📑 Файл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать. Отвечу на текст, если он есть.")
         if message.caption:
-            # Вызываем handle_message напрямую, т.к. этот обработчик изолирован
             await handle_message(update, context, custom_text=message.caption)
         return
-
-    if doc.mime_type and doc.mime_type.startswith("audio/"):
-        # Аудио из документов обрабатывается стандартным, неизолированным обработчиком
-        # Снимаем изоляцию для этого случая
-        original_history = context.chat_data.pop("_original_history_for_isolation", None)
-        if original_history is not None:
-             context.chat_data["history"] = original_history
-        return await handle_audio(update, context, doc)
-
     
     await message.reply_text(f"Загружаю документ '{doc.file_name}'...", reply_to_message_id=message.id)
     try:
         doc_file = await doc.get_file()
         doc_bytes = await doc_file.download_as_bytearray()
         file_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], doc_bytes, doc.mime_type, doc.file_name or "document")
-        await handle_media_request(update, context, file_part, message.caption or "Посмотри содержимое документа, сделай краткий пересказ, ответь на имеющиеся вопросы и предоставь непредвзятое мнение на основе результатов своего объективного анализа.")
+        await handle_media_request(update, context, file_part, message.caption or "")
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке документа: {e}")
         await message.reply_text(f"❌ Ошибка обработки документа: {e}")
@@ -760,7 +749,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_file = await video.get_file()
         video_bytes = await video_file.download_as_bytearray()
         video_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], video_bytes, video.mime_type, video.file_name or "video.mp4")
-        await handle_media_request(update, context, video_part, message.caption or "Посмотри видео, сделай краткий пересказ, ответь на имеющиеся вопросы и предоставь непредвзятое мнение на основе результатов своего объективного анализа. Не вставляй транскрипт и таймкоды, если я не просил.")
+        await handle_media_request(update, context, video_part, message.caption or "")
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке видео: {e}")
         await message.reply_text(f"❌ Ошибка обработки видео: {e}")
@@ -769,61 +758,80 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Внутренняя ошибка при обработке видео.")
 
 @ignore_if_processing
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, audio_source=None):
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик только для голосовых сообщений (транскрипция и ответ)."""
     message = update.message
-    if not message: return
+    if not message or not message.voice: return
     
     context.chat_data['id'] = message.chat_id
-    audio = audio_source or message.audio or message.voice
-    if not audio: return
-
-    if audio.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-        await message.reply_text(f"🎧 Аудиофайл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать. Отвечу на текст, если он есть.")
-        if message.caption:
-            await handle_message(update, context, custom_text=message.caption)
+    voice = message.voice
+    
+    if voice.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+        await message.reply_text(f"🎤 Голосовое сообщение слишком большое (> {TELEGRAM_FILE_LIMIT_MB} MB).")
         return
 
-    await message.reply_text("Расшифровываю голосовое...", reply_to_message_id=message.id)
+    await message.reply_text("Расшифровываю...", reply_to_message_id=message.id)
     
     try:
-        audio_file = await audio.get_file()
-        audio_bytes = await audio_file.download_as_bytearray()
-        file_name = getattr(audio, 'file_name', 'voice_message.ogg')
-        audio_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], audio_bytes, audio.mime_type, file_name)
+        voice_file = await voice.get_file()
+        voice_bytes = await voice_file.download_as_bytearray()
+        voice_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], voice_bytes, voice.mime_type, "voice_message.ogg")
 
-        # Этап 1: Транскрипция
-        transcription_prompt = "Transcribe this audio file. Return only the transcribed text, without any comments or introductory phrases."
-        transcription_request_contents = [types.Content(parts=[audio_part, types.Part(text=transcription_prompt)], role="user")]
+        transcription_prompt = "Transcribe this audio file. Return only the transcribed text."
+        transcription_request_contents = [types.Content(parts=[voice_part, types.Part(text=transcription_prompt)], role="user")]
         
         response_obj = await generate_response(context.bot_data['gemini_client'], transcription_request_contents, context, MEDIA_TOOLS)
         
         transcript_text = ""
         if isinstance(response_obj, str):
-            # Если произошла ошибка API, сообщаем пользователю
-            await message.reply_text(f"Не удалось расшифровать аудио: {response_obj}")
+            await message.reply_text(f"Не удалось расшифровать: {response_obj}")
             return
         else:
-            transcript_text = format_gemini_response(response_obj)
+            transcript_text = format_gemini_response(response_obj).strip()
 
         if not transcript_text:
-            await message.reply_text("Не удалось распознать речь в аудиофайле.")
+            await message.reply_text("Не удалось распознать речь.")
+            # Добавим в историю, что была попытка, но она провалилась
+            await add_to_history(context, "user", [types.Part(text="[Пустое или неразборчивое голосовое сообщение]")], message.from_user, original_message_id=message.message_id)
             return
         
-        logger.info(f"Аудио успешно расшифровано для чата {message.chat_id}")
-
-        # Этап 2: Формируем текст для истории и отвечаем на него
-        full_user_prompt = f"[Голосовое сообщение]: {transcript_text}\n\n{message.caption or ''}".strip()
-        
-        # Передаем управление стандартному обработчику текста
-        # Он сам добавит все в историю и вызовет process_request
+        logger.info(f"Голосовое успешно расшифровано для чата {message.chat_id}")
+        full_user_prompt = f"[Голосовое сообщение]: {transcript_text}"
         await handle_message(update, context, custom_text=full_user_prompt)
 
     except (BadRequest, IOError) as e:
-        logger.error(f"Ошибка при обработке аудио: {e}")
-        await message.reply_text(f"❌ Ошибка обработки аудио: {e}")
+        logger.error(f"Ошибка при обработке голосового: {e}")
+        await message.reply_text(f"❌ Ошибка обработки голосового: {e}")
     except Exception as e:
-        logger.error(f"Непредвиденная ошибка при обработке аудио: {e}", exc_info=True)
-        await message.reply_text("❌ Внутренняя ошибка при обработке аудио.")
+        logger.error(f"Непредвиденная ошибка при обработке голосового: {e}", exc_info=True)
+        await message.reply_text("❌ Внутренняя ошибка при обработке голосового сообщения.")
+
+@ignore_if_processing
+async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик для аудиофайлов (музыка, звуки) - анализ, а не транскрипция."""
+    message = update.message
+    if not message: return
+    
+    context.chat_data['id'] = message.chat_id
+    audio = message.audio or (message.document if message.document and message.document.mime_type and message.document.mime_type.startswith("audio/") else None)
+    if not audio: return
+
+    if audio.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+         await message.reply_text(f"🎧 Аудиофайл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать.")
+         return
+
+    try:
+        audio_file = await audio.get_file()
+        audio_bytes = await audio_file.download_as_bytearray()
+        file_name = getattr(audio, 'file_name', 'audio.mp3')
+        audio_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], audio_bytes, audio.mime_type, file_name)
+        await handle_media_request(update, context, audio_part, message.caption or "")
+    except (BadRequest, IOError) as e:
+        logger.error(f"Ошибка при обработке аудиофайла: {e}")
+        await message.reply_text(f"❌ Ошибка обработки аудиофайла: {e}")
+    except Exception as e:
+        logger.error(f"Непредвиденная ошибка при обработке аудиофайла: {e}", exc_info=True)
+        await message.reply_text("❌ Внутренняя ошибка при обработке аудиофайла.")
 
 @ignore_if_processing
 @isolated_request
@@ -838,9 +846,7 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text("Анализирую видео с YouTube...", reply_to_message_id=message.id)
     try:
         youtube_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
-        
-        user_prompt = text.replace(match.group(0), "").strip() or "Посмотри видео по ссылке, сделай краткий пересказ, ответь на имеющиеся вопросы и предоставь непредвзятое мнение на основе результатов своего объективного анализа. Не вставляй транскрипт и таймкоды, если я не просил."
-        
+        user_prompt = text.replace(match.group(0), "").strip()
         await handle_media_request(update, context, youtube_part, user_prompt)
     except Exception as e:
         logger.error(f"Ошибка при обработке YouTube URL {youtube_url}: {e}", exc_info=True)
@@ -934,16 +940,25 @@ async def main():
     application.add_handler(CommandHandler("keypoints", keypoints_command))
     application.add_handler(CommandHandler("newtopic", newtopic_command))
     
+    # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
+    
+    # 1. Неизолированные обработчики (контекст важен)
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
+    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
+    audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND
+    application.add_handler(MessageHandler(audio_filter, handle_audio))
+    
+    # 2. Изолированные обработчики (контекст мешает)
     application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
-    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_audio))
-    application.add_handler(MessageHandler(filters.AUDIO & ~filters.COMMAND, handle_audio))
-    application.add_handler(MessageHandler(filters.Document.ALL & ~filters.COMMAND, handle_document))
-
-    url_filter = filters.Entity("url") | filters.Entity("text_link")
+    document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND
+    application.add_handler(MessageHandler(document_filter, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter, handle_url))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # 3. Текстовые обработчики (должны идти последними)
+    url_filter = filters.Entity("url") | filters.Entity("text_link")
+    # Исключаем YouTube ссылки, т.к. для них есть свой изолированный обработчик
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
     
     await application.bot.set_my_commands(commands)
     
