@@ -1,4 +1,4 @@
-# Версия 13.0 (с новой архитектурой обработки голоса)
+# Версия 13.1 (Архитектура "Стальной каркас")
 
 import logging
 import os
@@ -70,7 +70,7 @@ try:
 except FileNotFoundError:
     logger.error("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
     SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)
-    ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Учитывая текущую дату и время (уже предоставлены в System Note, используй их и не пытайся вычислять самостоятельно), ТЫ ОБЯЗАН АКТИВНО использовать инструмент Grounding with Google Search для поиска в интернете. АБСОЛЮТНЫЕ ЗАПРЕТЫ: НИКОГДА не показывай `tool_code`, `thought` или другие внутренние рассуждения. НИКОГДА не начинай ответ с префикса пользователя (например, `[12345; Name: User]:`).
+    НЕ АНОНСИРУЙ И НЕ ОПИСЫВАЙ В ОТВЕТЕ, НО СОБЛЮДАЙ КРИТИЧЕСКИ ВАЖНЫЙ ВНУТРЕННИЙ ПРОЦЕСС РАССУЖДЕНИЙ: Учитывай, что твоя база знаний уже устарела, поэтому ПРИ КАЖДОМ ЗАПРОСЕ ИНФОРМАЦИИ ТЫ ОБЯЗАН АКТИВНО ЗАДЕЙСТВОВАТЬ Grounding with Google Search для поиска в интернете ВСЕСТОРОННИХ и ВСЕВОЗМОЖНЫХ ДАННЫХ (сохраняя даты и источники) и определить все возможные КОРРЕЛЯЦИИ, ПРИЧИННО-СЛЕДСТВЕННЫЕ СВЯЗИ, АНОМАЛИИ и СКРЫТЫЕ ПАТТЕРНЫ ('сигналы в шуме'), образовав ГРАФ СВЯЗЕЙ. Сформулируй релевантные целям ТЕЗИСЫ, АРГУМЕНТЫ и ДОВОДЫ, основанные на актуальных ФАКТАХ и ЛОГИКЕ. Выяви наиболее ЭФФЕКТИВНЫЕ РЕШЕНИЯ и ИДЕИ. Сформируй ГИПОТЕЗЫ и оцени их вероятность в %. Спрогнозируй последствия 2 и 3 порядка. Предоставь содержательный ответ.
     """
 
 # --- КЛАСС PERSISTENCE ---
@@ -296,8 +296,8 @@ def build_history_for_request(chat_history: list) -> list[types.Content]:
     valid_history.reverse()
     return valid_history
 
-def find_media_context_in_history(context: ContextTypes.DEFAULT_TYPE, reply_to_id: int) -> dict | None:
-    chat_id = context.effective_chat.id
+def find_media_context_in_history(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_to_id: int) -> dict | None:
+    chat_id = update.effective_chat.id
     history = context.chat_data.get("history", [])
     all_media_contexts = context.application.bot_data.setdefault('media_contexts', {})
     chat_media_contexts = all_media_contexts.get(chat_id, {})
@@ -439,6 +439,9 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
         final_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         final_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', final_text)
         final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
+        # Удаляем возможное упоминание даты в самом начале ответа
+        final_text = re.sub(r'^\s*Сегодня\s+(?:понедельник|вторник|среда|четверг|пятница|суббота|воскресенье),\s*\d{1,2}\s+\w+\s+\d{4}\s+года[.,]?\s*', '', final_text, flags=re.IGNORECASE)
+
 
         return final_text.strip()
         
@@ -522,13 +525,12 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         has_media_data = any(p.file_data for p in content_parts)
         has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
 
-        grounding_instruction = """
-НЕ АНОНСИРУЙ И НЕ ОПИСЫВАЙ В ОТВЕТЕ, НО СОБЛЮДАЙ КРИТИЧЕСКИ ВАЖНЫЙ ВНУТРЕННИЙ ПРОЦЕСС РАССУЖДЕНИЙ: Учитывай, что твоя база знаний уже устарела, поэтому ПРИ КАЖДОМ ЗАПРОСЕ ИНФОРМАЦИИ ТЫ ОБЯЗАН АКТИВНО ЗАДЕЙСТВОВАТЬ Grounding with Google Search для поиска в интернете ВСЕСТОРОННИХ и ВСЕВОЗМОЖНЫХ ДАННЫХ (сохраняя даты и источники) и определить все возможные КОРРЕЛЯЦИИ, ПРИЧИННО-СЛЕДСТВЕННЫЕ СВЯЗИ, АНОМАЛИИ и СКРЫТЫЕ ПАТТЕРНЫ ('сигналы в шуме'), образовав ГРАФ СВЯЗЕЙ. Сформулируй релевантные целям ТЕЗИСЫ, АРГУМЕНТЫ и ДОВОДЫ, основанные на актуальных ФАКТАХ и ЛОГИКЕ. Выяви наиболее ЭФФЕКТИВНЫЕ РЕШЕНИЯ и ИДЕИ. Сформируй ГИПОТЕЗЫ и оцени их вероятность в %. Спрогнозируй последствия 2 и 3 порядка. Предоставь содержательный ответ.
-"""
+        final_prompt_text = f"{user_prefix}{prompt_text}"
         if not has_media_data and not has_url_in_text:
+            grounding_instruction = """
+Учитывай, что твоя база знаний уже устарела, поэтому ПРИ КАЖДОМ ЗАПРОСЕ ИНФОРМАЦИИ ТЫ ОБЯЗАН АКТИВНО ЗАДЕЙСТВОВАТЬ Grounding with Google Search для поиска в интернете.
+"""
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
-        else:
-            final_prompt_text = f"{user_prefix}{prompt_text}"
         
         current_request_parts = []
         for part in content_parts:
@@ -814,7 +816,7 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text("Анализирую видео с YouTube...", reply_to_message_id=message.id)
     try:
         youtube_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
-        user_prompt = text.replace(match.group(0), "").strip()
+        user_prompt = text.replace(match.group(0), "").strip() or "Проанализируй видео по этой ссылке. Уточни автора и название."
         await handle_media_request(update, context, youtube_part, user_prompt)
     except Exception as e:
         logger.error(f"Ошибка при обработке YouTube URL {youtube_url}: {e}", exc_info=True)
@@ -838,7 +840,6 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
         voice_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], voice_bytes, voice.mime_type, "voice_message.ogg")
 
         transcription_prompt = "Transcribe this audio file. Return only the transcribed text."
-        # Делаем "стерильный" запрос на транскрипцию без основной истории и личности
         response_obj = await generate_response(
             context.bot_data['gemini_client'],
             [types.Content(parts=[voice_part, types.Part(text=transcription_prompt)], role="user")],
@@ -861,7 +862,7 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
         
         logger.info(f"Голосовое успешно расшифровано для чата {message.chat_id}")
         
-        # Передаем чистый транскрипт на обработку как обычный текст
+        await add_to_history(context, "user", [types.Part(text=f"[Голосовое сообщение]: {transcript_text}")], message.from_user, original_message_id=message.message_id)
         await _internal_handle_message_logic(update, context, custom_text=transcript_text)
 
     except (BadRequest, IOError) as e:
@@ -885,7 +886,7 @@ async def _internal_handle_message_logic(update: Update, context: ContextTypes.D
     is_media_request = False
     
     if custom_text is None and message.reply_to_message:
-        media_context = find_media_context_in_history(context, message.reply_to_message.message_id)
+        media_context = find_media_context_in_history(update, context, message.reply_to_message.message_id)
         if media_context:
             media_part = dict_to_part(media_context)
             if media_part:
