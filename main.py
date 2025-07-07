@@ -1,4 +1,4 @@
-# Версия 12.5 (с механизмом ретрая для API)
+# Версия 12.6 (с хирургическим удалением приветствий)
 
 import logging
 import os
@@ -225,7 +225,7 @@ def ignore_if_processing(func):
 def isolated_request(handler_func):
     """
     Декоратор, который изолирует выполнение обработчика от основной истории чата,
-    используя "фальшивую" историю для подавления приветствий.
+    используя флаг в контексте для подавления приветствий.
     """
     @wraps(handler_func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -233,16 +233,19 @@ def isolated_request(handler_func):
         logger.info(f"ChatID: {chat_id} | Изолированный запрос для {handler_func.__name__}. Временно очищаем историю для API.")
         
         original_history = list(context.chat_data.get("history", []))
-        context.chat_data["history"] = [{"role": "user", "parts": [{"type": "text", "content": "..."}]}]
+        context.chat_data["history"] = []
+        context.chat_data['_is_isolated_request'] = True
         
         try:
             await handler_func(update, context, *args, **kwargs)
         finally:
             newly_added_history = context.chat_data.get("history", [])
-            context.chat_data["history"] = original_history + newly_added_history[1:]
+            context.chat_data["history"] = original_history + newly_added_history
             
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
                 context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
+            
+            context.chat_data.pop('_is_isolated_request', None)
             logger.info(f"ChatID: {chat_id} | Анализ в {handler_func.__name__} завершен. История восстановлена.")
     return wrapper
 
@@ -406,7 +409,7 @@ async def generate_response(client: genai.Client, request_contents: list, contex
     return f"❌ <b>Сервер Google не отвечает.</b>\nНе удалось получить ответ после нескольких попыток. Ошибка: <code>{html.escape(str(last_exception))}</code>"
 
 
-def format_gemini_response(response: types.GenerateContentResponse) -> str:
+def format_gemini_response(response: types.GenerateContentResponse, context: ContextTypes.DEFAULT_TYPE) -> str:
     try:
         if not response or not response.candidates:
             logger.warning("Получен пустой или некорректный ответ от API (нет кандидатов).")
@@ -433,10 +436,19 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
         clean_text = re.sub(r'^\s+$', '', full_text, flags=re.MULTILINE)
         squeezed_text = re.sub(r'\n{3,}', '\n\n', clean_text)
         
-        # --- Дальнейшая очистка ---
         final_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         final_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', final_text)
         final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
+
+        # Хирургическое удаление приветствий для изолированных запросов
+        if context.chat_data.get('_is_isolated_request'):
+            user_name = context.effective_user.first_name if context.effective_user else ""
+            # Универсальное регулярное выражение для приветствий
+            greeting_pattern = re.compile(
+                r'^\s*(?:Привет|Здравствуй(?:те)?|Добрый\s+(?:день|вечер|утро)|' + (re.escape(user_name) if user_name else '') + r')\s*[,.!]?\s*',
+                re.IGNORECASE
+            )
+            final_text = greeting_pattern.sub('', final_text)
 
         return final_text.strip()
         
@@ -547,7 +559,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         if isinstance(response_obj, str):
             reply_text = response_obj
         else:
-            reply_text = format_gemini_response(response_obj)
+            reply_text = format_gemini_response(response_obj, context)
         
         if len(reply_text) > MAX_HISTORY_RESPONSE_LEN:
             full_response_for_history = reply_text[:MAX_HISTORY_RESPONSE_LEN] + "..."
@@ -659,7 +671,7 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
         content_parts = [media_part, types.Part(text=prompt)]
         
         response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS)
-        result_text = format_gemini_response(response_obj) if not isinstance(response_obj, str) else response_obj
+        result_text = format_gemini_response(response_obj, context) if not isinstance(response_obj, str) else response_obj
         await send_reply(update.message, result_text, add_context_hint=True)
     
     except BadRequest as e:
@@ -846,9 +858,9 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
             await message.reply_text(f"Не удалось расшифровать: {response_obj}")
             return
         else:
-            transcript_text = format_gemini_response(response_obj).strip()
+            transcript_text = format_gemini_response(response_obj, context)
 
-        if not transcript_text:
+        if not transcript_text.strip():
             await message.reply_text("Не удалось распознать речь.")
             await add_to_history(context, "user", [types.Part(text="[Пустое или неразборчивое голосовое сообщение]")], message.from_user, original_message_id=message.message_id)
             return
