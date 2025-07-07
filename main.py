@@ -1,4 +1,4 @@
-# Версия 12.4 (финальная, с исправленной логикой голоса)
+# Версия 12.5 (с механизмом ретрая для API)
 
 import logging
 import os
@@ -371,31 +371,40 @@ async def generate_response(client: genai.Client, request_contents: list, contex
         thinking_config=types.ThinkingConfig(thinking_budget=24576) # Максимальный бюджет на мышление
     )
     
-    try:
-        response = await client.aio.models.generate_content(
-            model=MODEL_NAME,
-            contents=request_contents,
-            config=config
-        )
-        logger.info(f"ChatID: {chat_id} | Ответ от Gemini API получен.")
-        return response
-    except genai_errors.APIError as e:
-        error_text = str(e).lower()
-        logger.error(f"ChatID: {chat_id} | Ошибка Google API: {e}", exc_info=False)
-        
-        if "input token count" in error_text and "exceeds the maximum" in error_text:
-            return "🤯 <b>Слишком длинная история!</b>\nКажется, мы заболтались, и я уже не могу удержать в голове весь наш диалог. Пожалуйста, очистите историю командой /clear, чтобы начать заново."
-        
-        if "resource has been exhausted" in error_text:
-            return "⏳ <b>Слишком много запросов!</b>\nПожалуйста, подождите минуту, я немного перегрузилась."
+    # --- МЕХАНИЗМ РЕТРАЯ ---
+    max_retries = 3
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=request_contents,
+                config=config
+            )
+            logger.info(f"ChatID: {chat_id} | Ответ от Gemini API получен.")
+            return response
+        except (genai_errors.InternalServerError, genai_errors.ServiceUnavailableError) as e:
+            last_exception = e
+            logger.warning(f"ChatID: {chat_id} | Временная ошибка API (попытка {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** (attempt + 1)) # Экспоненциальная задержка (2, 4 сек)
+            continue
+        except genai_errors.APIError as e:
+            error_text = str(e).lower()
+            logger.error(f"ChatID: {chat_id} | Ошибка Google API: {e}", exc_info=False)
+            if "input token count" in error_text and "exceeds the maximum" in error_text:
+                return "🤯 <b>Слишком длинная история!</b>\nКажется, мы заболтались, и я уже не могу удержать в голове весь наш диалог. Пожалуйста, очистите историю командой /clear, чтобы начать заново."
+            if "resource has been exhausted" in error_text:
+                return "⏳ <b>Слишком много запросов!</b>\nПожалуйста, подождите минуту, я немного перегрузилась."
+            if "permission denied" in error_text:
+                return "❌ <b>Ошибка доступа к файлу.</b>\nВозможно, файл был удален с серверов Google (срок хранения 48 часов) или возникла другая проблема. Попробуйте отправить файл заново."
+            return f"❌ <b>Ошибка Google API:</b>\n<code>{html.escape(str(e))}</code>"
+        except Exception as e:
+            logger.error(f"ChatID: {chat_id} | Неизвестная ошибка генерации: {e}", exc_info=True)
+            return f"❌ <b>Произошла внутренняя ошибка:</b>\n<code>{html.escape(str(e))}</code>"
+    
+    return f"❌ <b>Сервер Google не отвечает.</b>\nНе удалось получить ответ после нескольких попыток. Ошибка: <code>{html.escape(str(last_exception))}</code>"
 
-        if "permission denied" in error_text:
-            return "❌ <b>Ошибка доступа к файлу.</b>\nВозможно, файл был удален с серверов Google (срок хранения 48 часов) или возникла другая проблема. Попробуйте отправить файл заново."
-
-        return f"❌ <b>Ошибка Google API:</b>\n<code>{html.escape(str(e))}</code>"
-    except Exception as e:
-        logger.error(f"ChatID: {chat_id} | Неизвестная ошибка генерации: {e}", exc_info=True)
-        return f"❌ <b>Произошла внутренняя ошибка:</b>\n<code>{html.escape(str(e))}</code>"
 
 def format_gemini_response(response: types.GenerateContentResponse) -> str:
     try:
