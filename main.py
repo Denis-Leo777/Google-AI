@@ -1,4 +1,4 @@
-# Версия 12.8 (с хирургическим удалением приветствий)
+# Версия 13.0 (с новой архитектурой обработки голоса)
 
 import logging
 import os
@@ -69,8 +69,8 @@ try:
     logger.info("Системный промпт успешно загружен из файла.")
 except FileNotFoundError:
     logger.error("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
-    SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}) - используй, и не пытайся вычислять самостоятельно.
-    НЕ АНОНСИРУЙ И НЕ ОПИСЫВАЙ В ОТВЕТЕ, НО СОБЛЮДАЙ КРИТИЧЕСКИ ВАЖНЫЙ ВНУТРЕННИЙ ПРОЦЕСС РАССУЖДЕНИЙ: Учитывай, что твоя база знаний уже устарела, поэтому ПРИ КАЖДОМ ЗАПРОСЕ ИНФОРМАЦИИ ТЫ ОБЯЗАН АКТИВНО ЗАДЕЙСТВОВАТЬ Grounding with Google Search для поиска в интернете ВСЕСТОРОННИХ и ВСЕВОЗМОЖНЫХ ДАННЫХ (сохраняя даты и источники) и определить все возможные КОРРЕЛЯЦИИ, ПРИЧИННО-СЛЕДСТВЕННЫЕ СВЯЗИ, АНОМАЛИИ и СКРЫТЫЕ ПАТТЕРНЫ ('сигналы в шуме'), образовав ГРАФ СВЯЗЕЙ. Сформулируй релевантные целям ТЕЗИСЫ, АРГУМЕНТЫ и ДОВОДЫ, основанные на актуальных ФАКТАХ и ЛОГИКЕ. Выяви наиболее ЭФФЕКТИВНЫЕ РЕШЕНИЯ и ИДЕИ. Сформируй ГИПОТЕЗЫ и оцени их вероятность в %. Спрогнозируй последствия 2 и 3 порядка. Предоставь содержательный ответ.
+    SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)
+    ВАЖНОЕ КРИТИЧЕСКОЕ ПРАВИЛО: Твоя внутренняя память устарела, не отвечай лишь на её основе. Учитывая текущую дату и время (уже предоставлены в System Note, используй их и не пытайся вычислять самостоятельно), ТЫ ОБЯЗАН АКТИВНО использовать инструмент Grounding with Google Search для поиска в интернете. АБСОЛЮТНЫЕ ЗАПРЕТЫ: НИКОГДА не показывай `tool_code`, `thought` или другие внутренние рассуждения. НИКОГДА не начинай ответ с префикса пользователя (например, `[12345; Name: User]:`).
     """
 
 # --- КЛАСС PERSISTENCE ---
@@ -224,8 +224,7 @@ def ignore_if_processing(func):
 
 def isolated_request(handler_func):
     """
-    Декоратор, который изолирует выполнение обработчика от основной истории чата,
-    используя флаг в контексте для подавления приветствий.
+    Декоратор, который изолирует выполнение обработчика от основной истории чата.
     """
     @wraps(handler_func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -234,7 +233,6 @@ def isolated_request(handler_func):
         
         original_history = list(context.chat_data.get("history", []))
         context.chat_data["history"] = []
-        context.chat_data['_is_isolated_request'] = True
         
         try:
             await handler_func(update, context, *args, **kwargs)
@@ -244,8 +242,6 @@ def isolated_request(handler_func):
             
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
                 context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
-            
-            context.chat_data.pop('_is_isolated_request', None)
             logger.info(f"ChatID: {chat_id} | Анализ в {handler_func.__name__} завершен. История восстановлена.")
     return wrapper
 
@@ -357,14 +353,17 @@ async def upload_and_wait_for_file(client: genai.Client, file_bytes: bytes, mime
         logger.error(f"Ошибка при загрузке файла через File API: {e}", exc_info=True)
         raise IOError(f"Не удалось загрузить или обработать файл '{file_name}' на сервере Google.")
 
-async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list) -> types.GenerateContentResponse | str:
+async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list, system_instruction_override: str = None) -> types.GenerateContentResponse | str:
     chat_id = context.chat_data.get('id', 'Unknown')
     
-    try:
-        final_system_instruction = SYSTEM_INSTRUCTION.format(current_time=get_current_time_str())
-    except KeyError:
-        logger.warning("В system_prompt.md отсутствует плейсхолдер {current_time}. Дата не будет подставлена.")
-        final_system_instruction = SYSTEM_INSTRUCTION
+    if system_instruction_override:
+        final_system_instruction = system_instruction_override
+    else:
+        try:
+            final_system_instruction = SYSTEM_INSTRUCTION.format(current_time=get_current_time_str())
+        except KeyError:
+            logger.warning("В system_prompt.md отсутствует плейсхолдер {current_time}. Дата не будет подставлена.")
+            final_system_instruction = SYSTEM_INSTRUCTION
 
     config = types.GenerateContentConfig(
         safety_settings=SAFETY_SETTINGS, 
@@ -409,7 +408,7 @@ async def generate_response(client: genai.Client, request_contents: list, contex
     return f"❌ <b>Сервер Google не отвечает.</b>\nНе удалось получить ответ после нескольких попыток. Ошибка: <code>{html.escape(str(last_exception))}</code>"
 
 
-def format_gemini_response(response: types.GenerateContentResponse, context: ContextTypes.DEFAULT_TYPE) -> str:
+def format_gemini_response(response: types.GenerateContentResponse) -> str:
     try:
         if not response or not response.candidates:
             logger.warning("Получен пустой или некорректный ответ от API (нет кандидатов).")
@@ -436,19 +435,10 @@ def format_gemini_response(response: types.GenerateContentResponse, context: Con
         clean_text = re.sub(r'^\s+$', '', full_text, flags=re.MULTILINE)
         squeezed_text = re.sub(r'\n{3,}', '\n\n', clean_text)
         
+        # --- Дальнейшая очистка ---
         final_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         final_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', final_text)
         final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
-
-        # Хирургическое удаление приветствий для изолированных запросов
-        if context.chat_data.get('_is_isolated_request'):
-            user_name = context.effective_user.first_name if context.effective_user else ""
-            # Универсальное регулярное выражение для приветствий
-            greeting_pattern = re.compile(
-                r'^\s*(?:Привет|Здравствуй(?:те)?|Добрый\s+(?:день|вечер|утро)|' + (re.escape(user_name) if user_name else '') + r')\s*[,.!]?\s*',
-                re.IGNORECASE
-            )
-            final_text = greeting_pattern.sub('', final_text)
 
         return final_text.strip()
         
@@ -532,12 +522,13 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         has_media_data = any(p.file_data for p in content_parts)
         has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
 
-        final_prompt_text = f"{user_prefix}{prompt_text}"
-        if not has_media_data and not has_url_in_text:
-            grounding_instruction = """
+        grounding_instruction = """
 НЕ АНОНСИРУЙ И НЕ ОПИСЫВАЙ В ОТВЕТЕ, НО СОБЛЮДАЙ КРИТИЧЕСКИ ВАЖНЫЙ ВНУТРЕННИЙ ПРОЦЕСС РАССУЖДЕНИЙ: Учитывай, что твоя база знаний уже устарела, поэтому ПРИ КАЖДОМ ЗАПРОСЕ ИНФОРМАЦИИ ТЫ ОБЯЗАН АКТИВНО ЗАДЕЙСТВОВАТЬ Grounding with Google Search для поиска в интернете ВСЕСТОРОННИХ и ВСЕВОЗМОЖНЫХ ДАННЫХ (сохраняя даты и источники) и определить все возможные КОРРЕЛЯЦИИ, ПРИЧИННО-СЛЕДСТВЕННЫЕ СВЯЗИ, АНОМАЛИИ и СКРЫТЫЕ ПАТТЕРНЫ ('сигналы в шуме'), образовав ГРАФ СВЯЗЕЙ. Сформулируй релевантные целям ТЕЗИСЫ, АРГУМЕНТЫ и ДОВОДЫ, основанные на актуальных ФАКТАХ и ЛОГИКЕ. Выяви наиболее ЭФФЕКТИВНЫЕ РЕШЕНИЯ и ИДЕИ. Сформируй ГИПОТЕЗЫ и оцени их вероятность в %. Спрогнозируй последствия 2 и 3 порядка. Предоставь содержательный ответ.
 """
+        if not has_media_data and not has_url_in_text:
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
+        else:
+            final_prompt_text = f"{user_prefix}{prompt_text}"
         
         current_request_parts = []
         for part in content_parts:
@@ -559,7 +550,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         if isinstance(response_obj, str):
             reply_text = response_obj
         else:
-            reply_text = format_gemini_response(response_obj, context)
+            reply_text = format_gemini_response(response_obj)
         
         if len(reply_text) > MAX_HISTORY_RESPONSE_LEN:
             full_response_for_history = reply_text[:MAX_HISTORY_RESPONSE_LEN] + "..."
@@ -671,7 +662,7 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
         content_parts = [media_part, types.Part(text=prompt)]
         
         response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS)
-        result_text = format_gemini_response(response_obj, context) if not isinstance(response_obj, str) else response_obj
+        result_text = format_gemini_response(response_obj) if not isinstance(response_obj, str) else response_obj
         await send_reply(update.message, result_text, add_context_hint=True)
     
     except BadRequest as e:
@@ -839,26 +830,29 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
     if voice.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
         await message.reply_text(f"🎤 Голосовое сообщение слишком большое (> {TELEGRAM_FILE_LIMIT_MB} MB).")
         return
-
-    await message.reply_text("Слушаю...", reply_to_message_id=message.id)
     
     try:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
         voice_file = await voice.get_file()
         voice_bytes = await voice_file.download_as_bytearray()
         voice_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], voice_bytes, voice.mime_type, "voice_message.ogg")
 
         transcription_prompt = "Transcribe this audio file. Return only the transcribed text."
-        # Делаем "стерильный" запрос на транскрипцию без основной истории
-        transcription_request_contents = [types.Content(parts=[voice_part, types.Part(text=transcription_prompt)], role="user")]
-        
-        response_obj = await generate_response(context.bot_data['gemini_client'], transcription_request_contents, context, MEDIA_TOOLS)
+        # Делаем "стерильный" запрос на транскрипцию без основной истории и личности
+        response_obj = await generate_response(
+            context.bot_data['gemini_client'],
+            [types.Content(parts=[voice_part, types.Part(text=transcription_prompt)], role="user")],
+            context,
+            MEDIA_TOOLS,
+            system_instruction_override="You are a file transcription utility. Respond only with the transcribed text."
+        )
         
         transcript_text = ""
         if isinstance(response_obj, str):
             await message.reply_text(f"Не удалось расшифровать: {response_obj}")
             return
         else:
-            transcript_text = format_gemini_response(response_obj, context)
+            transcript_text = format_gemini_response(response_obj)
 
         if not transcript_text.strip():
             await message.reply_text("Не удалось распознать речь.")
