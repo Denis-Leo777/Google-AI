@@ -48,8 +48,8 @@ YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|em
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
 MAX_CONTEXT_CHARS = 500000
-MAX_HISTORY_RESPONSE_LEN = 3000
-MAX_HISTORY_ITEMS = 50
+MAX_HISTORY_RESPONSE_LEN = 6000
+MAX_HISTORY_ITEMS = 100
 MAX_MEDIA_CONTEXTS = 100
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
