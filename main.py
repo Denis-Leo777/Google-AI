@@ -1,4 +1,4 @@
-# Версия 13.2 (Архитектура "Стальной каркас")
+# Версия 13.2 (Архитектура "Стальной каркас") - с правками
 
 import logging
 import os
@@ -43,7 +43,7 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНСТАНТЫ И НАСТРОЙКИ ---
-MODEL_NAME = 'gemini-2.5-flash'
+MODEL_NAME = 'gemini-2.5-flash' # ИЗМЕНЕНО: В соответствии с твоим требованием
 YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})'
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
@@ -296,35 +296,8 @@ def build_history_for_request(chat_history: list) -> list[types.Content]:
     valid_history.reverse()
     return valid_history
 
-def find_media_context_in_history(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_to_id: int) -> dict | None:
-    chat_id = update.effective_chat.id
-    history = context.chat_data.get("history", [])
-    all_media_contexts = context.application.bot_data.setdefault('media_contexts', {})
-    chat_media_contexts = all_media_contexts.get(chat_id, {})
-    
-    current_reply_id = reply_to_id
-    for _ in range(len(history)):
-        bot_message = next((msg for msg in reversed(history) if msg.get("role") == "model" and msg.get("bot_message_id") == current_reply_id), None)
-        if bot_message and 'original_message_id' in bot_message:
-            user_msg_id = bot_message['original_message_id']
-            if user_msg_id in chat_media_contexts:
-                media_context = chat_media_contexts[user_msg_id]
-                if time.time() - media_context.get('timestamp', 0) < MEDIA_CONTEXT_TTL_SECONDS:
-                    return media_context
-                else:
-                    logger.info(f"Найденный медиа-контекст для msg_id {user_msg_id} протух.")
-                    return None
-            current_reply_id = user_msg_id
-        else:
-            if current_reply_id in chat_media_contexts:
-                media_context = chat_media_contexts[current_reply_id]
-                if time.time() - media_context.get('timestamp', 0) < MEDIA_CONTEXT_TTL_SECONDS:
-                    return media_context
-                else:
-                    logger.info(f"Найденный медиа-контекст для msg_id {current_reply_id} протух.")
-                    return None
-            break
-    return None
+# УДАЛЕНО: Эта функция больше не нужна, так как заменена на reply_map.
+# def find_media_context_in_history(...)
 
 async def upload_and_wait_for_file(client: genai.Client, file_bytes: bytes, mime_type: str, file_name: str) -> types.Part:
     logger.info(f"Загрузка файла '{file_name}' ({len(file_bytes) / 1024:.2f} KB) через File API...")
@@ -565,6 +538,18 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
             await add_to_history(context, "user", content_parts, user, original_message_id=message.message_id)
             await add_to_history(context, "model", [types.Part(text=full_response_for_history)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
             
+            # --- ИЗМЕНЕНИЕ ЗДЕСЬ (внедрение reply_map) ---
+            # Создаем и обновляем прямую карту для быстрого и надежного поиска контекста.
+            reply_map = context.chat_data.setdefault('reply_map', {})
+            reply_map[sent_message.message_id] = message.message_id
+            # Ограничиваем размер карты, чтобы она не росла бесконечно.
+            if len(reply_map) > MAX_HISTORY_ITEMS * 2:
+                # Удаляем самые старые записи.
+                keys_to_del = list(reply_map.keys())[:len(reply_map) - MAX_HISTORY_ITEMS]
+                for k in keys_to_del:
+                    reply_map.pop(k, None)
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
             if is_media_request:
                 media_part = next((p for p in content_parts if p.file_data), None)
                 if media_part:
@@ -704,7 +689,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if photo.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
         await message.reply_text(f"🖼️ Изображение слишком большое (> {TELEGRAM_FILE_LIMIT_MB} MB), я не могу его проанализировать, но сейчас отвечу на текстовую часть сообщения, если она есть.")
         if message.caption:
-            await handle_message(update, context, custom_text=message.caption)
+            await handle_message(update, context) # Исправлено: не передаем custom_text, чтобы сработал стандартный обработчик
         return
 
     try:
@@ -731,7 +716,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if doc.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
         await message.reply_text(f"📑 Файл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать. Отвечу на текст, если он есть.")
         if message.caption:
-            await handle_message(update, context, custom_text=message.caption)
+            await handle_message(update, context)
         return
     
     await message.reply_text(f"Загружаю документ '{doc.file_name}'...", reply_to_message_id=message.id)
@@ -759,7 +744,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if video.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
         await message.reply_text(f"📹 Видеофайл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать. Отвечу на текст, если он есть.")
         if message.caption:
-            await handle_message(update, context, custom_text=message.caption)
+            await handle_message(update, context)
         return
     
     await message.reply_text("Загружаю видео...", reply_to_message_id=message.id)
@@ -794,7 +779,12 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         audio_bytes = await audio_file.download_as_bytearray()
         file_name = getattr(audio, 'file_name', 'audio.mp3')
         audio_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], audio_bytes, audio.mime_type, file_name)
-        await handle_media_request(update, context, audio_part, message.caption or "")
+        
+        # --- ИЗМЕНЕНИЕ ЗДЕСЬ (согласованный промпт) ---
+        user_prompt = message.caption or "Проанализируй это аудио. Опиши полную картину звуков: жанр, настроение, инструменты, вокал, слова. Дай объективное мнение и оценку."
+        await handle_media_request(update, context, audio_part, user_prompt)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке аудиофайла: {e}")
         await message.reply_text(f"❌ Ошибка обработки аудиофайла: {e}")
@@ -884,14 +874,25 @@ async def _internal_handle_message_logic(update: Update, context: ContextTypes.D
     content_parts = [types.Part(text=text)]
     is_media_request = False
     
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ (новый механизм контекста) ---
     if custom_text is None and message.reply_to_message:
-        media_context = find_media_context_in_history(update, context, message.reply_to_message.message_id)
-        if media_context:
-            media_part = dict_to_part(media_context)
-            if media_part:
-                content_parts.insert(0, media_part)
-                is_media_request = True
-                logger.info(f"Применен ЯВНЫЙ медиа-контекст (через reply) для чата {chat_id}")
+        # Используем новую, надежную "карту ответов".
+        reply_map = context.chat_data.get('reply_map', {})
+        original_user_msg_id = reply_map.get(message.reply_to_message.message_id)
+        
+        if original_user_msg_id:
+            all_media_contexts = context.application.bot_data.get('media_contexts', {})
+            chat_media_contexts = all_media_contexts.get(chat_id, {})
+            media_context_dict = chat_media_contexts.get(original_user_msg_id)
+            
+            if media_context_dict:
+                media_part = dict_to_part(media_context_dict)
+                if media_part:
+                    # Вставляем медиа-часть в начало запроса.
+                    content_parts.insert(0, media_part)
+                    is_media_request = True
+                    logger.info(f"Применен ЯВНЫЙ медиа-контекст (через reply_map) для чата {chat_id}")
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     await process_request(update, context, content_parts, is_media_request=is_media_request)
 
@@ -908,7 +909,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @ignore_if_processing
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Публичный обработчик для текста, защищенный декоратором."""
+    # Добавлен вызов _internal_handle_message_logic, чтобы обработчик caption работал правильно
     await _internal_handle_message_logic(update, context)
+
 
 # --- ЗАПУСК БОТА ---
 async def handle_health_check(request: aiohttp.web.Request) -> aiohttp.web.Response:
