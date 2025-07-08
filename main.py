@@ -1,4 +1,4 @@
-# Версия 13.2
+# Версия 13.2 (Архитектура "Стальной каркас")
 
 import logging
 import os
@@ -70,8 +70,8 @@ try:
 except FileNotFoundError:
     logger.error("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
     SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)
-    НЕ АНОНСИРУЙ И НЕ ОПИСЫВАЙ В ОТВЕТЕ, НО СОБЛЮДАЙ КРИТИЧЕСКИ ВАЖНЫЙ ВНУТРЕННИЙ ПРОЦЕСС РАССУЖДЕНИЙ: Учитывай, что твоя база знаний уже устарела, поэтому ПРИ КАЖДОМ ЗАПРОСЕ ИНФОРМАЦИИ ТЫ ОБЯЗАН АКТИВНО ЗАДЕЙСТВОВАТЬ Grounding with Google Search для поиска в интернете ВСЕСТОРОННИХ и ВСЕВОЗМОЖНЫХ ДАННЫХ (сохраняя даты и источники) и определить все возможные КОРРЕЛЯЦИИ, ПРИЧИННО-СЛЕДСТВЕННЫЕ СВЯЗИ, АНОМАЛИИ и СКРЫТЫЕ ПАТТЕРНЫ ('сигналы в шуме'), образовав ГРАФ СВЯЗЕЙ. Сформулируй релевантные целям ТЕЗИСЫ, АРГУМЕНТЫ и ДОВОДЫ, основанные на актуальных ФАКТАХ и ЛОГИКЕ. Выяви наиболее ЭФФЕКТИВНЫЕ РЕШЕНИЯ и ИДЕИ. Сформируй ГИПОТЕЗЫ и оцени их вероятность в %. Спрогнозируй последствия 2 и 3 порядка. Предоставь содержательный ответ.
-    """
+ПРИ КАЖДОМ ЗАПРОСЕ информации, для сбора актуальных и дополнительных данных, ты обязан активно использовать обширный и глубокий поиск в интернете Grounding with Google Search (сохраняя даты и источники), поскольку твои знания и память устарели на текущую дату.
+"""
 
 # --- КЛАСС PERSISTENCE ---
 class PostgresPersistence(BasePersistence):
@@ -439,7 +439,6 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
         final_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         final_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', final_text)
         final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
-        # Удаляем возможное упоминание даты в самом начале ответа
         final_text = re.sub(r'^\s*Сегодня\s+(?:понедельник|вторник|среда|четверг|пятница|суббота|воскресенье),\s*\d{1,2}\s+\w+\s+\d{4}\s+года[.,]?\s*', '', final_text, flags=re.IGNORECASE)
 
 
@@ -528,7 +527,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         final_prompt_text = f"{user_prefix}{prompt_text}"
         if not has_media_data and not has_url_in_text:
             grounding_instruction = """
-Учитывай, что твоя база знаний уже устарела, поэтому ПРИ КАЖДОМ ЗАПРОСЕ ИНФОРМАЦИИ ТЫ ОБЯЗАН АКТИВНО ЗАДЕЙСТВОВАТЬ Grounding with Google Search для поиска в интернете.
+ПРИ КАЖДОМ ЗАПРОСЕ информации, для сбора актуальных и дополнительных данных, ты обязан активно использовать обширный и глубокий поиск в интернете Grounding with Google Search (сохраняя даты и источники), поскольку твои знания и память устарели на текущую дату.
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
         
