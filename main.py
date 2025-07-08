@@ -1,4 +1,4 @@
-# Версия 13.6 (Исправление критической ошибки)
+# Версия 13.6 (Исправление критической ошибки API)
 
 import logging
 import os
@@ -48,8 +48,8 @@ YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|em
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
 MAX_CONTEXT_CHARS = 500000
-MAX_HISTORY_RESPONSE_LEN = 6000 # Запомнил твое изменение
-MAX_HISTORY_ITEMS = 100        # Запомнил твое изменение
+MAX_HISTORY_RESPONSE_LEN = 6000 # Твоя настройка
+MAX_HISTORY_ITEMS = 100        # Твоя настройка
 MAX_MEDIA_CONTEXTS = 100
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
@@ -327,7 +327,6 @@ async def upload_and_wait_for_file(client: genai.Client, file_bytes: bytes, mime
         logger.error(f"Ошибка при загрузке файла через File API: {e}", exc_info=True)
         raise IOError(f"Не удалось загрузить или обработать файл '{file_name}' на сервере Google.")
 
-# --- ИЗМЕНЕНИЕ ЗДЕСЬ (ИСПРАВЛЕНИЕ ОШИБКИ) ---
 async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list, system_instruction_override: str = None) -> types.GenerateContentResponse | str:
     chat_id = context.chat_data.get('id', 'Unknown')
     
@@ -348,31 +347,30 @@ async def generate_response(client: genai.Client, request_contents: list, contex
         thinking_config=types.ThinkingConfig(thinking_budget=24576)
     )
     
-    max_empty_response_retries = 3
-    for attempt in range(max_empty_response_retries):
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
             response = await client.aio.models.generate_content(
                 model=MODEL_NAME,
                 contents=request_contents,
                 config=config
             )
-            # Проверяем, что ответ не пустой
             if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                 logger.info(f"ChatID: {chat_id} | Ответ от Gemini API получен (попытка {attempt + 1}).")
                 return response
             
-            logger.warning(f"ChatID: {chat_id} | Получен пустой ответ от API (попытка {attempt + 1}/{max_empty_response_retries}). Пауза перед повтором.")
-            if attempt < max_empty_response_retries - 1:
+            logger.warning(f"ChatID: {chat_id} | Получен пустой ответ от API (попытка {attempt + 1}/{max_retries}). Пауза перед повтором.")
+            if attempt < max_retries - 1:
                 await asyncio.sleep(2)
 
         except genai_errors.APIError as e:
             logger.error(f"ChatID: {chat_id} | Ошибка Google API (попытка {attempt + 1}): {e}", exc_info=False)
-            # Проверяем, является ли ошибка временной серверной ошибкой (5xx)
             is_retryable = hasattr(e, 'http_status') and 500 <= e.http_status < 600
             
-            if is_retryable and attempt < max_empty_response_retries - 1:
-                logger.warning(f"ChatID: {chat_id} | Обнаружена временная ошибка. Повторная попытка через {2 ** (attempt + 1)} сек.")
-                await asyncio.sleep(2 ** (attempt + 1))
+            if is_retryable and attempt < max_retries - 1:
+                delay = 2 ** (attempt + 1)
+                logger.warning(f"ChatID: {chat_id} | Обнаружена временная ошибка. Повторная попытка через {delay} сек.")
+                await asyncio.sleep(delay)
                 continue
             else:
                 error_text = str(e).lower()
@@ -388,11 +386,8 @@ async def generate_response(client: genai.Client, request_contents: list, contex
             logger.error(f"ChatID: {chat_id} | Неизвестная ошибка генерации (попытка {attempt + 1}): {e}", exc_info=True)
             return f"❌ <b>Произошла критическая внутренняя ошибка:</b>\n<code>{html.escape(str(e))}</code>"
     
-    # Если все попытки получить непустой ответ провалились
-    logger.error(f"ChatID: {chat_id} | Не удалось получить содержательный ответ от API после {max_empty_response_retries} попыток.")
+    logger.error(f"ChatID: {chat_id} | Не удалось получить содержательный ответ от API после {max_retries} попыток.")
     return "Я не смогла сформировать ответ. Попробуйте переформулировать запрос или повторить попытку позже."
-
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 def format_gemini_response(response: types.GenerateContentResponse) -> str:
     try:
