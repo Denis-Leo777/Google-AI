@@ -1,4 +1,4 @@
-# Версия 13.6 (Архитектура "Стальной каркас", финальная полировка)
+# Версия 13.6 (Исправление критической ошибки)
 
 import logging
 import os
@@ -48,8 +48,8 @@ YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|em
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
 MAX_CONTEXT_CHARS = 500000
-MAX_HISTORY_RESPONSE_LEN = 6000
-MAX_HISTORY_ITEMS = 100
+MAX_HISTORY_RESPONSE_LEN = 6000 # Запомнил твое изменение
+MAX_HISTORY_ITEMS = 100        # Запомнил твое изменение
 MAX_MEDIA_CONTEXTS = 100
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
@@ -327,6 +327,7 @@ async def upload_and_wait_for_file(client: genai.Client, file_bytes: bytes, mime
         logger.error(f"Ошибка при загрузке файла через File API: {e}", exc_info=True)
         raise IOError(f"Не удалось загрузить или обработать файл '{file_name}' на сервере Google.")
 
+# --- ИЗМЕНЕНИЕ ЗДЕСЬ (ИСПРАВЛЕНИЕ ОШИБКИ) ---
 async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list, system_instruction_override: str = None) -> types.GenerateContentResponse | str:
     chat_id = context.chat_data.get('id', 'Unknown')
     
@@ -344,54 +345,54 @@ async def generate_response(client: genai.Client, request_contents: list, contex
         tools=tools,
         system_instruction=types.Content(parts=[types.Part(text=final_system_instruction)]),
         temperature=1.0,
-        thinking_config=types.ThinkingConfig(thinking_budget=24576) # Максимальный бюджет на мышление
+        thinking_config=types.ThinkingConfig(thinking_budget=24576)
     )
     
-    max_network_retries = 3
     max_empty_response_retries = 3
-    last_exception = None
-
-    for network_attempt in range(max_network_retries):
+    for attempt in range(max_empty_response_retries):
         try:
-            for empty_attempt in range(max_empty_response_retries):
-                response = await client.aio.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=request_contents,
-                    config=config
-                )
-                if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                    logger.info(f"ChatID: {chat_id} | Ответ от Gemini API получен (попытка {empty_attempt + 1}).")
-                    return response
-                
-                logger.warning(f"ChatID: {chat_id} | Получен пустой ответ от API (попытка {empty_attempt + 1}/{max_empty_response_retries}). Пауза перед повтором.")
-                if empty_attempt < max_empty_response_retries - 1:
-                    await asyncio.sleep(2)
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=request_contents,
+                config=config
+            )
+            # Проверяем, что ответ не пустой
+            if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                logger.info(f"ChatID: {chat_id} | Ответ от Gemini API получен (попытка {attempt + 1}).")
+                return response
             
-            logger.error(f"ChatID: {chat_id} | Не удалось получить содержательный ответ от API после {max_empty_response_retries} попыток.")
-            return "Я не смогла сформировать ответ. Попробуйте переформулировать запрос или повторить попытку позже."
+            logger.warning(f"ChatID: {chat_id} | Получен пустой ответ от API (попытка {attempt + 1}/{max_empty_response_retries}). Пауза перед повтором.")
+            if attempt < max_empty_response_retries - 1:
+                await asyncio.sleep(2)
 
-        except (genai_errors.InternalServerError, genai_errors.ServiceUnavailableError) as e:
-            last_exception = e
-            logger.warning(f"ChatID: {chat_id} | Временная ошибка API (попытка {network_attempt + 1}/{max_network_retries}): {e}")
-            if network_attempt < max_network_retries - 1:
-                await asyncio.sleep(2 ** (network_attempt + 1))
-            continue
         except genai_errors.APIError as e:
-            error_text = str(e).lower()
-            logger.error(f"ChatID: {chat_id} | Ошибка Google API: {e}", exc_info=False)
-            if "input token count" in error_text and "exceeds the maximum" in error_text:
-                return "🤯 <b>Слишком длинная история!</b>\nКажется, мы заболтались, и я уже не могу удержать в голове весь наш диалог. Пожалуйста, очистите историю командой /clear, чтобы начать заново."
-            if "resource has been exhausted" in error_text:
-                return "⏳ <b>Слишком много запросов!</b>\nПожалуйста, подождите минуту, я немного перегрузилась."
-            if "permission denied" in error_text:
-                return "❌ <b>Ошибка доступа к файлу.</b>\nВозможно, файл был удален с серверов Google (срок хранения 48 часов) или возникла другая проблема. Попробуйте отправить файл заново."
-            return f"❌ <b>Ошибка Google API:</b>\n<code>{html.escape(str(e))}</code>"
+            logger.error(f"ChatID: {chat_id} | Ошибка Google API (попытка {attempt + 1}): {e}", exc_info=False)
+            # Проверяем, является ли ошибка временной серверной ошибкой (5xx)
+            is_retryable = hasattr(e, 'http_status') and 500 <= e.http_status < 600
+            
+            if is_retryable and attempt < max_empty_response_retries - 1:
+                logger.warning(f"ChatID: {chat_id} | Обнаружена временная ошибка. Повторная попытка через {2 ** (attempt + 1)} сек.")
+                await asyncio.sleep(2 ** (attempt + 1))
+                continue
+            else:
+                error_text = str(e).lower()
+                if "input token count" in error_text and "exceeds the maximum" in error_text:
+                    return "🤯 <b>Слишком длинная история!</b>\nКажется, мы заболтались, и я уже не могу удержать в голове весь наш диалог. Пожалуйста, очистите историю командой /clear, чтобы начать заново."
+                if "resource has been exhausted" in error_text:
+                    return "⏳ <b>Слишком много запросов!</b>\nПожалуйста, подождите минуту, я немного перегрузилась."
+                if "permission denied" in error_text:
+                    return "❌ <b>Ошибка доступа к файлу.</b>\nВозможно, файл был удален с серверов Google (срок хранения 48 часов) или возникла другая проблема. Попробуйте отправить файл заново."
+                return f"❌ <b>Ошибка Google API:</b>\n<code>{html.escape(str(e))}</code>"
+        
         except Exception as e:
-            logger.error(f"ChatID: {chat_id} | Неизвестная ошибка генерации: {e}", exc_info=True)
-            return f"❌ <b>Произошла внутренняя ошибка:</b>\n<code>{html.escape(str(e))}</code>"
+            logger.error(f"ChatID: {chat_id} | Неизвестная ошибка генерации (попытка {attempt + 1}): {e}", exc_info=True)
+            return f"❌ <b>Произошла критическая внутренняя ошибка:</b>\n<code>{html.escape(str(e))}</code>"
     
-    return f"❌ <b>Сервер Google не отвечает.</b>\nНе удалось получить ответ после нескольких попыток. Ошибка: <code>{html.escape(str(last_exception))}</code>"
+    # Если все попытки получить непустой ответ провалились
+    logger.error(f"ChatID: {chat_id} | Не удалось получить содержательный ответ от API после {max_empty_response_retries} попыток.")
+    return "Я не смогла сформировать ответ. Попробуйте переформулировать запрос или повторить попытку позже."
 
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 def format_gemini_response(response: types.GenerateContentResponse) -> str:
     try:
@@ -467,11 +468,8 @@ async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: l
     for part in parts:
         if part.text:
             entry_parts.append(part_to_dict(part))
-        elif part.file_data:
-            # Не сохраняем file_data в историю, чтобы не засорять БД
-            pass
 
-    if not entry_parts and not any(p.file_data for p in parts):
+    if not entry_parts:
         return
 
     entry = {"role": role, "parts": entry_parts, **kwargs}
@@ -507,11 +505,10 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         user_prefix = f"[{user.id}; Name: {user.first_name}]: "
         prompt_text = next((p.text for p in content_parts if p.text), "")
         
-        has_media_data = any(p.file_data for p in content_parts)
         has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
 
         final_prompt_text = f"{user_prefix}{prompt_text}"
-        if not has_media_data and not has_url_in_text:
+        if not is_media_request and not has_url_in_text:
             grounding_instruction = """
 ПРИ КАЖДОМ ЗАПРОСЕ информации, для сбора актуальных и дополнительных данных, ты обязан активно использовать обширный и глубокий поиск в интернете Grounding with Google Search (сохраняя даты и источники), поскольку твои знания и память устарели на текущую дату.
 """
@@ -522,8 +519,17 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
             if part.file_data:
                 current_request_parts.append(part)
         
+        text_part_index = -1
+        for i, part in enumerate(current_request_parts):
+            if part.text is not None:
+                text_part_index = i
+                break
+        
         if prompt_text.strip():
-            current_request_parts.append(types.Part(text=final_prompt_text))
+            if text_part_index != -1:
+                current_request_parts[text_part_index] = types.Part(text=final_prompt_text)
+            else:
+                current_request_parts.append(types.Part(text=final_prompt_text))
         
         if not current_request_parts:
             logger.warning("Попытка отправить пустой запрос к API. Отменено.")
@@ -657,7 +663,7 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
         
         response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS)
         result_text = format_gemini_response(response_obj) if not isinstance(response_obj, str) else response_obj
-        await send_reply(update.message, result_text, add_context_hint=True)
+        await send_reply(update.message, result_text)
     
     except BadRequest as e:
         if "File is too big" in str(e):
