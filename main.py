@@ -1,4 +1,4 @@
-# Версия 13.9 (Поддержка видео-кружочков и репостов)
+# Версия 13.10 (Поддержка видео-кружочков и репостов)
 
 import logging
 import os
@@ -461,10 +461,11 @@ async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: l
         if part.text:
             entry_parts.append(part_to_dict(part))
 
+    # Для медиа без текста все равно создаем запись, чтобы reply_map работал
+    # и чтобы история не была пустой для пользователя
     if not entry_parts and role == 'user':
         if not any(p.file_data for p in parts):
             return
-        # Для медиа без текста все равно создаем запись, чтобы reply_map работал
         entry_parts.append({'type': 'text', 'content': ''})
 
     entry = {"role": role, "parts": entry_parts, **kwargs}
@@ -483,25 +484,25 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # --- ИСПРАВЛЕННАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ АВТОРА (v2) ---
-    # По умолчанию автор - тот, кто отправил сообщение боту
+    # --- ИСПРАВЛЕННАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ АВТОРА (v3, безопасная) ---
     effective_user_id = message.from_user.id
     effective_user_name = message.from_user.first_name
 
-    # Если это репост, переопределяем автора
+    # Безопасная проверка на репост с помощью getattr
     if getattr(message, 'forward_date', None):
-        if getattr(message, 'forward_from_chat', None):
-            # Репост из канала
-            effective_user_id = message.forward_from_chat.id
-            effective_user_name = message.forward_from_chat.title or "скрытый канал"
-        elif getattr(message, 'forward_from', None):
-            # Репост от пользователя
-            effective_user_id = message.forward_from.id
-            effective_user_name = message.forward_from.first_name or "скрытый пользователь"
-        elif getattr(message, 'forward_sender_name', None):
-            # Репост от пользователя, скрывшего профиль
-            effective_user_id = 'hidden' # Условный ID
-            effective_user_name = message.forward_sender_name
+        forward_from_chat = getattr(message, 'forward_from_chat', None)
+        forward_from_user = getattr(message, 'forward_from', None)
+        forward_sender_name = getattr(message, 'forward_sender_name', None)
+
+        if forward_from_chat:
+            effective_user_id = forward_from_chat.id
+            effective_user_name = forward_from_chat.title or "скрытый канал"
+        elif forward_from_user:
+            effective_user_id = forward_from_user.id
+            effective_user_name = forward_from_user.first_name or "скрытый пользователь"
+        elif forward_sender_name:
+            effective_user_id = 'hidden'
+            effective_user_name = forward_sender_name
     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     text_part_content = next((p.text for p in content_parts if p.text), None)
@@ -511,7 +512,6 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         response_text = f"{message.from_user.first_name}, {time_str[0].lower()}{time_str[1:]}"
         sent_message = await send_reply(message, response_text)
         if sent_message:
-            # В историю сохраняем с правильным автором
             await add_to_history(context, "user", content_parts, effective_user_id, effective_user_name, original_message_id=message.message_id)
             await add_to_history(context, "model", [types.Part(text=response_text)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
         return
