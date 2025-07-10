@@ -409,9 +409,12 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
 
         full_text = "".join(text_parts)
         
-        clean_text = re.sub(r'^\s+$', '', full_text, flags=re.MULTILINE)
-        squeezed_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+        # --- ИСПРАВЛЕННЫЙ ПРОТОКОЛ САНИТАРНОЙ ОБРАБОТКИ ---
+        # 1. Убираем только множественные переносы, оставляя одиночные абзацы нетронутыми.
+        # Любая последовательность из 3 или более переносов строки заменяется на два (\n\n).
+        squeezed_text = re.sub(r'\n{3,}', '\n\n', full_text)
         
+        # 2. Дальнейшая очистка от системного мусора
         final_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         final_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', final_text)
         final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
@@ -422,7 +425,7 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
     except (AttributeError, IndexError) as e:
         logger.error(f"Ошибка при парсинге ответа Gemini: {e}", exc_info=True)
         return "Произошла ошибка при обработке ответа от нейросети."
-
+        
 async def send_reply(target_message: Message, response_text: str, add_context_hint: bool = False) -> Message | None:
     sanitized_text = re.sub(r'<br\s*/?>', '\n', response_text)
     chunks = html_safe_chunker(sanitized_text)
