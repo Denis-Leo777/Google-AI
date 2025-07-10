@@ -480,17 +480,19 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # --- ИЗМЕНЕНИЕ ЗДЕСЬ (Логика определения автора) ---
+    # --- ИСПРАВЛЕННАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ АВТОРА ---
     user_for_history = message.from_user
     author_name_for_prompt = user_for_history.first_name
 
-    if message.forward_from_chat:
-        author_name_for_prompt = message.forward_from_chat.title or "скрытый канал"
-    elif message.forward_from:
-        author_name_for_prompt = message.forward_from.first_name or "скрытый пользователь"
-    elif message.forward_sender_name: # Для пользователей со скрытым профилем
-        author_name_for_prompt = message.forward_sender_name
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    # Правильная и безопасная проверка на репост
+    if message.forward_date:
+        if message.forward_from_chat:
+            author_name_for_prompt = message.forward_from_chat.title or "скрытый канал"
+        elif message.forward_from:
+            author_name_for_prompt = message.forward_from.first_name or "скрытый пользователь"
+        elif message.forward_sender_name: 
+            author_name_for_prompt = message.forward_sender_name
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     text_part_content = next((p.text for p in content_parts if p.text), None)
     if text_part_content and re.search(DATE_TIME_REGEX, text_part_content, re.IGNORECASE):
