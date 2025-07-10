@@ -478,6 +478,8 @@ async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: l
 
 async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, content_parts: list):
     message, client = update.message, context.bot_data['gemini_client']
+    if not message: return # Дополнительная защита
+    
     user = message.from_user
     chat_id = message.chat_id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
@@ -497,14 +499,22 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         is_media_request = any(p.file_data for p in content_parts)
         history_for_api = build_history_for_request(context.chat_data.get("history", []))
         
-        # --- ИЗМЕНЕНИЕ: Определение префикса для обычных и пересланных сообщений ---
+        # --- ИЗМЕНЕНИЕ: Безопасное определение префикса для обычных и пересланных сообщений ---
         user_prefix = ""
-        if message.forward_from:
-            user_prefix = f"[Переслано от {message.forward_from.first_name}]: "
-        elif message.forward_from_chat:
-            user_prefix = f"[Переслано из канала \"{message.forward_from_chat.title}\"]: "
+        # forward_origin существует только если сообщение переслано
+        if message.forward_origin:
+            origin = message.forward_origin
+            if origin.type == 'user':
+                user_prefix = f"[Переслано от {origin.sender_user.first_name}]: "
+            elif origin.type == 'channel':
+                user_prefix = f"[Переслано из канала \"{origin.chat.title}\"]: "
+            elif origin.type == 'hidden_user':
+                user_prefix = f"[Переслано от скрытого пользователя {origin.sender_user_name}]: "
         else:
-            user_prefix = f"[{user.id}; Name: {user.first_name}]: "
+            if user:
+                 user_prefix = f"[{user.id}; Name: {user.first_name}]: "
+            else:
+                 user_prefix = "[Unknown User]: " # Запасной вариант
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         prompt_text = next((p.text for p in content_parts if p.text), "")
@@ -588,7 +598,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     except Exception as e:
         logger.error(f"Непредвиденная ошибка в process_request: {e}", exc_info=True)
         await message.reply_text(f"❌ <b>Произошла критическая внутренняя ошибка:</b>\n<code>{html.escape(str(e))}</code>")
-
+        
 # --- ОБРАБОТЧИКИ КОМАНД ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_text = """Я - Женя, интеллект новой Google Gemini 2.5 Flash с лучшим поиском:
