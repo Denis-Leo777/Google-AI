@@ -484,25 +484,25 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # --- ИСПРАВЛЕННАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ АВТОРА (v3, безопасная) ---
+    # --- НОВАЯ, КОРРЕКТНАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ АВТОРА (для v20+) ---
     effective_user_id = message.from_user.id
     effective_user_name = message.from_user.first_name
-
-    # Безопасная проверка на репост с помощью getattr
-    if getattr(message, 'forward_date', None):
-        forward_from_chat = getattr(message, 'forward_from_chat', None)
-        forward_from_user = getattr(message, 'forward_from', None)
-        forward_sender_name = getattr(message, 'forward_sender_name', None)
-
-        if forward_from_chat:
-            effective_user_id = forward_from_chat.id
-            effective_user_name = forward_from_chat.title or "скрытый канал"
-        elif forward_from_user:
-            effective_user_id = forward_from_user.id
-            effective_user_name = forward_from_user.first_name or "скрытый пользователь"
-        elif forward_sender_name:
+    
+    # Безопасно проверяем наличие `forward_origin`
+    if message.forward_origin:
+        origin = message.forward_origin
+        # Репост из канала
+        if origin.type == 'channel' and origin.chat:
+            effective_user_id = origin.chat.id
+            effective_user_name = origin.chat.title or "скрытый канал"
+        # Репост от пользователя
+        elif origin.type == 'user' and origin.sender_user:
+            effective_user_id = origin.sender_user.id
+            effective_user_name = origin.sender_user.first_name or "скрытый пользователь"
+        # Репост от пользователя, скрывшего профиль
+        elif origin.type == 'hidden_user' and origin.sender_user_name:
             effective_user_id = 'hidden'
-            effective_user_name = forward_sender_name
+            effective_user_name = origin.sender_user_name
     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     text_part_content = next((p.text for p in content_parts if p.text), None)
