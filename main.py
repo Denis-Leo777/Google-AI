@@ -484,13 +484,13 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     user_for_history = message.from_user
     author_name_for_prompt = user_for_history.first_name
 
-    # Правильная и безопасная проверка на репост
-    if message.forward_date:
-        if message.forward_from_chat:
+    # Безопасная проверка на репост с помощью getattr
+    if getattr(message, 'forward_date', None):
+        if getattr(message, 'forward_from_chat', None):
             author_name_for_prompt = message.forward_from_chat.title or "скрытый канал"
-        elif message.forward_from:
+        elif getattr(message, 'forward_from', None):
             author_name_for_prompt = message.forward_from.first_name or "скрытый пользователь"
-        elif message.forward_sender_name: 
+        elif getattr(message, 'forward_sender_name', None): 
             author_name_for_prompt = message.forward_sender_name
     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
