@@ -1,4 +1,4 @@
-# Версия 13.7 (Финальная, стабильная)
+# Версия 13.8 (Финальная, с "органами чувств")
 
 import logging
 import os
@@ -48,8 +48,8 @@ YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|em
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
 MAX_CONTEXT_CHARS = 500000
-MAX_HISTORY_RESPONSE_LEN = 6000 # Твоя настройка
-MAX_HISTORY_ITEMS = 100        # Твоя настройка
+MAX_HISTORY_RESPONSE_LEN = 6000
+MAX_HISTORY_ITEMS = 100
 MAX_MEDIA_CONTEXTS = 100
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
@@ -270,7 +270,7 @@ def build_history_for_request(chat_history: list) -> list[types.Content]:
             if entry.get("role") == "user":
                 user_id = entry.get('user_id', 'Unknown')
                 user_name = entry.get('user_name', 'User')
-                user_prefix = f"[{user_id}; Name: {user_name}]: "
+                user_prefix = entry.get('prefix', f"[{user_id}; Name: {user_name}]: ")
                 
                 for part_dict in entry["parts"]:
                     if part_dict.get('type') == 'text':
@@ -414,6 +414,7 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
         
         final_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         final_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', final_text)
+        final_text = re.sub(r'\[Переслано.*?\]:\s*', '', final_text) # Очистка префикса репоста
         final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
         final_text = re.sub(r'^\s*Сегодня\s+(?:понедельник|вторник|среда|четверг|пятница|суббота|воскресенье),\s*\d{1,2}\s+\w+\s+\d{4}\s+года[.,]?\s*', '', final_text, flags=re.IGNORECASE)
 
@@ -453,7 +454,7 @@ async def send_reply(target_message: Message, response_text: str, add_context_hi
     except Exception as e: logger.error(f"Критическая ошибка отправки ответа: {e}", exc_info=True)
     return None
 
-async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: list[types.Part], user: User = None, **kwargs):
+async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: list[types.Part], user: User = None, prefix: str = None, **kwargs):
     chat_history = context.chat_data.setdefault("history", [])
     
     entry_parts = []
@@ -468,6 +469,8 @@ async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: l
     if role == 'user' and user:
         entry['user_id'] = user.id
         entry['user_name'] = user.first_name
+        if prefix:
+            entry['prefix'] = prefix
     
     chat_history.append(entry)
     if len(chat_history) > MAX_HISTORY_ITEMS:
@@ -494,7 +497,16 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         is_media_request = any(p.file_data for p in content_parts)
         history_for_api = build_history_for_request(context.chat_data.get("history", []))
         
-        user_prefix = f"[{user.id}; Name: {user.first_name}]: "
+        # --- ИЗМЕНЕНИЕ: Определение префикса для обычных и пересланных сообщений ---
+        user_prefix = ""
+        if message.forward_from:
+            user_prefix = f"[Переслано от {message.forward_from.first_name}]: "
+        elif message.forward_from_chat:
+            user_prefix = f"[Переслано из канала \"{message.forward_from_chat.title}\"]: "
+        else:
+            user_prefix = f"[{user.id}; Name: {user.first_name}]: "
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
         prompt_text = next((p.text for p in content_parts if p.text), "")
         
         has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
@@ -546,7 +558,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         sent_message = await send_reply(message, reply_text, add_context_hint=is_media_request)
         
         if sent_message:
-            await add_to_history(context, "user", content_parts, user, original_message_id=message.message_id)
+            await add_to_history(context, "user", content_parts, user, prefix=user_prefix, original_message_id=message.message_id)
             await add_to_history(context, "model", [types.Part(text=full_response_for_history)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
             
             reply_map = context.chat_data.setdefault('reply_map', {})
@@ -627,7 +639,7 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
     
     context.chat_data['id'] = update.effective_chat.id
     replied_message = update.message.reply_to_message
-    media_obj = replied_message.audio or replied_message.voice or replied_message.video or replied_message.photo or replied_message.document
+    media_obj = replied_message.audio or replied_message.voice or replied_message.video or replied_message.video_note or replied_message.photo or replied_message.document
     
     media_part = None
     client = context.bot_data['gemini_client']
@@ -744,10 +756,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @isolated_request
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
-    if not message or not message.video: return
+    if not message or (not message.video and not message.video_note): return
 
     context.chat_data['id'] = message.chat_id
-    video = message.video
+    video = message.video or message.video_note
 
     if video.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
         await message.reply_text(f"📹 Видеофайл больше {TELEGRAM_FILE_LIMIT_MB} МБ, я не могу его скачать. Отвечу на текст, если он есть.")
@@ -771,7 +783,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @ignore_if_processing
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик для аудиофайлов (музыка, звуки) - анализ, а не транскрипция."""
     message = update.message
     if not message: return
     
@@ -835,31 +846,38 @@ async def _internal_handle_voice_logic(update: Update, context: ContextTypes.DEF
         voice_bytes = await voice_file.download_as_bytearray()
         voice_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], voice_bytes, voice.mime_type, "voice_message.ogg")
 
-        transcription_prompt = "Transcribe this audio file. Return only the transcribed text."
+        # --- ИЗМЕНЕНИЕ: Умный промпт для голосовых ---
+        smart_prompt = """Это голосовое сообщение. Внимательно прослушай его.
+1. Если оно содержит внятную речь, твоя основная задача — дословно ее транскрибировать.
+2. Если оно содержит музыку, подробно опиши ее: жанр, настроение, инструменты, вокал (если есть).
+3. Если это смешанный контент (речь на фоне музыки), сделай и транскрипцию, и описание музыки.
+Твой ответ должен быть только текстом (транскрипция и/или описание)."""
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
         response_obj = await generate_response(
             context.bot_data['gemini_client'],
-            [types.Content(parts=[voice_part, types.Part(text=transcription_prompt)], role="user")],
+            [types.Content(parts=[voice_part, types.Part(text=smart_prompt)], role="user")],
             context,
             MEDIA_TOOLS,
-            system_instruction_override="You are a file transcription utility. Respond only with the transcribed text."
+            system_instruction_override="You are an audio analysis utility. Your task is to process a voice message and respond with text only, as per the user's detailed instructions."
         )
         
-        transcript_text = ""
+        result_text = ""
         if isinstance(response_obj, str):
-            await message.reply_text(f"Не удалось расшифровать: {response_obj}")
+            await message.reply_text(f"Не удалось обработать голосовое сообщение: {response_obj}")
             return
         else:
-            transcript_text = format_gemini_response(response_obj)
+            result_text = format_gemini_response(response_obj)
 
-        if not transcript_text.strip():
-            await message.reply_text("Не удалось распознать речь.")
+        if not result_text.strip():
+            await message.reply_text("Не удалось распознать содержимое голосового сообщения.")
             await add_to_history(context, "user", [types.Part(text="[Пустое или неразборчивое голосовое сообщение]")], message.from_user, original_message_id=message.message_id)
             return
         
-        logger.info(f"Голосовое успешно расшифровано для чата {message.chat_id}")
+        logger.info(f"Голосовое успешно обработано для чата {message.chat_id}")
         
-        await add_to_history(context, "user", [types.Part(text=f"[Голосовое сообщение]: {transcript_text}")], message.from_user, original_message_id=message.message_id)
-        await _internal_handle_message_logic(update, context, custom_text=transcript_text)
+        await add_to_history(context, "user", [types.Part(text=f"[Голосовое сообщение]: {result_text}")], message.from_user, original_message_id=message.message_id)
+        await _internal_handle_message_logic(update, context, custom_text=result_text)
 
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке голосового: {e}")
@@ -902,17 +920,14 @@ async def _internal_handle_message_logic(update: Update, context: ContextTypes.D
 
 @ignore_if_processing
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Публичный обработчик для голосовых, защищенный декоратором."""
     await _internal_handle_voice_logic(update, context)
 
 @ignore_if_processing
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Публичный обработчик для URL, защищенный декоратором."""
     await _internal_handle_message_logic(update, context)
 
 @ignore_if_processing
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Публичный обработчик для текста, защищенный декоратором."""
     await _internal_handle_message_logic(update, context)
 
 # --- ЗАПУСК БОТА ---
@@ -980,14 +995,16 @@ async def main():
     application.add_handler(MessageHandler(audio_filter, handle_audio))
     
     # 2. Изолированные обработчики (контекст мешает)
-    application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
+    # --- ИЗМЕНЕНИЕ: Добавлен фильтр для видеокружочков ---
+    video_filter = (filters.VIDEO | filters.VIDEO_NOTE) & ~filters.COMMAND
+    application.add_handler(MessageHandler(video_filter, handle_video))
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND
     application.add_handler(MessageHandler(document_filter, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
 
     # 3. Текстовые обработчики (должны идти последними)
     url_filter = filters.Entity("url") | filters.Entity("text_link")
-    # Исключаем YouTube ссылки, т.к. для них есть свой изолированный обработчик
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
     
