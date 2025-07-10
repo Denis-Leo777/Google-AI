@@ -1,4 +1,4 @@
-# Версия 13.8 (Поддержка видео-кружочков и репостов)
+# Версия 13.9 (Поддержка видео-кружочков и репостов)
 
 import logging
 import os
@@ -453,7 +453,7 @@ async def send_reply(target_message: Message, response_text: str, add_context_hi
     except Exception as e: logger.error(f"Критическая ошибка отправки ответа: {e}", exc_info=True)
     return None
 
-async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: list[types.Part], user: User = None, **kwargs):
+async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: list[types.Part], user: User = None, author_override_name: str = None, **kwargs):
     chat_history = context.chat_data.setdefault("history", [])
     
     entry_parts = []
@@ -462,12 +462,14 @@ async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: l
             entry_parts.append(part_to_dict(part))
 
     if not entry_parts:
-        return
+        # Для медиа без текста все равно создаем запись, чтобы reply_map работал
+        if not any(p.file_data for p in parts):
+            return
 
     entry = {"role": role, "parts": entry_parts, **kwargs}
     if role == 'user' and user:
         entry['user_id'] = user.id
-        entry['user_name'] = user.first_name
+        entry['user_name'] = author_override_name or user.first_name
     
     chat_history.append(entry)
     if len(chat_history) > MAX_HISTORY_ITEMS:
@@ -480,28 +482,30 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # --- ИСПРАВЛЕННАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ АВТОРА ---
-    user_for_history = message.from_user
-    author_name_for_prompt = user_for_history.first_name
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ (Переменные для автора) ---
+    effective_user = message.from_user
+    effective_author_name = effective_user.first_name
 
-    # Безопасная проверка на репост с помощью getattr
+    # Правильная и безопасная проверка на репост
     if getattr(message, 'forward_date', None):
         if getattr(message, 'forward_from_chat', None):
-            author_name_for_prompt = message.forward_from_chat.title or "скрытый канал"
+            effective_author_name = message.forward_from_chat.title or "скрытый канал"
         elif getattr(message, 'forward_from', None):
-            author_name_for_prompt = message.forward_from.first_name or "скрытый пользователь"
+            # Для репостов от других пользователей используем их объект User
+            effective_user = message.forward_from
+            effective_author_name = effective_user.first_name or "скрытый пользователь"
         elif getattr(message, 'forward_sender_name', None): 
-            author_name_for_prompt = message.forward_sender_name
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+            effective_author_name = message.forward_sender_name
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     text_part_content = next((p.text for p in content_parts if p.text), None)
     if text_part_content and re.search(DATE_TIME_REGEX, text_part_content, re.IGNORECASE):
         logger.info("Обнаружен запрос о времени/дате. Отвечаем напрямую.")
         time_str = get_current_time_str()
-        response_text = f"{user_for_history.first_name}, {time_str[0].lower()}{time_str[1:]}"
+        response_text = f"{message.from_user.first_name}, {time_str[0].lower()}{time_str[1:]}"
         sent_message = await send_reply(message, response_text)
         if sent_message:
-            await add_to_history(context, "user", content_parts, user_for_history, original_message_id=message.message_id)
+            await add_to_history(context, "user", content_parts, effective_user, original_message_id=message.message_id, author_override_name=effective_author_name if effective_user != message.from_user else None)
             await add_to_history(context, "model", [types.Part(text=response_text)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
         return
 
@@ -509,7 +513,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         is_media_request = any(p.file_data for p in content_parts)
         history_for_api = build_history_for_request(context.chat_data.get("history", []))
         
-        user_prefix = f"[{user_for_history.id}; Name: {author_name_for_prompt}]: "
+        user_prefix = f"[{effective_user.id}; Name: {effective_author_name}]: "
         prompt_text = next((p.text for p in content_parts if p.text), "")
         
         has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
@@ -561,7 +565,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         sent_message = await send_reply(message, reply_text, add_context_hint=is_media_request)
         
         if sent_message:
-            await add_to_history(context, "user", content_parts, user_for_history, original_message_id=message.message_id)
+            await add_to_history(context, "user", content_parts, effective_user, original_message_id=message.message_id, author_override_name=effective_author_name if effective_user != message.from_user else None)
             await add_to_history(context, "model", [types.Part(text=full_response_for_history)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
             
             reply_map = context.chat_data.setdefault('reply_map', {})
@@ -784,9 +788,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Непредвиденная ошибка при обработке видео: {e}", exc_info=True)
         await message.reply_text("❌ Внутренняя ошибка при обработке видео.")
 
-# --- НОВЫЙ ОБРАБОТЧИК ---
 @ignore_if_processing
-@isolated_request
+# @isolated_request  <-- УБИРАЕМ ЭТУ СТРОКУ
 async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.video_note: return
@@ -803,17 +806,14 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_note_file = await video_note.get_file()
         video_note_bytes = await video_note_file.download_as_bytearray()
         
-        # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-        # Жестко прописываем mime_type, так как у объекта VideoNote его нет
         video_part = await upload_and_wait_for_file(
             context.bot_data['gemini_client'], 
             video_note_bytes, 
-            mime_type='video/mp4', # <-- Вот оно, исправление
+            mime_type='video/mp4',
             file_name="video_note.mp4"
         )
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-        user_prompt = "Ответь как собеседник в соответствии с системными инструкциями."
+        user_prompt = "Ответь как собеседник, содержательно, в соответствии с системными инструкциями."
         await handle_media_request(update, context, video_part, user_prompt)
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке видео-кружочка: {e}")
