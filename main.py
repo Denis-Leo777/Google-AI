@@ -32,6 +32,11 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
 
+# --- ДОБАВЛЯЕМ ЭТУ СТРОКУ ---
+# Повышаем уровень логирования для aiohttp.access, чтобы скрыть INFO сообщения
+logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -980,7 +985,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- ЗАПУСК БОТА ---
 async def handle_health_check(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    logger.info("Health check OK")
+    # logger.info("Health check OK")  <-- КОММЕНТИРУЕМ ИЛИ УДАЛЯЕМ ЭТУ СТРОКУ
     return aiohttp.web.Response(text="OK", status=200)
     
 async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
