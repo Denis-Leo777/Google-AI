@@ -453,7 +453,7 @@ async def send_reply(target_message: Message, response_text: str, add_context_hi
     except Exception as e: logger.error(f"Критическая ошибка отправки ответа: {e}", exc_info=True)
     return None
 
-async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: list[types.Part], user: User = None, author_override_name: str = None, **kwargs):
+async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: list[types.Part], user_id: int | str = None, user_name: str = None, **kwargs):
     chat_history = context.chat_data.setdefault("history", [])
     
     entry_parts = []
@@ -461,15 +461,16 @@ async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: l
         if part.text:
             entry_parts.append(part_to_dict(part))
 
-    if not entry_parts:
-        # Для медиа без текста все равно создаем запись, чтобы reply_map работал
+    if not entry_parts and role == 'user':
         if not any(p.file_data for p in parts):
             return
+        # Для медиа без текста все равно создаем запись, чтобы reply_map работал
+        entry_parts.append({'type': 'text', 'content': ''})
 
     entry = {"role": role, "parts": entry_parts, **kwargs}
-    if role == 'user' and user:
-        entry['user_id'] = user.id
-        entry['user_name'] = author_override_name or user.first_name
+    if role == 'user' and user_id and user_name:
+        entry['user_id'] = user_id
+        entry['user_name'] = user_name
     
     chat_history.append(entry)
     if len(chat_history) > MAX_HISTORY_ITEMS:
@@ -482,21 +483,26 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # --- ИЗМЕНЕНИЕ ЗДЕСЬ (Переменные для автора) ---
-    effective_user = message.from_user
-    effective_author_name = effective_user.first_name
+    # --- ИСПРАВЛЕННАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ АВТОРА (v2) ---
+    # По умолчанию автор - тот, кто отправил сообщение боту
+    effective_user_id = message.from_user.id
+    effective_user_name = message.from_user.first_name
 
-    # Правильная и безопасная проверка на репост
+    # Если это репост, переопределяем автора
     if getattr(message, 'forward_date', None):
         if getattr(message, 'forward_from_chat', None):
-            effective_author_name = message.forward_from_chat.title or "скрытый канал"
+            # Репост из канала
+            effective_user_id = message.forward_from_chat.id
+            effective_user_name = message.forward_from_chat.title or "скрытый канал"
         elif getattr(message, 'forward_from', None):
-            # Для репостов от других пользователей используем их объект User
-            effective_user = message.forward_from
-            effective_author_name = effective_user.first_name or "скрытый пользователь"
-        elif getattr(message, 'forward_sender_name', None): 
-            effective_author_name = message.forward_sender_name
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            # Репост от пользователя
+            effective_user_id = message.forward_from.id
+            effective_user_name = message.forward_from.first_name or "скрытый пользователь"
+        elif getattr(message, 'forward_sender_name', None):
+            # Репост от пользователя, скрывшего профиль
+            effective_user_id = 'hidden' # Условный ID
+            effective_user_name = message.forward_sender_name
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     text_part_content = next((p.text for p in content_parts if p.text), None)
     if text_part_content and re.search(DATE_TIME_REGEX, text_part_content, re.IGNORECASE):
@@ -505,7 +511,8 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         response_text = f"{message.from_user.first_name}, {time_str[0].lower()}{time_str[1:]}"
         sent_message = await send_reply(message, response_text)
         if sent_message:
-            await add_to_history(context, "user", content_parts, effective_user, original_message_id=message.message_id, author_override_name=effective_author_name if effective_user != message.from_user else None)
+            # В историю сохраняем с правильным автором
+            await add_to_history(context, "user", content_parts, effective_user_id, effective_user_name, original_message_id=message.message_id)
             await add_to_history(context, "model", [types.Part(text=response_text)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
         return
 
@@ -513,7 +520,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         is_media_request = any(p.file_data for p in content_parts)
         history_for_api = build_history_for_request(context.chat_data.get("history", []))
         
-        user_prefix = f"[{effective_user.id}; Name: {effective_author_name}]: "
+        user_prefix = f"[{effective_user_id}; Name: {effective_user_name}]: "
         prompt_text = next((p.text for p in content_parts if p.text), "")
         
         has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
@@ -565,7 +572,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         sent_message = await send_reply(message, reply_text, add_context_hint=is_media_request)
         
         if sent_message:
-            await add_to_history(context, "user", content_parts, effective_user, original_message_id=message.message_id, author_override_name=effective_author_name if effective_user != message.from_user else None)
+            await add_to_history(context, "user", content_parts, effective_user_id, effective_user_name, original_message_id=message.message_id)
             await add_to_history(context, "model", [types.Part(text=full_response_for_history)], original_message_id=message.message_id, bot_message_id=sent_message.message_id)
             
             reply_map = context.chat_data.setdefault('reply_map', {})
