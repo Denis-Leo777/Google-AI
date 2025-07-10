@@ -800,9 +800,18 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         video_note_file = await video_note.get_file()
         video_note_bytes = await video_note_file.download_as_bytearray()
-        video_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], video_note_bytes, video_note.mime_type, "video_note.mp4")
-        # У видео-кружочков не бывает подписей, поэтому промпт всегда по умолчанию
-        user_prompt = "Ответь на видео-кружочек как приятный собеседник и в соответствии с системными инструкциями."
+        
+        # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+        # Жестко прописываем mime_type, так как у объекта VideoNote его нет
+        video_part = await upload_and_wait_for_file(
+            context.bot_data['gemini_client'], 
+            video_note_bytes, 
+            mime_type='video/mp4', # <-- Вот оно, исправление
+            file_name="video_note.mp4"
+        )
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+        user_prompt = "Ответь как собеседник в соответствии с системными инструкциями."
         await handle_media_request(update, context, video_part, user_prompt)
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке видео-кружочка: {e}")
@@ -810,7 +819,6 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Непредвиденная ошибка при обработке видео-кружочка: {e}", exc_info=True)
         await message.reply_text("❌ Внутренняя ошибка при обработке видео-кружочка.")
-# --- КОНЕЦ НОВОГО ОБРАБОТЧИКА ---
 
 @ignore_if_processing
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
