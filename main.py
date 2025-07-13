@@ -1,4 +1,4 @@
-# Версия 13.11 (Поддержка видео-кружочков и репостов)
+# Версия 14
 
 import logging
 import os
@@ -74,9 +74,7 @@ try:
     logger.info("Системный промпт успешно загружен из файла.")
 except FileNotFoundError:
     logger.error("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
-    SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)
-Отвечай без стартовых приветствий. ПРИ КАЖДОМ ЗАПРОСЕ информации, для сбора актуальных и дополнительных данных, ты обязан активно использовать обширный и глубокий поиск в интернете Grounding with Google Search, поскольку твои знания и память устарели на текущую дату.
-"""
+    SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)"""
 
 # --- КЛАСС PERSISTENCE ---
 class PostgresPersistence(BasePersistence):
@@ -536,7 +534,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         final_prompt_text = f"{user_prefix}{prompt_text}"
         if not is_media_request and not has_url_in_text:
             grounding_instruction = """
-Отвечай без стартовых приветствий. ПРИ КАЖДОМ ЗАПРОСЕ информации, для сбора актуальных и дополнительных данных, ты обязан активно использовать обширный и глубокий поиск в интернете Grounding with Google Search, поскольку твои знания и память устарели на текущую дату.
+ПЕРЕД НАЧАЛОМ ФОРМИРОВАНИЯ ОТОБРАЖАЕМОГО ПОЛЬЗОВАТЕЛЮ ОТВЕТА, В ПРОЦЕССЕ РАССУЖДЕНИЙ, ТЫ ОБЯЗАН провести объективный всесторонний комплексный глубокий системный, исчерпывающий стратегический и предиктивный анализы-исследования данных и первопричин, используя данные контекста, и, обязательно, актуальные и дополнительные данные поиска в интернете Grounding with Google Search, поскольку твоя база знаний уже устарела. Отвечай без стартовых приветствий.
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
         
