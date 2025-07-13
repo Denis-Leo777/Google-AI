@@ -734,7 +734,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_file = await photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         file_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], photo_bytes, 'image/jpeg', photo_file.file_unique_id + ".jpg")
-        user_prompt = message.caption or "Ответь без стартовых приветствий и в соответствии с системными инструкциями."
+        user_prompt = message.caption or "Ответь в соответствии с системной инструкцией и без стартовых приветствий."
         await handle_media_request(update, context, file_part, user_prompt)
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке фото: {e}")
@@ -763,7 +763,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         doc_file = await doc.get_file()
         doc_bytes = await doc_file.download_as_bytearray()
         file_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], doc_bytes, doc.mime_type, doc.file_name or "document")
-        user_prompt = message.caption or "Ответь без стартовых приветствий и в соответствии с системными инструкциями."
+        user_prompt = message.caption or "Ответь в соответствии с системной инструкцией и без стартовых приветствий."
         await handle_media_request(update, context, file_part, user_prompt)
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке документа: {e}")
@@ -792,7 +792,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_file = await video.get_file()
         video_bytes = await video_file.download_as_bytearray()
         video_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], video_bytes, video.mime_type, video.file_name or "video.mp4")
-        user_prompt = message.caption or "Ответь без стартовых приветствий и в соответствии с системными инструкциями."
+        user_prompt = message.caption or "Ответь в соответствии с системной инструкцией и без стартовых приветствий."
         await handle_media_request(update, context, video_part, user_prompt)
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке видео: {e}")
@@ -826,7 +826,7 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_name="video_note.mp4"
         )
 
-        user_prompt = "Ответь без стартовых приветствий, как собеседник, содержательно и в соответствии с системными инструкциями."
+        user_prompt = "Ответь как собеседник, в соответствии с системной инструкцией и без стартовых приветствий."
         await handle_media_request(update, context, video_part, user_prompt)
     except (BadRequest, IOError) as e:
         logger.error(f"Ошибка при обработке видео-кружочка: {e}")
@@ -855,7 +855,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_name = getattr(audio, 'file_name', 'audio.mp3')
         audio_part = await upload_and_wait_for_file(context.bot_data['gemini_client'], audio_bytes, audio.mime_type, file_name)
         
-        user_prompt = message.caption or "Послушай и опиши полную картину звуков: жанр, настроение, инструменты, вокал, слова. Ответь без стартовых приветствий и дай мнение в соответствии с системными инструкциями."
+        user_prompt = message.caption or "Послушай и опиши полную картину звуков: жанр, настроение, инструменты, вокал, слова. Дай мнение в соответствии с системной инструкцией и без стартовых приветствий."
         await handle_media_request(update, context, audio_part, user_prompt)
 
     except (BadRequest, IOError) as e:
@@ -878,7 +878,7 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text("Анализирую видео с YouTube...", reply_to_message_id=message.id)
     try:
         youtube_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
-        user_prompt = text.replace(match.group(0), "").strip() or "Ответь без стартовых приветствий и в соответствии с системными инструкциями."
+        user_prompt = text.replace(match.group(0), "").strip() or "Ответь в соответствии с системной инструкцией и без стартовых приветствий."
         await handle_media_request(update, context, youtube_part, user_prompt)
     except Exception as e:
         logger.error(f"Ошибка при обработке YouTube URL {youtube_url}: {e}", exc_info=True)
