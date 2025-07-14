@@ -657,34 +657,67 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
     if not update.message or not update.message.reply_to_message:
         return await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение с медиафайлом или ссылкой.")
     
-    context.chat_data['id'] = update.effective_chat.id
+    chat_id = update.effective_chat.id
+    context.chat_data['id'] = chat_id
     replied_message = update.message.reply_to_message
-    media_obj = replied_message.audio or replied_message.voice or replied_message.video or replied_message.video_note or replied_message.photo or replied_message.document
     
     media_part = None
     client = context.bot_data['gemini_client']
     
     try:
-        if media_obj:
-            if hasattr(media_obj, 'file_size') and media_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-                return await update.message.reply_text(f"❌ Файл слишком большой (> {TELEGRAM_FILE_LIMIT_MB} MB) для обработки этой командой.")
-            media_file = await media_obj.get_file()
-            media_bytes = await media_file.download_as_bytearray()
-            media_part = await upload_and_wait_for_file(client, media_bytes, media_obj.mime_type, getattr(media_obj, 'file_name', 'media.bin'))
-        elif replied_message.text:
-            yt_match = re.search(YOUTUBE_REGEX, replied_message.text)
-            if yt_match:
-                youtube_url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
-                media_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
-            else:
-                return await update.message.reply_text("В цитируемом сообщении нет поддерживаемого медиафайла или YouTube-ссылки.")
-        else:
-            return await update.message.reply_text("Не удалось найти медиафайл в цитируемом сообщении.")
+        # ПРИОРИТЕТ 1: Поиск медиа через контекст диалога
+        if replied_message.from_user.id == context.bot.id:
+            reply_map = context.chat_data.get('reply_map', {})
+            original_user_msg_id = reply_map.get(replied_message.message_id)
+            
+            if original_user_msg_id:
+                all_media_contexts = context.application.bot_data.get('media_contexts', {})
+                chat_media_contexts = all_media_contexts.get(chat_id, {})
+                media_context_dict = chat_media_contexts.get(original_user_msg_id)
+                
+                if media_context_dict:
+                    part, is_stale = dict_to_part(media_context_dict)
+                    if is_stale:
+                        return await update.message.reply_text("⏳ Контекст этого файла истек (срок хранения 48 часов). Пожалуйста, отправьте файл заново.")
+                    if part:
+                        media_part = part
+                        logger.info(f"Найдено медиа для утилитарной команды через reply_map: {part.file_data.file_uri}")
+
+        # ПРИОРИТЕТ 2: Прямой поиск в цитируемом сообщении (если контекст не найден)
+        if not media_part:
+            logger.info("Контекст для утилитарной команды не найден, ищем медиа напрямую в сообщении.")
+            # Объект media_obj теперь включает video_note
+            media_obj = replied_message.audio or replied_message.voice or replied_message.video or replied_message.video_note or replied_message.photo or replied_message.document
+            
+            if media_obj:
+                # Проверка размера файла
+                if hasattr(media_obj, 'file_size') and media_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+                    return await update.message.reply_text(f"❌ Файл слишком большой (> {TELEGRAM_FILE_LIMIT_MB} MB) для обработки этой командой.")
+                
+                media_file = await media_obj.get_file()
+                media_bytes = await media_file.download_as_bytearray()
+                
+                # Корректное определение mime_type, включая video_note
+                mime_type = getattr(media_obj, 'mime_type', 'video/mp4') # По умолчанию mp4 для video_note
+                file_name = getattr(media_obj, 'file_name', 'media.bin')
+                
+                media_part = await upload_and_wait_for_file(client, media_bytes, mime_type, file_name)
+
+            elif replied_message.text:
+                yt_match = re.search(YOUTUBE_REGEX, replied_message.text)
+                if yt_match:
+                    youtube_url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
+                    media_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
+
+        # Если после всех проверок медиа не найдено
+        if not media_part:
+            return await update.message.reply_text("В цитируемом сообщении или его контексте нет поддерживаемого медиафайла или YouTube-ссылки.")
 
         await update.message.reply_text("Анализирую...", reply_to_message_id=update.message.message_id)
         
         content_parts = [media_part, types.Part(text=prompt)]
         
+        # Утилитарные команды всегда изолированы
         response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS)
         result_text = format_gemini_response(response_obj) if not isinstance(response_obj, str) else response_obj
         await send_reply(update.message, result_text)
