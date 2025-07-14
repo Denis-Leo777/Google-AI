@@ -734,8 +734,34 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 @ignore_if_processing
 async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await utility_media_command(update, context, "Транскрибируй этот файл аудио/видео. Предоставь только извлеченный текст без заголовков, вступительных фраз и комментариев.")
+    if not update.message or not update.message.reply_to_message:
+        return await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение, содержащее расшифровку голосового.")
 
+    replied_bot_msg_id = update.message.reply_to_message.message_id
+    chat_history = context.chat_data.get("history", [])
+    
+    # Ищем исходное сообщение пользователя, которое вызвало ответ бота
+    original_user_entry = None
+    for i, entry in enumerate(chat_history):
+        if entry.get("bot_message_id") == replied_bot_msg_id and i > 0:
+            if chat_history[i-1].get("role") == "user":
+                original_user_entry = chat_history[i-1]
+                break
+    
+    if original_user_entry and original_user_entry.get("parts"):
+        # Ищем в частях сообщения текст с маркером голосового
+        for part in original_user_entry["parts"]:
+            text = part.get("content", "")
+            if text.startswith("[Голосовое сообщение]:"):
+                # Извлекаем и очищаем транскрипт
+                transcript = text.replace("[Голосовое сообщение]:", "").strip()
+                if transcript:
+                    await update.message.reply_text(f"<b>Транскрипт:</b>\n\n{html.escape(transcript)}", parse_mode=ParseMode.HTML)
+                    return
+    
+    # Если транскрипт не найден, предлагаем использовать команду для других медиа
+    await update.message.reply_text("В этом сообщении не найдена расшифровка голосового. Для получения транскрипта из видео или аудиофайла, ответьте на сообщение с этим файлом.")
+    
 @ignore_if_processing
 async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await utility_media_command(update, context, "Сделай содержательный конспект из этого материала.")
