@@ -1,4 +1,4 @@
-# Версия 14
+# Версия 15
 
 import logging
 import os
@@ -52,7 +52,7 @@ MODEL_NAME = 'gemini-2.5-flash'
 YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})'
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
-MAX_CONTEXT_CHARS = 500000
+MAX_CONTEXT_CHARS = 400000
 MAX_HISTORY_RESPONSE_LEN = 6000
 MAX_HISTORY_ITEMS = 100
 MAX_MEDIA_CONTEXTS = 100
