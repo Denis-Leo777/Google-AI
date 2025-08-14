@@ -53,7 +53,7 @@ YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|em
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
 MAX_CONTEXT_CHARS = 400000
-MAX_HISTORY_RESPONSE_LEN = 6000
+MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 100
 MAX_MEDIA_CONTEXTS = 100
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
@@ -534,7 +534,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         final_prompt_text = f"{user_prefix}{prompt_text}"
         if not is_media_request and not has_url_in_text:
             grounding_instruction = """
-ИЩИ и ИСПОЛЬЗУЙ дополнительные и самые актуальные максимально точные данные на {current_time} с помощью поиска в интернете, поскольку твоя база знаний устарела.
+ИЩИ и ИСПОЛЬЗУЙ дополнительные и самые актуальные максимально точные данные на {current_time} с помощью поиска в интернете, поскольку твоя база знаний устарела. Применяй инструкции из системного промпта.
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
         
