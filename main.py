@@ -534,7 +534,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         final_prompt_text = f"{user_prefix}{prompt_text}"
         if not is_media_request and not has_url_in_text:
             grounding_instruction = """
-ИЩИ и ИСПОЛЬЗУЙ дополнительные и самые актуальные максимально точные данные на {current_time} с помощью поиска в интернете, поскольку твоя база знаний устарела.
+Поскольку твои данные устарели, ИЩИ и ИСПОЛЬЗУЙ дополнительные и самые актуальные точные данные на {current_time} с помощью поиска в интернете Grounding with Google Search.
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
         
