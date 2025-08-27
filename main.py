@@ -1,4 +1,4 @@
-# Версия 16
+# Версия 17 (с выбором модели и исправленной транскрипцией)
 
 import logging
 import os
@@ -32,10 +32,7 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
 
-# --- ДОБАВЛЯЕМ ЭТУ СТРОКУ ---
-# Повышаем уровень логирования для aiohttp.access, чтобы скрыть INFO сообщения
 logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
@@ -48,7 +45,14 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНСТАНТЫ И НАСТРОЙКИ ---
-MODEL_NAME = 'gemini-2.5-flash', 'gemini-2.5-pro'
+# --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ВЫБОР МОДЕЛЕЙ ---
+DEFAULT_MODEL = 'gemini-2.5-flash'
+AVAILABLE_MODELS = {
+    'flash': 'gemini-2.5-flash',
+    'pro': 'gemini-2.5-pro'
+}
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})'
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
@@ -347,11 +351,16 @@ async def generate_response(client: genai.Client, request_contents: list, contex
         thinking_config=types.ThinkingConfig(thinking_budget=24576)
     )
     
+    # --- ИЗМЕНЕНИЕ: ВЫБОР МОДЕЛИ ИЗ КОНТЕКСТА ЧАТА ---
+    model_to_use = context.chat_data.get('model', DEFAULT_MODEL)
+    logger.info(f"ChatID: {chat_id} | Используется модель: {model_to_use}")
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     max_retries = 3
     for attempt in range(max_retries):
         try:
             response = await client.aio.models.generate_content(
-                model=MODEL_NAME,
+                model=model_to_use, # <-- Используем выбранную модель
                 contents=request_contents,
                 config=config
             )
@@ -412,12 +421,8 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
 
         full_text = "".join(text_parts)
         
-        # --- ИСПРАВЛЕННЫЙ ПРОТОКОЛ САНИТАРНОЙ ОБРАБОТКИ ---
-        # 1. Убираем только множественные переносы, оставляя одиночные абзацы нетронутыми.
-        # Любая последовательность из 3 или более переносов строки заменяется на два (\n\n).
         squeezed_text = re.sub(r'\n{3,}', '\n\n', full_text)
         
-        # 2. Дальнейшая очистка от системного мусора
         final_text = re.sub(r'tool_code\n.*?thought\n', '', squeezed_text, flags=re.DOTALL)
         final_text = re.sub(r'\[\d+;\s*Name:\s*.*?\]:\s*', '', final_text)
         final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
@@ -467,8 +472,6 @@ async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: l
         if part.text:
             entry_parts.append(part_to_dict(part))
 
-    # Для медиа без текста все равно создаем запись, чтобы reply_map работал
-    # и чтобы история не была пустой для пользователя
     if not entry_parts and role == 'user':
         if not any(p.file_data for p in parts):
             return
@@ -490,26 +493,20 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # --- НОВАЯ, КОРРЕКТНАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ АВТОРА (для v20+) ---
     effective_user_id = message.from_user.id
     effective_user_name = message.from_user.first_name
     
-    # Безопасно проверяем наличие `forward_origin`
     if message.forward_origin:
         origin = message.forward_origin
-        # Репост из канала
         if origin.type == 'channel' and origin.chat:
             effective_user_id = origin.chat.id
             effective_user_name = origin.chat.title or "скрытый канал"
-        # Репост от пользователя
         elif origin.type == 'user' and origin.sender_user:
             effective_user_id = origin.sender_user.id
             effective_user_name = origin.sender_user.first_name or "скрытый пользователь"
-        # Репост от пользователя, скрывшего профиль
         elif origin.type == 'hidden_user' and origin.sender_user_name:
             effective_user_id = 'hidden'
             effective_user_name = origin.sender_user_name
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     text_part_content = next((p.text for p in content_parts if p.text), None)
     if text_part_content and re.search(DATE_TIME_REGEX, text_part_content, re.IGNORECASE):
@@ -652,6 +649,30 @@ async def newtopic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_data.get('media_contexts', {}).pop(chat_id, None)
         await update.message.reply_text("Контекст предыдущих файлов очищен. Начинаем новую тему.")
 
+# --- ИЗМЕНЕНИЕ: НОВАЯ КОМАНДА ВЫБОРА МОДЕЛИ ---
+@ignore_if_processing
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        current_model_key = [k for k, v in AVAILABLE_MODELS.items() if v == context.chat_data.get('model', DEFAULT_MODEL)][0]
+        await update.message.reply_html(
+            f"Текущая модель: <b>{current_model_key}</b>.\n\n"
+            "Чтобы сменить модель, используйте команду с аргументом. Например:\n"
+            "<code>/model pro</code> - мощная и вдумчивая\n"
+            "<code>/model flash</code> - быстрая и экономичная"
+        )
+        return
+        
+    chosen_model_key = args[0].lower()
+    if chosen_model_key in AVAILABLE_MODELS:
+        context.chat_data['model'] = AVAILABLE_MODELS[chosen_model_key]
+        await context.application.persistence.update_chat_data(update.effective_chat.id, context.chat_data)
+        await update.message.reply_html(f"✅ Модель успешно переключена на <b>{chosen_model_key}</b>.")
+        logger.info(f"ChatID {update.effective_chat.id} переключил модель на {AVAILABLE_MODELS[chosen_model_key]}")
+    else:
+        await update.message.reply_text("Неизвестная модель. Доступные варианты: flash, pro.")
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 @ignore_if_processing
 async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
     if not update.message or not update.message.reply_to_message:
@@ -665,7 +686,6 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
     client = context.bot_data['gemini_client']
     
     try:
-        # ПРИОРИТЕТ 1: Поиск медиа через контекст диалога
         if replied_message.from_user.id == context.bot.id:
             reply_map = context.chat_data.get('reply_map', {})
             original_user_msg_id = reply_map.get(replied_message.message_id)
@@ -683,22 +703,18 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
                         media_part = part
                         logger.info(f"Найдено медиа для утилитарной команды через reply_map: {part.file_data.file_uri}")
 
-        # ПРИОРИТЕТ 2: Прямой поиск в цитируемом сообщении (если контекст не найден)
         if not media_part:
             logger.info("Контекст для утилитарной команды не найден, ищем медиа напрямую в сообщении.")
-            # Объект media_obj теперь включает video_note
             media_obj = replied_message.audio or replied_message.voice or replied_message.video or replied_message.video_note or replied_message.photo or replied_message.document
             
             if media_obj:
-                # Проверка размера файла
                 if hasattr(media_obj, 'file_size') and media_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
                     return await update.message.reply_text(f"❌ Файл слишком большой (> {TELEGRAM_FILE_LIMIT_MB} MB) для обработки этой командой.")
                 
                 media_file = await media_obj.get_file()
                 media_bytes = await media_file.download_as_bytearray()
                 
-                # Корректное определение mime_type, включая video_note
-                mime_type = getattr(media_obj, 'mime_type', 'video/mp4') # По умолчанию mp4 для video_note
+                mime_type = getattr(media_obj, 'mime_type', 'video/mp4')
                 file_name = getattr(media_obj, 'file_name', 'media.bin')
                 
                 media_part = await upload_and_wait_for_file(client, media_bytes, mime_type, file_name)
@@ -709,7 +725,6 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
                     youtube_url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
                     media_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
 
-        # Если после всех проверок медиа не найдено
         if not media_part:
             return await update.message.reply_text("В цитируемом сообщении или его контексте нет поддерживаемого медиафайла или YouTube-ссылки.")
 
@@ -717,7 +732,6 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
         
         content_parts = [media_part, types.Part(text=prompt)]
         
-        # Утилитарные команды всегда изолированы
         response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS)
         result_text = format_gemini_response(response_obj) if not isinstance(response_obj, str) else response_obj
         await send_reply(update.message, result_text)
@@ -732,35 +746,16 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Ошибка в утилитарной команде: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Не удалось выполнить команду: {e}")
 
+# --- ИЗМЕНЕНИЕ: ПОЛНОСТЬЮ ПЕРЕРАБОТАНА КОМАНДА ТРАНСКРИПЦИИ ---
 @ignore_if_processing
 async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.reply_to_message:
-        return await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение, содержащее расшифровку голосового.")
-
-    replied_bot_msg_id = update.message.reply_to_message.message_id
-    chat_history = context.chat_data.get("history", [])
-    
-    # Ищем исходное сообщение пользователя, которое вызвало ответ бота
-    original_user_entry = None
-    for i, entry in enumerate(chat_history):
-        if entry.get("bot_message_id") == replied_bot_msg_id and i > 0:
-            if chat_history[i-1].get("role") == "user":
-                original_user_entry = chat_history[i-1]
-                break
-    
-    if original_user_entry and original_user_entry.get("parts"):
-        # Ищем в частях сообщения текст с маркером голосового
-        for part in original_user_entry["parts"]:
-            text = part.get("content", "")
-            if text.startswith("[Голосовое сообщение]:"):
-                # Извлекаем и очищаем транскрипт
-                transcript = text.replace("[Голосовое сообщение]:", "").strip()
-                if transcript:
-                    await update.message.reply_text(f"<b>Транскрипт:</b>\n\n{html.escape(transcript)}", parse_mode=ParseMode.HTML)
-                    return
-    
-    # Если транскрипт не найден, предлагаем использовать команду для других медиа
-    await update.message.reply_text("В этом сообщении не найдена расшифровка голосового. Для получения транскрипта из видео или аудиофайла, ответьте на сообщение с этим файлом.")
+    """
+    Создает дословную расшифровку для любого аудио/видео/голосового/кружочка.
+    Теперь работает через универсальный обработчик utility_media_command.
+    """
+    prompt = "Сделай дословную расшифровку (транскрипцию) этого аудио/видео. Выведи только текст без каких-либо комментариев."
+    await utility_media_command(update, context, prompt)
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
 @ignore_if_processing
 async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -861,7 +856,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Внутренняя ошибка при обработке видео.")
 
 @ignore_if_processing
-# @isolated_request  <-- УБИРАЕМ ЭТУ СТРОКУ
 async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.video_note: return
@@ -896,7 +890,6 @@ async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @ignore_if_processing
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик для аудиофайлов (музыка, звуки) - анализ, а не транскрипция."""
     message = update.message
     if not message: return
     
@@ -1027,22 +1020,18 @@ async def _internal_handle_message_logic(update: Update, context: ContextTypes.D
 
 @ignore_if_processing
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Публичный обработчик для голосовых, защищенный декоратором."""
     await _internal_handle_voice_logic(update, context)
 
 @ignore_if_processing
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Публичный обработчик для URL, защищенный декоратором."""
     await _internal_handle_message_logic(update, context)
 
 @ignore_if_processing
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Публичный обработчик для текста, защищенный декоратором."""
     await _internal_handle_message_logic(update, context)
 
 # --- ЗАПУСК БОТА ---
 async def handle_health_check(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    # logger.info("Health check OK")  <-- КОММЕНТИРУЕМ ИЛИ УДАЛЯЕМ ЭТУ СТРОКУ
     return aiohttp.web.Response(text="OK", status=200)
     
 async def handle_telegram_webhook(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -1081,8 +1070,10 @@ async def main():
     
     application.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
+    # --- ИЗМЕНЕНИЕ: ДОБАВЛЕНА КОМАНДА /model ---
     commands = [
         BotCommand("start", "Инфо и начало работы"),
+        BotCommand("model", "Выбрать модель (pro/flash)"),
         BotCommand("transcript", "Транскрипция медиа (ответом)"),
         BotCommand("summarize", "Краткий пересказ (ответом)"),
         BotCommand("keypoints", "Ключевые тезисы (ответом)"),
@@ -1091,27 +1082,24 @@ async def main():
     ]
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("clear", clear_command))
+    application.add_handler(CommandHandler("model", model_command)) # <-- Новая команда
     application.add_handler(CommandHandler("transcript", transcript_command))
     application.add_handler(CommandHandler("summarize", summarize_command))
     application.add_handler(CommandHandler("keypoints", keypoints_command))
     application.add_handler(CommandHandler("newtopic", newtopic_command))
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
-    # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
-    
-    # 1. Неизолированные обработчики (контекст важен)
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
     audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND
     application.add_handler(MessageHandler(audio_filter, handle_audio))
     
-    # 2. Изолированные обработчики (контекст мешает)
     application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
-    application.add_handler(MessageHandler(filters.VIDEO_NOTE & ~filters.COMMAND, handle_video_note)) # <-- НОВЫЙ ОБРАБОТЧИК
+    application.add_handler(MessageHandler(filters.VIDEO_NOTE & ~filters.COMMAND, handle_video_note))
     document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND
     application.add_handler(MessageHandler(document_filter, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
 
-    # 3. Текстовые обработчики (должны идти последними)
     url_filter = filters.Entity("url") | filters.Entity("text_link")
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
