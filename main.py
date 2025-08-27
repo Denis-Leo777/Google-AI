@@ -1,4 +1,4 @@
-# Версия 17 (с выбором модели и исправленной транскрипцией)
+# Версия 18 (кнопки для моделей, исправленный транскрипт)
 
 import logging
 import os
@@ -18,9 +18,9 @@ from functools import wraps
 
 import aiohttp
 import aiohttp.web
-from telegram import Update, Message, BotCommand, User
+from telegram import Update, Message, BotCommand, User, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, BasePersistence
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, BasePersistence, CallbackQueryHandler
 from telegram.error import BadRequest
 
 from google import genai
@@ -45,7 +45,7 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНСТАНТЫ И НАСТРОЙКИ ---
-# --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ВЫБОР МОДЕЛЕЙ ---
+# --- ИЗМЕНЕНИЕ: ВЕРНУЛ ВАШИ НАЗВАНИЯ МОДЕЛЕЙ ---
 DEFAULT_MODEL = 'gemini-2.5-flash'
 AVAILABLE_MODELS = {
     'flash': 'gemini-2.5-flash',
@@ -208,6 +208,9 @@ def html_safe_chunker(text_to_chunk: str, chunk_size: int = 4096) -> list[str]:
 def ignore_if_processing(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if update.callback_query: # Пропускаем декоратор для кнопок
+            return await func(update, context, *args, **kwargs)
+
         if not update or not update.effective_message:
             return await func(update, context, *args, **kwargs)
 
@@ -331,7 +334,7 @@ async def upload_and_wait_for_file(client: genai.Client, file_bytes: bytes, mime
         logger.error(f"Ошибка при загрузке файла через File API: {e}", exc_info=True)
         raise IOError(f"Не удалось загрузить или обработать файл '{file_name}' на сервере Google.")
 
-async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list, system_instruction_override: str = None) -> types.GenerateContentResponse | str:
+async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list, system_instruction_override: str | None = None) -> types.GenerateContentResponse | str:
     chat_id = context.chat_data.get('id', 'Unknown')
     
     if system_instruction_override:
@@ -351,16 +354,14 @@ async def generate_response(client: genai.Client, request_contents: list, contex
         thinking_config=types.ThinkingConfig(thinking_budget=24576)
     )
     
-    # --- ИЗМЕНЕНИЕ: ВЫБОР МОДЕЛИ ИЗ КОНТЕКСТА ЧАТА ---
     model_to_use = context.chat_data.get('model', DEFAULT_MODEL)
     logger.info(f"ChatID: {chat_id} | Используется модель: {model_to_use}")
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     max_retries = 3
     for attempt in range(max_retries):
         try:
             response = await client.aio.models.generate_content(
-                model=model_to_use, # <-- Используем выбранную модель
+                model=model_to_use,
                 contents=request_contents,
                 config=config
             )
@@ -608,7 +609,7 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
 
 # --- ОБРАБОТЧИКИ КОМАНД ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    start_text = """Я - Женя, интеллект Google Gemini 2.5 Flash с активным Google-поиском:
+    start_text = """Я - Женя, интеллект Google Gemini с активным Google-поиском:
 
 🌐 Обладаю глубокими знаниями во всех сферах и умно использую Google.
 🧠 Анализирую и размышляю над сообщением, контекстом и всеми знаниями.
@@ -628,14 +629,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat:
         chat_id = update.effective_chat.id
-        
         context.chat_data.clear()
-        
         bot_data = context.application.bot_data
         bot_data.get('media_contexts', {}).pop(chat_id, None)
-        
         await context.application.persistence.update_chat_data(chat_id, context.chat_data)
-        
         await update.message.reply_text("✅ История чата и весь медиа-контекст полностью очищены.")
         logger.info(f"Полная очистка контекста для чата {chat_id} по команде /clear.")
     else:
@@ -649,32 +646,39 @@ async def newtopic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_data.get('media_contexts', {}).pop(chat_id, None)
         await update.message.reply_text("Контекст предыдущих файлов очищен. Начинаем новую тему.")
 
-# --- ИЗМЕНЕНИЕ: НОВАЯ КОМАНДА ВЫБОРА МОДЕЛИ ---
+# --- ИЗМЕНЕНИЕ: НОВАЯ КОМАНДА ВЫБОРА МОДЕЛИ ПО КНОПКАМ ---
 @ignore_if_processing
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        current_model_key = [k for k, v in AVAILABLE_MODELS.items() if v == context.chat_data.get('model', DEFAULT_MODEL)][0]
-        await update.message.reply_html(
-            f"Текущая модель: <b>{current_model_key}</b>.\n\n"
-            "Чтобы сменить модель, используйте команду с аргументом. Например:\n"
-            "<code>/model pro</code> - мощная и вдумчивая\n"
-            "<code>/model flash</code> - быстрая и экономичная"
-        )
-        return
-        
-    chosen_model_key = args[0].lower()
+    current_model = context.chat_data.get('model', DEFAULT_MODEL)
+    current_model_key = [k for k, v in AVAILABLE_MODELS.items() if v == current_model][0]
+    
+    text = f"Текущая модель: <b>{current_model_key}</b>.\n\nВыберите новую модель:"
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🚀 Flash (Быстрая)", callback_data="model_switch_flash"),
+            InlineKeyboardButton("🧠 Pro (Мощная)", callback_data="model_switch_pro")
+        ]
+    ])
+    await update.message.reply_html(text, reply_markup=keyboard)
+
+async def model_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() # Обязательно подтверждаем получение callback
+    
+    chosen_model_key = query.data.split('_')[-1]
+    
     if chosen_model_key in AVAILABLE_MODELS:
         context.chat_data['model'] = AVAILABLE_MODELS[chosen_model_key]
-        await context.application.persistence.update_chat_data(update.effective_chat.id, context.chat_data)
-        await update.message.reply_html(f"✅ Модель успешно переключена на <b>{chosen_model_key}</b>.")
-        logger.info(f"ChatID {update.effective_chat.id} переключил модель на {AVAILABLE_MODELS[chosen_model_key]}")
+        await context.application.persistence.update_chat_data(query.effective_chat.id, context.chat_data)
+        
+        await query.edit_message_text(text=f"✅ Модель успешно переключена на <b>{chosen_model_key}</b>.", parse_mode=ParseMode.HTML)
+        logger.info(f"ChatID {query.effective_chat.id} переключил модель на {AVAILABLE_MODELS[chosen_model_key]}")
     else:
-        await update.message.reply_text("Неизвестная модель. Доступные варианты: flash, pro.")
+        await query.edit_message_text(text="❌ Произошла ошибка при выборе модели.")
 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 @ignore_if_processing
-async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
+async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str, system_instruction_override: str | None = None):
     if not update.message or not update.message.reply_to_message:
         return await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение с медиафайлом или ссылкой.")
     
@@ -732,7 +736,7 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
         
         content_parts = [media_part, types.Part(text=prompt)]
         
-        response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS)
+        response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS, system_instruction_override=system_instruction_override)
         result_text = format_gemini_response(response_obj) if not isinstance(response_obj, str) else response_obj
         await send_reply(update.message, result_text)
     
@@ -746,15 +750,12 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Ошибка в утилитарной команде: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Не удалось выполнить команду: {e}")
 
-# --- ИЗМЕНЕНИЕ: ПОЛНОСТЬЮ ПЕРЕРАБОТАНА КОМАНДА ТРАНСКРИПЦИИ ---
+# --- ИЗМЕНЕНИЕ: ИСПРАВЛЕНА ЛОГИКА ТРАНСКРИПЦИИ ---
 @ignore_if_processing
 async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Создает дословную расшифровку для любого аудио/видео/голосового/кружочка.
-    Теперь работает через универсальный обработчик utility_media_command.
-    """
-    prompt = "Сделай дословную расшифровку (транскрипцию) этого аудио/видео. Выведи только текст без каких-либо комментариев."
-    await utility_media_command(update, context, prompt)
+    prompt = "Transcribe this audio/video file."
+    system_instruction = "You are a highly accurate transcription service. Your only task is to transcribe the provided audio or video file. Do not add any extra words, comments, or formatting. Output only the raw, transcribed text."
+    await utility_media_command(update, context, prompt, system_instruction_override=system_instruction)
 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
 @ignore_if_processing
@@ -1070,7 +1071,6 @@ async def main():
     
     application.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
-    # --- ИЗМЕНЕНИЕ: ДОБАВЛЕНА КОМАНДА /model ---
     commands = [
         BotCommand("start", "Инфо и начало работы"),
         BotCommand("model", "Выбрать модель (pro/flash)"),
@@ -1082,13 +1082,16 @@ async def main():
     ]
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("clear", clear_command))
-    application.add_handler(CommandHandler("model", model_command)) # <-- Новая команда
+    application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CommandHandler("transcript", transcript_command))
     application.add_handler(CommandHandler("summarize", summarize_command))
     application.add_handler(CommandHandler("keypoints", keypoints_command))
     application.add_handler(CommandHandler("newtopic", newtopic_command))
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
+    # --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ОБРАБОТЧИК КНОПОК ---
+    application.add_handler(CallbackQueryHandler(model_button_callback, pattern='^model_switch_'))
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
     audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND
