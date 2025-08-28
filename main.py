@@ -1,4 +1,4 @@
-# Версия 18 (кнопки для моделей, исправленный транскрипт)
+# Версия 19 (раздельная логика утилит, кнопки)
 
 import logging
 import os
@@ -45,13 +45,11 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНСТАНТЫ И НАСТРОЙКИ ---
-# --- ИЗМЕНЕНИЕ: ВЕРНУЛ ВАШИ НАЗВАНИЯ МОДЕЛЕЙ ---
 DEFAULT_MODEL = 'gemini-2.5-flash'
 AVAILABLE_MODELS = {
     'flash': 'gemini-2.5-flash',
     'pro': 'gemini-2.5-pro'
 }
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})'
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
@@ -208,7 +206,7 @@ def html_safe_chunker(text_to_chunk: str, chunk_size: int = 4096) -> list[str]:
 def ignore_if_processing(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if update.callback_query: # Пропускаем декоратор для кнопок
+        if update.callback_query:
             return await func(update, context, *args, **kwargs)
 
         if not update or not update.effective_message:
@@ -646,7 +644,6 @@ async def newtopic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_data.get('media_contexts', {}).pop(chat_id, None)
         await update.message.reply_text("Контекст предыдущих файлов очищен. Начинаем новую тему.")
 
-# --- ИЗМЕНЕНИЕ: НОВАЯ КОМАНДА ВЫБОРА МОДЕЛИ ПО КНОПКАМ ---
 @ignore_if_processing
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_model = context.chat_data.get('model', DEFAULT_MODEL)
@@ -663,7 +660,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def model_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # Обязательно подтверждаем получение callback
+    await query.answer()
     
     chosen_model_key = query.data.split('_')[-1]
     
@@ -675,12 +672,13 @@ async def model_button_callback(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info(f"ChatID {query.effective_chat.id} переключил модель на {AVAILABLE_MODELS[chosen_model_key]}")
     else:
         await query.edit_message_text(text="❌ Произошла ошибка при выборе модели.")
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-@ignore_if_processing
-async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str, system_instruction_override: str | None = None):
+# --- ИЗМЕНЕНИЕ: РАЗДЕЛЕНИЕ УТИЛИТАРНЫХ ФУНКЦИЙ ---
+async def _base_utility_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> types.Part | None:
+    """Общая логика для поиска медиафайла в отвеченном сообщении."""
     if not update.message or not update.message.reply_to_message:
-        return await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение с медиафайлом или ссылкой.")
+        await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение с медиафайлом или ссылкой.")
+        return None
     
     chat_id = update.effective_chat.id
     context.chat_data['id'] = chat_id
@@ -688,83 +686,102 @@ async def utility_media_command(update: Update, context: ContextTypes.DEFAULT_TY
     
     media_part = None
     client = context.bot_data['gemini_client']
-    
+
+    if replied_message.from_user.id == context.bot.id:
+        reply_map = context.chat_data.get('reply_map', {})
+        original_user_msg_id = reply_map.get(replied_message.message_id)
+        if original_user_msg_id:
+            media_contexts = context.application.bot_data.get('media_contexts', {}).get(chat_id, {})
+            media_context_dict = media_contexts.get(original_user_msg_id)
+            if media_context_dict:
+                part, is_stale = dict_to_part(media_context_dict)
+                if is_stale:
+                    await update.message.reply_text("⏳ Контекст этого файла истек (срок хранения 48 часов). Пожалуйста, отправьте файл заново.")
+                    return None
+                if part:
+                    media_part = part
+                    logger.info(f"Найдено медиа для утилитарной команды через reply_map: {part.file_data.file_uri}")
+
+    if not media_part:
+        logger.info("Контекст для утилитарной команды не найден, ищем медиа напрямую в сообщении.")
+        media_obj = replied_message.audio or replied_message.voice or replied_message.video or replied_message.video_note or replied_message.photo or replied_message.document
+        
+        if media_obj:
+            if hasattr(media_obj, 'file_size') and media_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+                await update.message.reply_text(f"❌ Файл слишком большой (> {TELEGRAM_FILE_LIMIT_MB} MB) для обработки этой командой.")
+                return None
+            
+            media_file = await media_obj.get_file()
+            media_bytes = await media_file.download_as_bytearray()
+            mime_type = getattr(media_obj, 'mime_type', 'video/mp4')
+            file_name = getattr(media_obj, 'file_name', 'media.bin')
+            media_part = await upload_and_wait_for_file(client, media_bytes, mime_type, file_name)
+
+        elif replied_message.text:
+            yt_match = re.search(YOUTUBE_REGEX, replied_message.text)
+            if yt_match:
+                youtube_url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
+                media_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
+
+    if not media_part:
+        await update.message.reply_text("В цитируемом сообщении или его контексте нет поддерживаемого медиафайла или YouTube-ссылки.")
+        return None
+        
+    return media_part
+
+async def analysis_utility_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
+    """Утилита для анализа: конспект, тезисы."""
     try:
-        if replied_message.from_user.id == context.bot.id:
-            reply_map = context.chat_data.get('reply_map', {})
-            original_user_msg_id = reply_map.get(replied_message.message_id)
-            
-            if original_user_msg_id:
-                all_media_contexts = context.application.bot_data.get('media_contexts', {})
-                chat_media_contexts = all_media_contexts.get(chat_id, {})
-                media_context_dict = chat_media_contexts.get(original_user_msg_id)
-                
-                if media_context_dict:
-                    part, is_stale = dict_to_part(media_context_dict)
-                    if is_stale:
-                        return await update.message.reply_text("⏳ Контекст этого файла истек (срок хранения 48 часов). Пожалуйста, отправьте файл заново.")
-                    if part:
-                        media_part = part
-                        logger.info(f"Найдено медиа для утилитарной команды через reply_map: {part.file_data.file_uri}")
-
-        if not media_part:
-            logger.info("Контекст для утилитарной команды не найден, ищем медиа напрямую в сообщении.")
-            media_obj = replied_message.audio or replied_message.voice or replied_message.video or replied_message.video_note or replied_message.photo or replied_message.document
-            
-            if media_obj:
-                if hasattr(media_obj, 'file_size') and media_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-                    return await update.message.reply_text(f"❌ Файл слишком большой (> {TELEGRAM_FILE_LIMIT_MB} MB) для обработки этой командой.")
-                
-                media_file = await media_obj.get_file()
-                media_bytes = await media_file.download_as_bytearray()
-                
-                mime_type = getattr(media_obj, 'mime_type', 'video/mp4')
-                file_name = getattr(media_obj, 'file_name', 'media.bin')
-                
-                media_part = await upload_and_wait_for_file(client, media_bytes, mime_type, file_name)
-
-            elif replied_message.text:
-                yt_match = re.search(YOUTUBE_REGEX, replied_message.text)
-                if yt_match:
-                    youtube_url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
-                    media_part = types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=youtube_url))
-
-        if not media_part:
-            return await update.message.reply_text("В цитируемом сообщении или его контексте нет поддерживаемого медиафайла или YouTube-ссылки.")
+        media_part = await _base_utility_handler(update, context)
+        if not media_part: return
 
         await update.message.reply_text("Анализирую...", reply_to_message_id=update.message.message_id)
         
         content_parts = [media_part, types.Part(text=prompt)]
+        client = context.bot_data['gemini_client']
+        response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS)
         
-        response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS, system_instruction_override=system_instruction_override)
         result_text = format_gemini_response(response_obj) if not isinstance(response_obj, str) else response_obj
         await send_reply(update.message, result_text)
     
-    except BadRequest as e:
-        if "File is too big" in str(e):
-             await update.message.reply_text(f"❌ Файл слишком большой (> {TELEGRAM_FILE_LIMIT_MB} MB) для обработки.")
-        else:
-             logger.error(f"Ошибка BadRequest в утилитарной команде: {e}", exc_info=True)
-             await update.message.reply_text(f"❌ Произошла ошибка Telegram: {e}")
     except Exception as e:
-        logger.error(f"Ошибка в утилитарной команде: {e}", exc_info=True)
+        logger.error(f"Ошибка в analysis_utility_command: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Не удалось выполнить команду: {e}")
 
-# --- ИЗМЕНЕНИЕ: ИСПРАВЛЕНА ЛОГИКА ТРАНСКРИПЦИИ ---
+async def transcription_utility_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Утилита только для транскрипции со строгим промптом."""
+    try:
+        media_part = await _base_utility_handler(update, context)
+        if not media_part: return
+
+        await update.message.reply_text("Расшифровываю...", reply_to_message_id=update.message.message_id)
+        
+        prompt = "Transcribe this audio/video file."
+        system_instruction = "You are a highly accurate transcription service. Your only task is to transcribe the provided audio or video file. Do not add any extra words, comments, or formatting. Output only the raw, transcribed text."
+        content_parts = [media_part, types.Part(text=prompt)]
+        client = context.bot_data['gemini_client']
+        
+        response_obj = await generate_response(client, [types.Content(parts=content_parts, role="user")], context, MEDIA_TOOLS, system_instruction_override=system_instruction)
+        
+        result_text = format_gemini_response(response_obj) if not isinstance(response_obj, str) else response_obj
+        await send_reply(update.message, result_text)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в transcription_utility_command: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Не удалось выполнить команду: {e}")
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 @ignore_if_processing
 async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = "Transcribe this audio/video file."
-    system_instruction = "You are a highly accurate transcription service. Your only task is to transcribe the provided audio or video file. Do not add any extra words, comments, or formatting. Output only the raw, transcribed text."
-    await utility_media_command(update, context, prompt, system_instruction_override=system_instruction)
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    await transcription_utility_command(update, context)
     
 @ignore_if_processing
 async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await utility_media_command(update, context, "Сделай содержательный конспект из этого материала.")
+    await analysis_utility_command(update, context, "Сделай содержательный конспект из этого материала.")
 
 @ignore_if_processing
 async def keypoints_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await utility_media_command(update, context, "Извлеки ключевые моменты или главные тезисы из этого материала. Представь их в структурном виде.")
+    await analysis_utility_command(update, context, "Извлеки ключевые моменты или главные тезисы из этого материала. Представь их в структурном виде.")
 
 # --- ОБРАБОТЧИКИ СООБЩЕНИЙ ---
 async def handle_media_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_part: types.Part, user_text: str):
@@ -1088,9 +1105,7 @@ async def main():
     application.add_handler(CommandHandler("keypoints", keypoints_command))
     application.add_handler(CommandHandler("newtopic", newtopic_command))
     
-    # --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ОБРАБОТЧИК КНОПОК ---
     application.add_handler(CallbackQueryHandler(model_button_callback, pattern='^model_switch_'))
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
