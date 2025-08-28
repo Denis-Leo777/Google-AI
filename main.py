@@ -1,4 +1,4 @@
-# Версия 19 (раздельная логика утилит, кнопки)
+# Версия 20 (исправлена работа кнопок)
 
 import logging
 import os
@@ -206,9 +206,6 @@ def html_safe_chunker(text_to_chunk: str, chunk_size: int = 4096) -> list[str]:
 def ignore_if_processing(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if update.callback_query:
-            return await func(update, context, *args, **kwargs)
-
         if not update or not update.effective_message:
             return await func(update, context, *args, **kwargs)
 
@@ -673,9 +670,7 @@ async def model_button_callback(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         await query.edit_message_text(text="❌ Произошла ошибка при выборе модели.")
 
-# --- ИЗМЕНЕНИЕ: РАЗДЕЛЕНИЕ УТИЛИТАРНЫХ ФУНКЦИЙ ---
 async def _base_utility_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> types.Part | None:
-    """Общая логика для поиска медиафайла в отвеченном сообщении."""
     if not update.message or not update.message.reply_to_message:
         await update.message.reply_text("Пожалуйста, используйте эту команду в ответ на сообщение с медиафайлом или ссылкой.")
         return None
@@ -700,7 +695,7 @@ async def _base_utility_handler(update: Update, context: ContextTypes.DEFAULT_TY
                     return None
                 if part:
                     media_part = part
-                    logger.info(f"Найдено медиа для утилитарной команды через reply_map: {part.file_data.file_uri}")
+                    logger.info(f"Найдено медиа для утилитарной команды через reply_map.")
 
     if not media_part:
         logger.info("Контекст для утилитарной команды не найден, ищем медиа напрямую в сообщении.")
@@ -730,7 +725,6 @@ async def _base_utility_handler(update: Update, context: ContextTypes.DEFAULT_TY
     return media_part
 
 async def analysis_utility_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str):
-    """Утилита для анализа: конспект, тезисы."""
     try:
         media_part = await _base_utility_handler(update, context)
         if not media_part: return
@@ -749,7 +743,6 @@ async def analysis_utility_command(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(f"❌ Не удалось выполнить команду: {e}")
 
 async def transcription_utility_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Утилита только для транскрипции со строгим промптом."""
     try:
         media_part = await _base_utility_handler(update, context)
         if not media_part: return
@@ -769,7 +762,6 @@ async def transcription_utility_command(update: Update, context: ContextTypes.DE
     except Exception as e:
         logger.error(f"Ошибка в transcription_utility_command: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Не удалось выполнить команду: {e}")
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 @ignore_if_processing
 async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1107,20 +1099,22 @@ async def main():
     
     application.add_handler(CallbackQueryHandler(model_button_callback, pattern='^model_switch_'))
 
-    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
-    audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND
+    # --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ФИЛЬТР ~filters.CALLBACK_QUERY КО ВСЕМ MessageHandler ---
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND & ~filters.CALLBACK_QUERY, handle_photo))
+    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND & ~filters.CALLBACK_QUERY, handle_voice))
+    audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND & ~filters.CALLBACK_QUERY
     application.add_handler(MessageHandler(audio_filter, handle_audio))
     
-    application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
-    application.add_handler(MessageHandler(filters.VIDEO_NOTE & ~filters.COMMAND, handle_video_note))
-    document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND
+    application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND & ~filters.CALLBACK_QUERY, handle_video))
+    application.add_handler(MessageHandler(filters.VIDEO_NOTE & ~filters.COMMAND & ~filters.CALLBACK_QUERY, handle_video_note))
+    document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND & ~filters.CALLBACK_QUERY
     application.add_handler(MessageHandler(document_filter, handle_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX) & ~filters.CALLBACK_QUERY, handle_youtube_url))
 
     url_filter = filters.Entity("url") | filters.Entity("text_link")
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX) & ~filters.CALLBACK_QUERY, handle_url))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter & ~filters.CALLBACK_QUERY, handle_message))
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
     await application.bot.set_my_commands(commands)
     
@@ -1129,7 +1123,7 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM): loop.add_signal_handler(sig, stop_event.set)
     try:
         webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/{GEMINI_WEBHOOK_PATH.strip('/')}"
-        await application.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
+        await application.bot.set_webhook(url=webhook_url) # Убрал allowed_updates для максимальной совместимости
         logger.info(f"Вебхук установлен на: {webhook_url}")
         await run_web_server(application, stop_event)
     finally:
