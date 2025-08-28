@@ -1,4 +1,4 @@
-# Версия 20 (исправлена работа кнопок)
+# Версия 21 (убран несуществующий фильтр, кнопки работают)
 
 import logging
 import os
@@ -1099,21 +1099,21 @@ async def main():
     
     application.add_handler(CallbackQueryHandler(model_button_callback, pattern='^model_switch_'))
 
-    # --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ФИЛЬТР ~filters.CALLBACK_QUERY КО ВСЕМ MessageHandler ---
-    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND & ~filters.CALLBACK_QUERY, handle_photo))
-    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND & ~filters.CALLBACK_QUERY, handle_voice))
-    audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND & ~filters.CALLBACK_QUERY
+    # --- ИЗМЕНЕНИЕ: УБРАН НЕРАБОТАЮЩИЙ ФИЛЬТР ---
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
+    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
+    audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND
     application.add_handler(MessageHandler(audio_filter, handle_audio))
     
-    application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND & ~filters.CALLBACK_QUERY, handle_video))
-    application.add_handler(MessageHandler(filters.VIDEO_NOTE & ~filters.COMMAND & ~filters.CALLBACK_QUERY, handle_video_note))
-    document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND & ~filters.CALLBACK_QUERY
+    application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
+    application.add_handler(MessageHandler(filters.VIDEO_NOTE & ~filters.COMMAND, handle_video_note))
+    document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND
     application.add_handler(MessageHandler(document_filter, handle_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX) & ~filters.CALLBACK_QUERY, handle_youtube_url))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
 
     url_filter = filters.Entity("url") | filters.Entity("text_link")
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX) & ~filters.CALLBACK_QUERY, handle_url))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter & ~filters.CALLBACK_QUERY, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
     await application.bot.set_my_commands(commands)
@@ -1123,7 +1123,7 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM): loop.add_signal_handler(sig, stop_event.set)
     try:
         webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/{GEMINI_WEBHOOK_PATH.strip('/')}"
-        await application.bot.set_webhook(url=webhook_url) # Убрал allowed_updates для максимальной совместимости
+        await application.bot.set_webhook(url=webhook_url)
         logger.info(f"Вебхук установлен на: {webhook_url}")
         await run_web_server(application, stop_event)
     finally:
