@@ -1,4 +1,4 @@
-# Версия 22 (финальное исправление работы кнопок)
+# Версия 22 (финальное исправление декоратора для работы кнопок)
 
 import logging
 import os
@@ -203,11 +203,15 @@ def html_safe_chunker(text_to_chunk: str, chunk_size: int = 4096) -> list[str]:
     chunks.append(remaining_text)
     return chunks
 
+# --- ИЗМЕНЕНИЕ: ИСПРАВЛЕН ДЕКОРАТОР ---
 def ignore_if_processing(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        # Эта функция-декоратор предназначена только для MessageHandler'ов.
+        # Если пришел update без effective_message (например, callback_query от кнопки),
+        # мы должны немедленно прекратить работу, чтобы не мешать другим обработчикам.
         if not update or not update.effective_message:
-            return await func(update, context, *args, **kwargs)
+            return
 
         message_id = update.effective_message.message_id
         chat_id = update.effective_chat.id
@@ -226,6 +230,7 @@ def ignore_if_processing(func):
             processing_messages.discard(processing_key)
             
     return wrapper
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 def isolated_request(handler_func):
     @wraps(handler_func)
@@ -1099,25 +1104,20 @@ async def main():
     
     application.add_handler(CallbackQueryHandler(model_button_callback, pattern='^model_switch_'))
 
-    # --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ЯВНЫЙ ФИЛЬТР ДЛЯ ОБРАБОТЧИКОВ СООБЩЕНИЙ ---
-    base_message_filters = filters.UpdateType.MESSAGE & ~filters.COMMAND
-
-    application.add_handler(MessageHandler(base_message_filters & filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(base_message_filters & filters.VOICE, handle_voice))
-    audio_filter = (filters.AUDIO | filters.Document.AUDIO)
-    application.add_handler(MessageHandler(base_message_filters & audio_filter, handle_audio))
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
+    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
+    audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND
+    application.add_handler(MessageHandler(audio_filter, handle_audio))
     
-    application.add_handler(MessageHandler(base_message_filters & filters.VIDEO, handle_video))
-    application.add_handler(MessageHandler(base_message_filters & filters.VIDEO_NOTE, handle_video_note))
-    document_filter = filters.Document.ALL & ~filters.Document.AUDIO
-    application.add_handler(MessageHandler(base_message_filters & document_filter, handle_document))
-    
-    application.add_handler(MessageHandler(base_message_filters & filters.TEXT & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
+    application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
+    application.add_handler(MessageHandler(filters.VIDEO_NOTE & ~filters.COMMAND, handle_video_note))
+    document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND
+    application.add_handler(MessageHandler(document_filter, handle_document))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
 
     url_filter = filters.Entity("url") | filters.Entity("text_link")
-    application.add_handler(MessageHandler(base_message_filters & filters.TEXT & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
-    application.add_handler(MessageHandler(base_message_filters & filters.TEXT & ~url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_message))
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
     
     await application.bot.set_my_commands(commands)
     
