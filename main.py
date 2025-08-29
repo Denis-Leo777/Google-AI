@@ -1,4 +1,4 @@
-# Версия 21 (убран несуществующий фильтр, кнопки работают)
+# Версия 22 (финальное исправление работы кнопок)
 
 import logging
 import os
@@ -1099,21 +1099,24 @@ async def main():
     
     application.add_handler(CallbackQueryHandler(model_button_callback, pattern='^model_switch_'))
 
-    # --- ИЗМЕНЕНИЕ: УБРАН НЕРАБОТАЮЩИЙ ФИЛЬТР ---
-    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
-    audio_filter = (filters.AUDIO | filters.Document.AUDIO) & ~filters.COMMAND
-    application.add_handler(MessageHandler(audio_filter, handle_audio))
+    # --- ИЗМЕНЕНИЕ: ДОБАВЛЕН ЯВНЫЙ ФИЛЬТР ДЛЯ ОБРАБОТЧИКОВ СООБЩЕНИЙ ---
+    base_message_filters = filters.UpdateType.MESSAGE & ~filters.COMMAND
+
+    application.add_handler(MessageHandler(base_message_filters & filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(base_message_filters & filters.VOICE, handle_voice))
+    audio_filter = (filters.AUDIO | filters.Document.AUDIO)
+    application.add_handler(MessageHandler(base_message_filters & audio_filter, handle_audio))
     
-    application.add_handler(MessageHandler(filters.VIDEO & ~filters.COMMAND, handle_video))
-    application.add_handler(MessageHandler(filters.VIDEO_NOTE & ~filters.COMMAND, handle_video_note))
-    document_filter = filters.Document.ALL & ~filters.Document.AUDIO & ~filters.COMMAND
-    application.add_handler(MessageHandler(document_filter, handle_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
+    application.add_handler(MessageHandler(base_message_filters & filters.VIDEO, handle_video))
+    application.add_handler(MessageHandler(base_message_filters & filters.VIDEO_NOTE, handle_video_note))
+    document_filter = filters.Document.ALL & ~filters.Document.AUDIO
+    application.add_handler(MessageHandler(base_message_filters & document_filter, handle_document))
+    
+    application.add_handler(MessageHandler(base_message_filters & filters.TEXT & filters.Regex(YOUTUBE_REGEX), handle_youtube_url))
 
     url_filter = filters.Entity("url") | filters.Entity("text_link")
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~url_filter, handle_message))
+    application.add_handler(MessageHandler(base_message_filters & filters.TEXT & url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_url))
+    application.add_handler(MessageHandler(base_message_filters & filters.TEXT & ~url_filter & ~filters.Regex(YOUTUBE_REGEX), handle_message))
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
     await application.bot.set_my_commands(commands)
