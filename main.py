@@ -45,9 +45,9 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНСТАНТЫ И НАСТРОЙКИ ---
-DEFAULT_MODEL = 'gemini-2.5-flash'
+DEFAULT_MODEL = 'gemini-flash-latest'
 AVAILABLE_MODELS = {
-    'flash': 'gemini-2.5-flash',
+    'flash': 'gemini-flash-latest',
     'pro': 'gemini-2.5-pro'
 }
 
