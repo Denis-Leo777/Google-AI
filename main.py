@@ -54,10 +54,10 @@ AVAILABLE_MODELS = {
 YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})'
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
 DATE_TIME_REGEX = r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$'
-MAX_CONTEXT_CHARS = 200000
+MAX_CONTEXT_CHARS = 500000
 MAX_HISTORY_RESPONSE_LEN = 4000
-MAX_HISTORY_ITEMS = 20
-MAX_MEDIA_CONTEXTS = 20
+MAX_HISTORY_ITEMS = 50
+MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
