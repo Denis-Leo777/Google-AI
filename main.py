@@ -1,4 +1,4 @@
-# Версия 22 (финальное исправление декоратора для работы кнопок)
+# Версия 23 (Исправление форматирования: принудительный HTML)
 
 import logging
 import os
@@ -71,12 +71,22 @@ SAFETY_SETTINGS = [
               types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT)
 ]
 
+# ИЗМЕНЕНО: Добавлены инструкции по HTML форматированию в дефолтный промпт
+DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
+ВАЖНО: Ты работаешь в Telegram. Используй ТОЛЬКО HTML теги для форматирования:
+- <b>Жирный текст</b> (вместо **text**)
+- <i>Курсив</i> (вместо *text*)
+- <code>Код</code> (вместо `text`)
+- <pre>Блок кода</pre> (вместо ```text```)
+НИКОГДА не используй Markdown разметку.
+"""
+
 try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
     logger.info("Системный промпт успешно загружен из файла.")
 except FileNotFoundError:
-    logger.error("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
-    SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)"""
+    logger.warning("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
+    SYSTEM_INSTRUCTION = DEFAULT_SYSTEM_PROMPT
 
 # --- КЛАСС PERSISTENCE ---
 class PostgresPersistence(BasePersistence):
@@ -203,13 +213,9 @@ def html_safe_chunker(text_to_chunk: str, chunk_size: int = 4096) -> list[str]:
     chunks.append(remaining_text)
     return chunks
 
-# --- ИЗМЕНЕНИЕ: ИСПРАВЛЕН ДЕКОРАТОР ---
 def ignore_if_processing(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        # Эта функция-декоратор предназначена только для MessageHandler'ов.
-        # Если пришел update без effective_message (например, callback_query от кнопки),
-        # мы должны немедленно прекратить работу, чтобы не мешать другим обработчикам.
         if not update or not update.effective_message:
             return
 
@@ -230,7 +236,6 @@ def ignore_if_processing(func):
             processing_messages.discard(processing_key)
             
     return wrapper
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 def isolated_request(handler_func):
     @wraps(handler_func)
@@ -530,9 +535,12 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
         has_url_in_text = bool(re.search(URL_REGEX, prompt_text))
 
         final_prompt_text = f"{user_prefix}{prompt_text}"
+        
+        # ИЗМЕНЕНО: Добавлено принуждение к HTML в инструкцию поиска
         if not is_media_request and not has_url_in_text:
             grounding_instruction = """
 Поскольку твои данные устарели, ИЩИ и ИСПОЛЬЗУЙ дополнительные и самые актуальные точные данные на {current_time} с помощью поиска в интернете Grounding with Google Search.
+ОТВЕЧАЙ СТРОГО В HTML ФОРМАТЕ: используй <b>для жирного</b>, <i>для курсива</i>, <code>для кода</code>. Не используй markdown (**bold**).
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
         
