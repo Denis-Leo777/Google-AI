@@ -1,4 +1,4 @@
-# Версия 23 (Исправление форматирования: принудительный HTML)
+# Версия 24 (Фикс таймаута БД и конвертация Markdown->HTML)
 
 import logging
 import os
@@ -8,7 +8,7 @@ import re
 import pickle
 from collections import defaultdict, OrderedDict
 import psycopg2
-from psycopg2 import pool
+from psycopg2 import pool, extensions
 import io
 import time
 import datetime
@@ -71,14 +71,13 @@ SAFETY_SETTINGS = [
               types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT)
 ]
 
-# ИЗМЕНЕНО: Добавлены инструкции по HTML форматированию в дефолтный промпт
+# Обновленный промпт с жесткими требованиями HTML
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
-ВАЖНО: Ты работаешь в Telegram. Используй ТОЛЬКО HTML теги для форматирования:
-- <b>Жирный текст</b> (вместо **text**)
-- <i>Курсив</i> (вместо *text*)
-- <code>Код</code> (вместо `text`)
-- <pre>Блок кода</pre> (вместо ```text```)
-НИКОГДА не используй Markdown разметку.
+ВАЖНОЕ ТЕХНИЧЕСКОЕ ТРЕБОВАНИЕ:
+Ты работаешь через API Telegram.
+1. Используй ТОЛЬКО HTML теги: <b>жирный</b>, <i>курсив</i>, <code>код</code>, <pre>блок кода</pre>.
+2. СТРОГО ЗАПРЕЩЕНО использовать Markdown (**bold**, *italic*, ```code```), так как это ломает сообщение.
+3. Если пишешь список, используй обычные символы (-, •) и перенос строки. Теги <ul>, <li> не поддерживаются.
 """
 
 try:
@@ -88,7 +87,7 @@ except FileNotFoundError:
     logger.warning("Файл system_prompt.md не найден! Будет использована инструкция по умолчанию.")
     SYSTEM_INSTRUCTION = DEFAULT_SYSTEM_PROMPT
 
-# --- КЛАСС PERSISTENCE ---
+# --- КЛАСС PERSISTENCE (ИСПРАВЛЕННЫЙ) ---
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
         super().__init__()
@@ -114,37 +113,72 @@ class PostgresPersistence(BasePersistence):
         if self.db_pool and not self.db_pool.closed:
             self.db_pool.closeall()
         dsn = self.dsn
-        keepalive_options = "keepalives=1&keepalives_idle=60&keepalives_interval=10&keepalives_count=5"
+        # Добавляем aggressive keepalives для предотвращения разрывов
+        keepalive_options = "keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
         if "?" in dsn:
             if "keepalives" not in dsn: dsn = f"{dsn}&{keepalive_options}"
         else:
             dsn = f"{dsn}?{keepalive_options}"
-        self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=dsn)
+        self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, dsn=dsn)
 
     def _execute(self, query: str, params: tuple = None, fetch: str = None, retries=3):
+        """Выполняет запрос с улучшенной обработкой потери соединения."""
         last_exception = None
         for attempt in range(retries):
             conn = None
             try:
                 conn = self.db_pool.getconn()
+                # Проверка состояния соединения перед использованием
+                if conn.status == extensions.STATUS_IN_TRANSACTION:
+                    conn.rollback()
+                
                 with conn.cursor() as cur:
                     cur.execute(query, params)
-                    if fetch == "one": return cur.fetchone()
-                    if fetch == "all": return cur.fetchall()
+                    if fetch == "one":
+                        result = cur.fetchone()
+                        conn.commit()
+                        return result
+                    if fetch == "all":
+                        result = cur.fetchall()
+                        conn.commit()
+                        return result
                     conn.commit()
                 return True
-            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-                logger.warning(f"Postgres: Ошибка соединения (попытка {attempt + 1}/{retries}): {e}")
+                
+            except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
+                # Это "Connection timed out" и подобные ошибки
+                logger.warning(f"Postgres: Сбой соединения (попытка {attempt + 1}/{retries}): {e}")
                 last_exception = e
+                
                 if conn:
-                    try: self.db_pool.putconn(conn, close=True)
-                    except psycopg2.pool.PoolError: logger.warning("Postgres: Не удалось вернуть 'сломанное' соединение в пул.")
-                    conn = None
+                    try:
+                        conn.rollback() # Пытаемся откатить, если возможно
+                    except:
+                        pass
+                    try:
+                        self.db_pool.putconn(conn, close=True) # ВЫКИДЫВАЕМ соединение из пула
+                    except psycopg2.pool.PoolError:
+                        pass
+                    conn = None # Чтобы не вернуть его в finally
+                
+                # Если это не последняя попытка, ждем чуть дольше
                 if attempt < retries - 1:
-                    time.sleep(1 + attempt)
+                    time.sleep(0.5 * (attempt + 1))
                 continue
+                
+            except Exception as e:
+                logger.error(f"Postgres: Неизвестная ошибка запроса: {e}", exc_info=True)
+                if conn:
+                    try: conn.rollback()
+                    except: pass
+                    self.db_pool.putconn(conn, close=True)
+                    conn = None
+                raise e
+                
             finally:
-                if conn: self.db_pool.putconn(conn)
+                if conn:
+                    self.db_pool.putconn(conn)
+                    
         logger.error(f"Postgres: Не удалось выполнить запрос после {retries} попыток. Последняя ошибка: {last_exception}")
         if last_exception: raise last_exception
 
@@ -191,6 +225,34 @@ def get_current_time_str(timezone: str = "Europe/Moscow") -> str:
     months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
     day_of_week = days[now.weekday()]
     return f"Сегодня {day_of_week}, {now.day} {months[now.month-1]} {now.year} года, время {now.strftime('%H:%M')} (MSK)."
+
+def convert_markdown_to_html(text: str) -> str:
+    """Принудительно конвертирует Markdown-подобные конструкции в HTML для Telegram."""
+    if not text: return text
+    
+    # Жирный: **text** -> <b>text</b>
+    # Используем жадный поиск, но аккуратно
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    
+    # Жирный альтернативный: __text__ -> <b>text</b>
+    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
+    
+    # Курсив: *text* -> <i>text</i> (только если не в начале строки как список)
+    # (?<!^)\* ... сложная логика, проще заменить одинарные * на <i>, если они парные
+    # Но Gemini часто делает списки через *. 
+    # Попробуем безопасный вариант: заменять *text* только если внутри нет пробелов по краям
+    text = re.sub(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text)
+    
+    # Код: `text` -> <code>text</code>
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    
+    # Блоки кода: ```lang ... ``` -> <pre> ... </pre>
+    text = re.sub(r'```(\w+)?\n?(.*?)```', r'<pre>\2</pre>', text, flags=re.DOTALL)
+    
+    # Заголовки Markdown (## Header) -> <b>Header</b>
+    text = re.sub(r'^#{1,6}\s+(.*?)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+
+    return text
 
 def html_safe_chunker(text_to_chunk: str, chunk_size: int = 4096) -> list[str]:
     chunks, tag_stack, remaining_text = [], [], text_to_chunk
@@ -434,7 +496,10 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
         final_text = re.sub(r'^\s*HTML:\s*User,\s*', '', final_text, flags=re.IGNORECASE)
         final_text = re.sub(r'^\s*Сегодня\s+(?:понедельник|вторник|среда|четверг|пятница|суббота|воскресенье),\s*\d{1,2}\s+\w+\s+\d{4}\s+года[.,]?\s*', '', final_text, flags=re.IGNORECASE)
 
-        return final_text.strip()
+        # ПРИМЕНЯЕМ КОНВЕРТАЦИЮ MARKDOWN В HTML ЗДЕСЬ
+        final_text = convert_markdown_to_html(final_text.strip())
+        
+        return final_text
         
     except (AttributeError, IndexError) as e:
         logger.error(f"Ошибка при парсинге ответа Gemini: {e}", exc_info=True)
@@ -460,7 +525,8 @@ async def send_reply(target_message: Message, response_text: str, add_context_hi
         return sent_message
     except BadRequest as e:
         if "Can't parse entities" in str(e) or "unsupported start tag" in str(e):
-            logger.warning(f"Ошибка парсинга HTML: {e}. Отправляю как обычный текст.")
+            logger.warning(f"Ошибка парсинга HTML: {e}. Попытка отправить как текст.")
+            # Если HTML сломался, вычищаем теги и шлем как текст
             plain_text = re.sub(r'<[^>]*>', '', sanitized_text)
             plain_chunks = [plain_text[i:i+4096] for i in range(0, len(plain_text), 4096)]
             for i, chunk in enumerate(plain_chunks):
@@ -536,11 +602,10 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
 
         final_prompt_text = f"{user_prefix}{prompt_text}"
         
-        # ИЗМЕНЕНО: Добавлено принуждение к HTML в инструкцию поиска
+        # Инструкция для поиска + напоминание про HTML (но мы теперь делаем автоконвертацию)
         if not is_media_request and not has_url_in_text:
             grounding_instruction = """
 Поскольку твои данные устарели, ИЩИ и ИСПОЛЬЗУЙ дополнительные и самые актуальные точные данные на {current_time} с помощью поиска в интернете Grounding with Google Search.
-ОТВЕЧАЙ СТРОГО В HTML ФОРМАТЕ: используй <b>для жирного</b>, <i>для курсива</i>, <code>для кода</code>. Не используй markdown (**bold**).
 """
             final_prompt_text = f"{grounding_instruction}\n{user_prefix}{prompt_text}"
         
