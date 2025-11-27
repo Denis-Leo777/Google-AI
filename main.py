@@ -1,4 +1,4 @@
-# Версия 31 (Stable Fix: Разделение инструментов, возврат изоляции запросов)
+# Версия 32 (Stable Robust: Исправлена ошибка чтения ответа, возвращены проверки из v24)
 
 import logging
 import os
@@ -73,10 +73,8 @@ MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
-# --- ИНСТРУМЕНТЫ (ИСПРАВЛЕНО: РАЗДЕЛЕНИЕ) ---
-# Для текста включаем всё: поиск + выполнение кода
+# --- ИНСТРУМЕНТЫ ---
 TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
-# Для медиа (аудио/видео) выключаем код, чтобы избежать ошибки audio/s16le
 MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
 
 SAFETY_SETTINGS = [
@@ -320,7 +318,7 @@ async def generate(client, contents, context, tools_override=None):
     
     gen_config_args = {
         "safety_settings": SAFETY_SETTINGS,
-        "tools": tools_override if tools_override else TEXT_TOOLS, # Используем переданные инструменты или дефолтные (текстовые)
+        "tools": tools_override if tools_override else TEXT_TOOLS, 
         "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
         "temperature": 0.7,
         "thinking_config": types.ThinkingConfig(thinking_budget=24576)
@@ -331,7 +329,7 @@ async def generate(client, contents, context, tools_override=None):
     for att in range(3):
         try:
             res = await client.aio.models.generate_content(model=model, contents=contents, config=config)
-            if res and res.candidates: return res
+            if res and res.candidates and res.candidates[0].content: return res
             if att < 2: await asyncio.sleep(2)
         except genai_errors.APIError as e:
             if "resource_exhausted" in str(e).lower(): return "⏳ Перегрузка API."
@@ -348,14 +346,29 @@ async def generate(client, contents, context, tools_override=None):
     return "Нет ответа."
 
 def format_response(response):
+    # ИСПРАВЛЕННАЯ ЛОГИКА ИЗ v24 (Проверки на пустоту)
     try:
+        if not response:
+            return "Получен пустой ответ от API."
+            
+        if not response.candidates:
+            # Такое бывает, если ответ полностью заблокирован фильтрами
+            return "Ответ не получен (возможно, заблокирован фильтрами безопасности)."
+            
         cand = response.candidates[0]
-        if cand.finish_reason.name == "SAFETY": return "Скрыто фильтром безопасности."
+        if cand.finish_reason.name == "SAFETY": 
+            return "Скрыто фильтром безопасности."
+            
+        if not cand.content or not cand.content.parts:
+             return "Модель прислала пустой ответ."
+
         text = "".join([p.text for p in cand.content.parts if p.text])
         text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
         return convert_markdown_to_html(text.strip())
-    except: return "Ошибка чтения ответа."
+    except Exception as e:
+        logger.error(f"Format Error: {e}", exc_info=True)
+        return f"Ошибка обработки формата: {e}"
 
 async def send_smart(msg, text, hint=False):
     text = re.sub(r'<br\s*/?>', '\n', text)
@@ -387,9 +400,7 @@ async def process_request(update, context, parts):
 
         is_media_request = any(p.file_data for p in parts)
         
-        # ЛОГИКА ИЗОЛЯЦИИ: Если это новый медиа-файл, мы НЕ берем старую историю.
-        # Это предотвращает путаницу и ошибки с Code Execution на старых файлах.
-        # Но если это текстовый вопрос (reply context), историю берем.
+        # ИЗОЛЯЦИЯ: Сбрасываем историю только для НОВЫХ файлов (чтобы избежать путаницы).
         if is_media_request:
             history = [] 
         else:
@@ -404,7 +415,6 @@ async def process_request(update, context, parts):
         prompt_txt = next((p.text for p in parts if p.text), "")
         final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
         
-        # Grounding
         if not is_media_request and not URL_REGEX.search(prompt_txt):
             final_prompt = f"Используй Grounding with Google Search. Актуальная дата: {get_current_time_str()}.\n" + final_prompt
         else:
@@ -412,7 +422,6 @@ async def process_request(update, context, parts):
 
         parts_final.append(types.Part(text=final_prompt))
         
-        # ВЫБОР ИНСТРУМЕНТОВ: Если есть медиа, отключаем Code Execution
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
         res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
@@ -482,8 +491,6 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts.append(types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=yt.group(0))))
         text = text.replace(yt.group(0), '').strip()
 
-    # Reply Context (Использование старого файла при ответе)
-    # Здесь мы НЕ сбрасываем историю, так как это продолжение диалога
     if not media and msg.reply_to_message:
         orig = context.chat_data.get('reply_map', {}).get(msg.reply_to_message.message_id)
         if orig:
@@ -558,7 +565,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v31)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v32)") 
         except: pass
 
     stop = asyncio.Event()
