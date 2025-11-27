@@ -1,4 +1,4 @@
-# Версия 28 (Thinking-Only Mode: Бюджет мышления для всех моделей)
+# Версия 29 (Hotfix: Исправлен порядок инициализации bot_data)
 
 import logging
 import os
@@ -46,10 +46,9 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- МОДЕЛИ И REGEX ---
-# Используем алиасы, так как вы сказали, что flash-latest сейчас это 2.5 thinking
 AVAILABLE_MODELS = {
     'flash': 'gemini-flash-latest', 
-    'pro': 'gemini-pro' # Или gemini-2.5-pro, если доступна
+    'pro': 'gemini-pro'
 }
 DEFAULT_MODEL = 'gemini-flash-latest'
 
@@ -180,7 +179,7 @@ class PostgresPersistence(BasePersistence):
     def _set_pickled(self, key: str, data: object):
         self._execute("INSERT INTO persistence_data (key, data) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET data = %s;", (key, pickle.dumps(data), pickle.dumps(data)))
     
-    async def get_bot_data(self): return defaultdict(dict)
+    async def get_bot_data(self): return {} # Исправлено: возвращаем обычный dict, а не defaultdict
     async def update_bot_data(self, data): pass
     async def get_chat_data(self):
         all_data = await asyncio.to_thread(self._execute, "SELECT key, data FROM persistence_data WHERE key LIKE 'chat_data_%';", fetch="all")
@@ -308,7 +307,8 @@ async def upload_file(client, b, mime, name):
         raise asyncio.TimeoutError("Upload Timeout")
     except Exception as e:
         logger.error(f"Upload Fail: {e}")
-        raise IOError(f"Ошибка загрузки файла {name}")
+        # Возвращаем понятную ошибку, а не AttributeError
+        raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
 async def generate(client, contents, context):
     sys_prompt = SYSTEM_INSTRUCTION
@@ -322,7 +322,6 @@ async def generate(client, contents, context):
         "tools": ALL_TOOLS,
         "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
         "temperature": 0.7,
-        # ВКЛЮЧАЕМ THINKING ДЛЯ ВСЕХ МОДЕЛЕЙ (ПО ТРЕБОВАНИЮ ПОЛЬЗОВАТЕЛЯ)
         "thinking_config": types.ThinkingConfig(thinking_budget=24576)
     }
 
@@ -336,10 +335,9 @@ async def generate(client, contents, context):
         except genai_errors.APIError as e:
             if "resource_exhausted" in str(e).lower(): return "⏳ Перегрузка API."
             
-            # FALLBACK: Если модель не поддерживает thinking, пробуем без него
-            # (защита от случайных переключений на старые модели или изменений API)
+            # Fallback для моделей без thinking
             if "invalid argument" in str(e).lower() and "thinking_config" in gen_config_args:
-                logger.warning(f"Thinking mode rejected for {model}. Retrying without.")
+                logger.warning(f"Thinking rejected. Retry {model}.")
                 gen_config_args.pop("thinking_config")
                 config = types.GenerateContentConfig(**gen_config_args)
                 continue
@@ -347,6 +345,7 @@ async def generate(client, contents, context):
             if att == 2: return f"❌ API Error: {html.escape(str(e))}"
             await asyncio.sleep(5)
         except Exception as e:
+            # Ловим ошибку клиента (если вдруг он все еще dict)
             return f"❌ Error: {html.escape(str(e))}"
     return "Нет ответа."
 
@@ -449,7 +448,11 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg: return
     context.chat_data['id'] = msg.chat_id
-    parts, client = [], context.bot_data['gemini_client']
+    
+    # Явная инициализация переменных для избежания путаницы
+    parts = []
+    client = context.bot_data['gemini_client'] # Если здесь упадет KeyError, значит инициализация провалилась
+    
     text = msg.caption or msg.text or ""
 
     media = msg.audio or msg.voice or msg.video or msg.video_note or (msg.photo[-1] if msg.photo else None) or msg.document
@@ -534,7 +537,6 @@ async def model_cb(u, c):
 async def main():
     pers = PostgresPersistence(DATABASE_URL)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
-    app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
 
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("clear", clear_c))
@@ -544,9 +546,14 @@ async def main():
     app.add_handler(CallbackQueryHandler(model_cb, pattern='^m_'))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
 
+    # ИНИЦИАЛИЗАЦИЯ И ЗАГРУЗКА ДАННЫХ
     await app.initialize()
+    
+    # ВАЖНО: КЛИЕНТ СОЗДАЕТСЯ ПОСЛЕ INITIALIZE, ЧТОБЫ ЕГО НЕ ПЕРЕЗАТЕРЛА ПЕРСИСТЕНЦИЯ
+    app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
+    
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v28)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v29 fixed)") 
         except: pass
 
     stop = asyncio.Event()
