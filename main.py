@@ -1,4 +1,4 @@
-# Версия 29 (Hotfix: Исправлен порядок инициализации bot_data)
+# Версия 31 (Stable Fix: Разделение инструментов, возврат изоляции запросов)
 
 import logging
 import os
@@ -58,7 +58,6 @@ URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
 HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br)>', re.IGNORECASE)
 
-# Markdown regexes
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
@@ -74,8 +73,11 @@ MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
-# --- ИНСТРУМЕНТЫ ---
-ALL_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
+# --- ИНСТРУМЕНТЫ (ИСПРАВЛЕНО: РАЗДЕЛЕНИЕ) ---
+# Для текста включаем всё: поиск + выполнение кода
+TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
+# Для медиа (аудио/видео) выключаем код, чтобы избежать ошибки audio/s16le
+MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
 
 SAFETY_SETTINGS = [
     types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
@@ -179,7 +181,7 @@ class PostgresPersistence(BasePersistence):
     def _set_pickled(self, key: str, data: object):
         self._execute("INSERT INTO persistence_data (key, data) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET data = %s;", (key, pickle.dumps(data), pickle.dumps(data)))
     
-    async def get_bot_data(self): return {} # Исправлено: возвращаем обычный dict, а не defaultdict
+    async def get_bot_data(self): return {} 
     async def update_bot_data(self, data): pass
     async def get_chat_data(self):
         all_data = await asyncio.to_thread(self._execute, "SELECT key, data FROM persistence_data WHERE key LIKE 'chat_data_%';", fetch="all")
@@ -307,10 +309,9 @@ async def upload_file(client, b, mime, name):
         raise asyncio.TimeoutError("Upload Timeout")
     except Exception as e:
         logger.error(f"Upload Fail: {e}")
-        # Возвращаем понятную ошибку, а не AttributeError
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-async def generate(client, contents, context):
+async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
@@ -319,7 +320,7 @@ async def generate(client, contents, context):
     
     gen_config_args = {
         "safety_settings": SAFETY_SETTINGS,
-        "tools": ALL_TOOLS,
+        "tools": tools_override if tools_override else TEXT_TOOLS, # Используем переданные инструменты или дефолтные (текстовые)
         "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
         "temperature": 0.7,
         "thinking_config": types.ThinkingConfig(thinking_budget=24576)
@@ -335,9 +336,7 @@ async def generate(client, contents, context):
         except genai_errors.APIError as e:
             if "resource_exhausted" in str(e).lower(): return "⏳ Перегрузка API."
             
-            # Fallback для моделей без thinking
             if "invalid argument" in str(e).lower() and "thinking_config" in gen_config_args:
-                logger.warning(f"Thinking rejected. Retry {model}.")
                 gen_config_args.pop("thinking_config")
                 config = types.GenerateContentConfig(**gen_config_args)
                 continue
@@ -345,7 +344,6 @@ async def generate(client, contents, context):
             if att == 2: return f"❌ API Error: {html.escape(str(e))}"
             await asyncio.sleep(5)
         except Exception as e:
-            # Ловим ошибку клиента (если вдруг он все еще dict)
             return f"❌ Error: {html.escape(str(e))}"
     return "Нет ответа."
 
@@ -387,8 +385,15 @@ async def process_request(update, context, parts):
             await send_smart(msg, get_current_time_str())
             return
 
-        is_media = any(p.file_data for p in parts)
-        history = build_history(context.chat_data.get("history", []))
+        is_media_request = any(p.file_data for p in parts)
+        
+        # ЛОГИКА ИЗОЛЯЦИИ: Если это новый медиа-файл, мы НЕ берем старую историю.
+        # Это предотвращает путаницу и ошибки с Code Execution на старых файлах.
+        # Но если это текстовый вопрос (reply context), историю берем.
+        if is_media_request:
+            history = [] 
+        else:
+            history = build_history(context.chat_data.get("history", []))
         
         user_name = msg.from_user.first_name
         if msg.forward_origin:
@@ -399,18 +404,21 @@ async def process_request(update, context, parts):
         prompt_txt = next((p.text for p in parts if p.text), "")
         final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
         
-        grounding_prefix = f"Используй Grounding with Google Search. Актуальная дата: {get_current_time_str()}.\n"
-        if not is_media and not URL_REGEX.search(prompt_txt):
-            final_prompt = grounding_prefix + final_prompt
+        # Grounding
+        if not is_media_request and not URL_REGEX.search(prompt_txt):
+            final_prompt = f"Используй Grounding with Google Search. Актуальная дата: {get_current_time_str()}.\n" + final_prompt
         else:
              final_prompt = f"Date: {get_current_time_str()}\n" + final_prompt
 
         parts_final.append(types.Part(text=final_prompt))
         
-        res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context)
+        # ВЫБОР ИНСТРУМЕНТОВ: Если есть медиа, отключаем Code Execution
+        current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
+        
+        res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
         reply = format_response(res_obj) if not isinstance(res_obj, str) else res_obj
         
-        sent = await send_smart(msg, reply, hint=is_media)
+        sent = await send_smart(msg, reply, hint=is_media_request)
         
         if sent:
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
@@ -427,7 +435,7 @@ async def process_request(update, context, parts):
             if len(rmap) > MAX_HISTORY_ITEMS * 2: 
                 for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]: del rmap[k]
 
-            if is_media:
+            if is_media_request:
                 m_part = next((p for p in parts if p.file_data), None)
                 if m_part:
                     m_store = context.application.bot_data.setdefault('media_contexts', {}).setdefault(msg.chat_id, OrderedDict())
@@ -449,10 +457,8 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg: return
     context.chat_data['id'] = msg.chat_id
     
-    # Явная инициализация переменных для избежания путаницы
     parts = []
-    client = context.bot_data['gemini_client'] # Если здесь упадет KeyError, значит инициализация провалилась
-    
+    client = context.bot_data['gemini_client']
     text = msg.caption or msg.text or ""
 
     media = msg.audio or msg.voice or msg.video or msg.video_note or (msg.photo[-1] if msg.photo else None) or msg.document
@@ -476,6 +482,8 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts.append(types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=yt.group(0))))
         text = text.replace(yt.group(0), '').strip()
 
+    # Reply Context (Использование старого файла при ответе)
+    # Здесь мы НЕ сбрасываем историю, так как это продолжение диалога
     if not media and msg.reply_to_message:
         orig = context.chat_data.get('reply_map', {}).get(msg.reply_to_message.message_id)
         if orig:
@@ -502,7 +510,7 @@ async def util_cmd(update, context, prompt):
          f = await media.get_file()
          b = await f.download_as_bytearray()
          mime = 'image/jpeg' if reply.photo else 'audio/ogg' if reply.voice else 'video/mp4' if reply.video_note else getattr(media, 'mime_type', 'application/octet-stream')
-         parts.append(await upload_file(client, b, mime, 'temp'))
+         parts.append(await upload_file(client, b, mime, 'temp_util_file'))
     elif reply.text and YOUTUBE_REGEX.search(reply.text):
          parts.append(types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=YOUTUBE_REGEX.search(reply.text).group(0))))
     elif context.chat_data.get('reply_map', {}).get(reply.message_id):
@@ -541,19 +549,16 @@ async def main():
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("clear", clear_c))
     app.add_handler(CommandHandler("model", model_c))
-    app.add_handler(CommandHandler("summarize", lambda u, c: util_cmd(u, c, "Summary.")))
-    app.add_handler(CommandHandler("transcript", lambda u, c: util_cmd(u, c, "Transcript.")))
+    app.add_handler(CommandHandler("summarize", lambda u, c: util_cmd(u, c, "Сделай подробный конспект (summary) этого материала.")))
+    app.add_handler(CommandHandler("transcript", lambda u, c: util_cmd(u, c, "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words.")))
     app.add_handler(CallbackQueryHandler(model_cb, pattern='^m_'))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
 
-    # ИНИЦИАЛИЗАЦИЯ И ЗАГРУЗКА ДАННЫХ
     await app.initialize()
-    
-    # ВАЖНО: КЛИЕНТ СОЗДАЕТСЯ ПОСЛЕ INITIALIZE, ЧТОБЫ ЕГО НЕ ПЕРЕЗАТЕРЛА ПЕРСИСТЕНЦИЯ
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v29 fixed)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v31)") 
         except: pass
 
     stop = asyncio.Event()
