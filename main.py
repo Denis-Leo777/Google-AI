@@ -1,4 +1,4 @@
-# Версия 42 (Clean Output: Скрыты мысли модели, оставлено только качество)
+# Версия 43 (Balanced: Оптимизированный контекст 120к для работы Thinking Mode)
 
 import logging
 import os
@@ -64,13 +64,15 @@ RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
-# Удаляем остатки мыслей, если они все же просочатся (хотя include_thoughts=False должно помочь)
-RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL) 
+RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
-MAX_CONTEXT_CHARS = 200000
+# --- ЛИМИТЫ (ОПТИМИЗИРОВАНО) ---
+# 120,000 символов ~= 40-50k токенов.
+# Это оставляет ~200k токенов в минуту на "размышления" и файлы.
+MAX_CONTEXT_CHARS = 120000 
 MAX_HISTORY_RESPONSE_LEN = 4000
-MAX_HISTORY_ITEMS = 50
+MAX_HISTORY_ITEMS = 30 # Уменьшил кол-во сообщений, чтобы старые быстрее вымывались
 MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
@@ -311,7 +313,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ: HIDE THOUGHTS FIX ---
+# --- ГЕНЕРАЦИЯ ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -335,16 +337,17 @@ async def generate(client, contents, context, tools_override=None):
             "temperature": 1.0
         }
 
-        # Thinking Config: HIDE THOUGHTS (include_thoughts=False)
+        # Thinking Logic
         if step["budget"] is None:
-            # Auto mode: explicitly hide output
+            # Auto budget (hide thoughts)
             gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=False)
             logger.info(f"Attempt {i+1} ({model}): Auto Budget")
         elif step["budget"] > 0:
-            # Fixed budget: explicitly hide output
+            # Fixed budget (hide thoughts)
             gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"], include_thoughts=False)
             logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']}")
         else:
+            # No thinking
             logger.info(f"Attempt {i+1} ({model}): Standard Mode")
 
         try:
@@ -388,7 +391,6 @@ def format_response(response):
         if not cand.content or not cand.content.parts: return "Пустой контент."
 
         text = "".join([p.text for p in cand.content.parts if p.text])
-        # Clean remnants if any leaked
         text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
         return convert_markdown_to_html(text.strip())
@@ -595,7 +597,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v42)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v43)") 
         except: pass
 
     stop = asyncio.Event()
