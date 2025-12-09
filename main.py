@@ -1,4 +1,4 @@
-# Версия 32 (Stable Robust: Исправлена ошибка чтения ответа, возвращены проверки из v24)
+# Версия 33 (Adaptive Thinking: Авто-снижение бюджета при перегрузках)
 
 import logging
 import os
@@ -309,6 +309,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
+# --- ГЕНЕРАЦИЯ С АДАПТИВНЫМ БЮДЖЕТОМ ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -316,51 +317,71 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    gen_config_args = {
-        "safety_settings": SAFETY_SETTINGS,
-        "tools": tools_override if tools_override else TEXT_TOOLS, 
-        "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-        "temperature": 0.7,
-        "thinking_config": types.ThinkingConfig(thinking_budget=24576)
-    }
+    # СТУПЕНИ БЮДЖЕТА: 16k -> 4k -> 1k -> 0 (Выкл)
+    # Это позволяет боту "сжиматься" при перегрузке API, но сохранять Thinking.
+    thinking_budgets = [16384, 4096, 1024, 0]
 
-    config = types.GenerateContentConfig(**gen_config_args)
-    
-    for att in range(3):
+    for attempt, budget in enumerate(thinking_budgets):
+        # Базовый конфиг
+        gen_config_args = {
+            "safety_settings": SAFETY_SETTINGS,
+            "tools": tools_override if tools_override else TEXT_TOOLS, 
+            "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
+            "temperature": 0.7
+        }
+
+        # Применяем бюджет, если он > 0
+        if budget > 0:
+            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
+            logger.info(f"Attempt {attempt+1}: Thinking Budget = {budget}")
+        else:
+            logger.warning("All thinking attempts failed. Fallback to Standard mode.")
+
+        config = types.GenerateContentConfig(**gen_config_args)
+        
         try:
             res = await client.aio.models.generate_content(model=model, contents=contents, config=config)
-            if res and res.candidates and res.candidates[0].content: return res
-            if att < 2: await asyncio.sleep(2)
+            # Если ответ пустой (блокировка), считаем это ошибкой, но не API (выходим из цикла генерации)
+            if res and res.candidates and res.candidates[0].content: 
+                return res
+            # Если ответ есть, но без контента - это проблема безопасности, возвращаем как есть
+            if res: return res 
+            
         except genai_errors.APIError as e:
-            if "resource_exhausted" in str(e).lower(): return "⏳ Перегрузка API."
+            err_str = str(e).lower()
             
-            if "invalid argument" in str(e).lower() and "thinking_config" in gen_config_args:
-                gen_config_args.pop("thinking_config")
-                config = types.GenerateContentConfig(**gen_config_args)
-                continue
+            # Если ошибка "Invalid Argument" (значит модель не поддерживает thinking),
+            # сразу пробуем без него в следующем цикле (или прерываем, если это была последняя попытка)
+            if "invalid argument" in err_str:
+                if "thinking_config" in gen_config_args:
+                    logger.warning(f"Model {model} doesn't support thinking. Removing config.")
+                    # Сразу прыгаем на последний шаг (бюджет 0)
+                    if budget != 0: continue 
+
+            # ГЛАВНОЕ: Если перегрузка (Resource Exhausted), ждем и пробуем СНИЗИТЬ БЮДЖЕТ
+            if "resource_exhausted" in err_str:
+                logger.warning(f"Quota exceeded with budget {budget}. Backoff...")
+                await asyncio.sleep(3 + attempt * 2) # Экспоненциальная задержка: 3с, 5с, 7с...
+                continue # Переход к следующему (более низкому) бюджету
+
+            # Если другие ошибки API - возвращаем текст ошибки
+            return f"❌ API Error: {html.escape(str(e))}"
             
-            if att == 2: return f"❌ API Error: {html.escape(str(e))}"
-            await asyncio.sleep(5)
         except Exception as e:
             return f"❌ Error: {html.escape(str(e))}"
-    return "Нет ответа."
+
+    return "⏳ Перегрузка API. Попробуйте позже."
 
 def format_response(response):
-    # ИСПРАВЛЕННАЯ ЛОГИКА ИЗ v24 (Проверки на пустоту)
     try:
-        if not response:
-            return "Получен пустой ответ от API."
-            
-        if not response.candidates:
-            # Такое бывает, если ответ полностью заблокирован фильтрами
-            return "Ответ не получен (возможно, заблокирован фильтрами безопасности)."
-            
+        if not response: return "Получен пустой ответ от API."
+        if isinstance(response, str): return response # Если вернулась строка ошибки
+
+        if not response.candidates: return "Ответ не получен (возможно, заблокирован)."
         cand = response.candidates[0]
-        if cand.finish_reason.name == "SAFETY": 
-            return "Скрыто фильтром безопасности."
-            
-        if not cand.content or not cand.content.parts:
-             return "Модель прислала пустой ответ."
+        if cand.finish_reason.name == "SAFETY": return "Скрыто фильтром безопасности."
+        
+        if not cand.content or not cand.content.parts: return "Модель прислала пустой ответ."
 
         text = "".join([p.text for p in cand.content.parts if p.text])
         text = RE_CLEAN_THOUGHTS.sub('', text)
@@ -368,12 +389,14 @@ def format_response(response):
         return convert_markdown_to_html(text.strip())
     except Exception as e:
         logger.error(f"Format Error: {e}", exc_info=True)
-        return f"Ошибка обработки формата: {e}"
+        return f"Ошибка обработки: {e}"
 
 async def send_smart(msg, text, hint=False):
     text = re.sub(r'<br\s*/?>', '\n', text)
     chunks = html_safe_chunker(text)
-    if hint:
+    
+    # Хинт добавляем только если это НЕ сообщение об ошибке
+    if hint and "❌" not in text and "⏳" not in text:
         h = "\n\n<i>💡 Ответьте на это сообщение для вопроса по файлу.</i>"
         chunks[-1] += h if len(chunks[-1]) + len(h) <= 4096 else ""
     
@@ -400,7 +423,6 @@ async def process_request(update, context, parts):
 
         is_media_request = any(p.file_data for p in parts)
         
-        # ИЗОЛЯЦИЯ: Сбрасываем историю только для НОВЫХ файлов (чтобы избежать путаницы).
         if is_media_request:
             history = [] 
         else:
@@ -425,11 +447,11 @@ async def process_request(update, context, parts):
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
         res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
-        reply = format_response(res_obj) if not isinstance(res_obj, str) else res_obj
+        reply = format_response(res_obj)
         
         sent = await send_smart(msg, reply, hint=is_media_request)
         
-        if sent:
+        if sent and "❌" not in reply: # Сохраняем в историю только успешные ответы
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             context.chat_data.setdefault("history", []).append(hist_item)
             
@@ -565,7 +587,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v32)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v33)") 
         except: pass
 
     stop = asyncio.Event()
