@@ -1,4 +1,4 @@
-# Версия 41 (Stable Survival: Увеличенные тайм-ауты, температура 1.0, новые модели)
+# Версия 42 (Clean Output: Скрыты мысли модели, оставлено только качество)
 
 import logging
 import os
@@ -64,7 +64,8 @@ RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
-RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
+# Удаляем остатки мыслей, если они все же просочатся (хотя include_thoughts=False должно помочь)
+RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL) 
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
 MAX_CONTEXT_CHARS = 200000
@@ -310,7 +311,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ: SURVIVAL MODE (UPDATED) ---
+# --- ГЕНЕРАЦИЯ: HIDE THOUGHTS FIX ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -318,12 +319,12 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # НОВЫЕ ШАГИ И ТАЙМАУТЫ
+    # 4 Steps: Auto -> 8k -> 4k -> Standard
     steps = [
-        {"budget": None, "wait": 30}, # Auto, wait 30s
-        {"budget": 8192, "wait": 20}, # 8k, wait 20s
-        {"budget": 4096, "wait": 10}, # 4k, wait 10s
-        {"budget": 0,    "wait": 0}   # 0 (Standard)
+        {"budget": None, "wait": 30},
+        {"budget": 8192, "wait": 20},
+        {"budget": 4096, "wait": 10},
+        {"budget": 0,    "wait": 0}
     ]
 
     for i, step in enumerate(steps):
@@ -331,15 +332,17 @@ async def generate(client, contents, context, tools_override=None):
             "safety_settings": SAFETY_SETTINGS,
             "tools": tools_override if tools_override else TEXT_TOOLS, 
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-            "temperature": 1.0 # Повышенная креативность
+            "temperature": 1.0
         }
 
-        # Thinking Logic
+        # Thinking Config: HIDE THOUGHTS (include_thoughts=False)
         if step["budget"] is None:
-            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
+            # Auto mode: explicitly hide output
+            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=False)
             logger.info(f"Attempt {i+1} ({model}): Auto Budget")
         elif step["budget"] > 0:
-            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"])
+            # Fixed budget: explicitly hide output
+            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"], include_thoughts=False)
             logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']}")
         else:
             logger.info(f"Attempt {i+1} ({model}): Standard Mode")
@@ -356,7 +359,7 @@ async def generate(client, contents, context, tools_override=None):
                 tools_override = MEDIA_TOOLS
                 continue 
 
-            # Quota Hit (429)
+            # Quota Hit
             if "resource_exhausted" in err_str:
                 if i < len(steps) - 1:
                     wait_t = step["wait"]
@@ -385,6 +388,7 @@ def format_response(response):
         if not cand.content or not cand.content.parts: return "Пустой контент."
 
         text = "".join([p.text for p in cand.content.parts if p.text])
+        # Clean remnants if any leaked
         text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
         return convert_markdown_to_html(text.strip())
@@ -591,7 +595,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v41)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v42)") 
         except: pass
 
     stop = asyncio.Event()
