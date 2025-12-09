@@ -1,4 +1,4 @@
-# Версия 36 (Auto-Thinking: Динамический бюджет + Щедрый повтор 10k)
+# Версия 37 (Hotfix: Исправлена переменная is_media -> is_media_request)
 
 import logging
 import os
@@ -308,7 +308,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ: SMART AUTO MODE ---
+# --- ГЕНЕРАЦИЯ ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -316,8 +316,7 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # ПОПЫТКА 1: ДИНАМИЧЕСКИЙ БЮДЖЕТ (AUTO)
-    # Мы не передаем thinking_config вообще (или передаем -1, но отсутствие = auto default)
+    # ПОПЫТКА 1: AUTO BUDGET
     gen_config_args = {
         "safety_settings": SAFETY_SETTINGS,
         "tools": tools_override if tools_override else TEXT_TOOLS, 
@@ -332,7 +331,6 @@ async def generate(client, contents, context, tools_override=None):
     except genai_errors.APIError as e:
         err_str = str(e).lower()
         
-        # Audio Code Fix
         if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
             logger.warning("Disabling Code Tool for Audio.")
             gen_config_args["tools"] = MEDIA_TOOLS
@@ -340,12 +338,11 @@ async def generate(client, contents, context, tools_override=None):
                 return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
             except Exception: pass
 
-        # QUOTA HIT -> COOL DOWN -> RETRY WITH 10k
         if "resource_exhausted" in err_str:
             logger.warning("Quota Hit! Cooling down 15s...")
             await asyncio.sleep(15)
             
-            # Вторая попытка: Явно ставим 10000, как просил пользователь
+            # ПОПЫТКА 2: 10k BUDGET
             gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=10240) 
             logger.info("Attempt 2: Budget 10k")
             
@@ -453,7 +450,8 @@ async def process_request(update, context, parts):
             if len(rmap) > MAX_HISTORY_ITEMS * 2: 
                 for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]: del rmap[k]
 
-            if is_media:
+            # ИСПРАВЛЕННАЯ ПЕРЕМЕННАЯ ЗДЕСЬ:
+            if is_media_request:
                 m_part = next((p for p in parts if p.file_data), None)
                 if m_part:
                     m_store = context.application.bot_data.setdefault('media_contexts', {}).setdefault(msg.chat_id, OrderedDict())
@@ -574,7 +572,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v36)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v37)") 
         except: pass
 
     stop = asyncio.Event()
