@@ -1,4 +1,4 @@
-# Версия 38 (Final Stable: Исправлен Webhook Timeout / Fire-and-Forget)
+# Версия 39 (Survival Mode: 3 попытки, увеличенные паузы, аварийный режим)
 
 import logging
 import os
@@ -308,7 +308,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ ---
+# --- ГЕНЕРАЦИЯ: SURVIVAL MODE ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -316,47 +316,63 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # ПОПЫТКА 1: AUTO BUDGET
-    gen_config_args = {
-        "safety_settings": SAFETY_SETTINGS,
-        "tools": tools_override if tools_override else TEXT_TOOLS, 
-        "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-        "temperature": 0.7
-    }
+    # 3-STEP STRATEGY: Auto -> 8k -> Standard
+    steps = [
+        {"budget": None, "wait": 20}, # Auto, wait 20s
+        {"budget": 8192, "wait": 5},  # 8k, wait 5s
+        {"budget": 0,    "wait": 0}   # 0 (Standard), give up
+    ]
 
-    try:
-        logger.info("Attempt 1: Auto Budget (Dynamic)")
-        return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
-    
-    except genai_errors.APIError as e:
-        err_str = str(e).lower()
-        
-        if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
-            logger.warning("Disabling Code Tool for Audio.")
-            gen_config_args["tools"] = MEDIA_TOOLS
-            try:
-                return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
-            except Exception: pass
+    for i, step in enumerate(steps):
+        gen_config_args = {
+            "safety_settings": SAFETY_SETTINGS,
+            "tools": tools_override if tools_override else TEXT_TOOLS, 
+            "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
+            "temperature": 0.7
+        }
 
-        if "resource_exhausted" in err_str:
-            logger.warning("Quota Hit! Cooling down 15s...")
-            await asyncio.sleep(15)
-            
-            # ПОПЫТКА 2: 10k BUDGET
-            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=10240) 
-            logger.info("Attempt 2: Budget 10k")
-            
-            try:
-                return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
-            except genai_errors.APIError as e2:
-                if "resource_exhausted" in str(e2).lower():
-                    return "⏳ Сервер всё ещё перегружен. Пожалуйста, подождите минуту."
-                return f"❌ API Error: {html.escape(str(e2))}"
+        # Apply Thinking Budget
+        if step["budget"] is None:
+            # Auto mode (don't set param or set to default if API required it, but here we omit)
+            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
+            logger.info(f"Attempt {i+1}: Auto Budget")
+        elif step["budget"] > 0:
+            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"])
+            logger.info(f"Attempt {i+1}: Budget {step['budget']}")
+        else:
+            logger.info(f"Attempt {i+1}: Standard Mode (Fallback)")
+            # No thinking_config key at all
+
+        try:
+            return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
         
-        return f"❌ API Error: {html.escape(str(e))}"
-        
-    except Exception as e:
-        return f"❌ Error: {html.escape(str(e))}"
+        except genai_errors.APIError as e:
+            err_str = str(e).lower()
+            
+            # Audio/Code Fix (Hard Retry)
+            if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
+                logger.warning("Disabling Code Tool for Audio.")
+                tools_override = MEDIA_TOOLS # Force sticky change
+                # Retry immediately same step
+                continue 
+
+            # Quota Hit
+            if "resource_exhausted" in err_str:
+                if i < len(steps) - 1:
+                    wait_t = step["wait"]
+                    logger.warning(f"Quota Hit! Waiting {wait_t}s...")
+                    await asyncio.sleep(wait_t)
+                    continue # Next step
+                else:
+                    return "⏳ Сервер перегружен. Пожалуйста, попробуйте позже."
+
+            # Other API Errors
+            return f"❌ API Error: {html.escape(str(e))}"
+            
+        except Exception as e:
+            return f"❌ Error: {html.escape(str(e))}"
+
+    return "Неизвестная ошибка."
 
 def format_response(response):
     try:
@@ -571,7 +587,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v38)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v39: Survival Mode)") 
         except: pass
 
     stop = asyncio.Event()
@@ -587,27 +603,16 @@ async def main():
         if token != TELEGRAM_SECRET_TOKEN:
             return aiohttp.web.Response(status=403, text="Forbidden")
         
-        # --- FIRE-AND-FORGET FIX ---
+        # FIRE-AND-FORGET: Мгновенный ответ Telegram, чтобы не было повторов
         try:
-            # Читаем JSON сразу, пока connection жив
             update_data = await r.json()
-            
-            # Запускаем обработку в фоне и НЕ ждем её завершения
-            asyncio.create_task(
-                process_update_safe(app, update_data)
-            )
-            
-            # Отвечаем Telegram'у мгновенно
+            asyncio.create_task(process_update_safe(app, update_data))
             return aiohttp.web.Response(text='OK')
-        except Exception:
-            return aiohttp.web.Response(status=500)
+        except: return aiohttp.web.Response(status=500)
 
-    # Обертка для безопасного запуска
     async def process_update_safe(application, data):
-        try:
-            await application.process_update(Update.de_json(data, application.bot))
-        except Exception as e:
-            logger.error(f"Background Update Error: {e}", exc_info=True)
+        try: await application.process_update(Update.de_json(data, application.bot))
+        except Exception as e: logger.error(f"Bg Update Error: {e}")
 
     server.router.add_post(f"/{GEMINI_WEBHOOK_PATH.strip('/')}", wh)
     server.router.add_get('/', lambda r: aiohttp.web.Response(text="Running"))
