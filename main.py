@@ -1,4 +1,4 @@
-# Версия 39 (Survival Mode: 3 попытки, увеличенные паузы, аварийный режим)
+# Версия 39 (Survival Mode: 4-ступенчатая стратегия с понижением бюджета)
 
 import logging
 import os
@@ -308,7 +308,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ: SURVIVAL MODE ---
+# --- ГЕНЕРАЦИЯ: 4-СТУПЕНЧАТАЯ СТРАТЕГИЯ ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -316,11 +316,12 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # 3-STEP STRATEGY: Auto -> 8k -> Standard
+    # Steps: Auto -> 4k -> 1k -> Standard
     steps = [
         {"budget": None, "wait": 20}, # Auto, wait 20s
-        {"budget": 8192, "wait": 5},  # 8k, wait 5s
-        {"budget": 0,    "wait": 0}   # 0 (Standard), give up
+        {"budget": 4096, "wait": 10}, # 4k, wait 10s (Компромисс)
+        {"budget": 1024, "wait": 5},  # 1k, wait 5s (Минимум)
+        {"budget": 0,    "wait": 0}   # 0 (Standard), last hope
     ]
 
     for i, step in enumerate(steps):
@@ -333,7 +334,6 @@ async def generate(client, contents, context, tools_override=None):
 
         # Apply Thinking Budget
         if step["budget"] is None:
-            # Auto mode (don't set param or set to default if API required it, but here we omit)
             gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
             logger.info(f"Attempt {i+1}: Auto Budget")
         elif step["budget"] > 0:
@@ -341,7 +341,6 @@ async def generate(client, contents, context, tools_override=None):
             logger.info(f"Attempt {i+1}: Budget {step['budget']}")
         else:
             logger.info(f"Attempt {i+1}: Standard Mode (Fallback)")
-            # No thinking_config key at all
 
         try:
             return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
@@ -349,11 +348,10 @@ async def generate(client, contents, context, tools_override=None):
         except genai_errors.APIError as e:
             err_str = str(e).lower()
             
-            # Audio/Code Fix (Hard Retry)
+            # Audio/Code Fix
             if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
-                logger.warning("Disabling Code Tool for Audio.")
-                tools_override = MEDIA_TOOLS # Force sticky change
-                # Retry immediately same step
+                logger.warning("Auto-fix: Disabling Code Tool for Audio.")
+                tools_override = MEDIA_TOOLS
                 continue 
 
             # Quota Hit
@@ -362,11 +360,10 @@ async def generate(client, contents, context, tools_override=None):
                     wait_t = step["wait"]
                     logger.warning(f"Quota Hit! Waiting {wait_t}s...")
                     await asyncio.sleep(wait_t)
-                    continue # Next step
+                    continue 
                 else:
-                    return "⏳ Сервер перегружен. Пожалуйста, попробуйте позже."
+                    return "⏳ Сервер перегружен. Попробуйте позже."
 
-            # Other API Errors
             return f"❌ API Error: {html.escape(str(e))}"
             
         except Exception as e:
@@ -587,7 +584,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v39: Survival Mode)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v39)") 
         except: pass
 
     stop = asyncio.Event()
@@ -602,8 +599,6 @@ async def main():
         token = r.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if token != TELEGRAM_SECRET_TOKEN:
             return aiohttp.web.Response(status=403, text="Forbidden")
-        
-        # FIRE-AND-FORGET: Мгновенный ответ Telegram, чтобы не было повторов
         try:
             update_data = await r.json()
             asyncio.create_task(process_update_safe(app, update_data))
