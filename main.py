@@ -1,4 +1,4 @@
-# Версия 39 (Survival Mode: 4-ступенчатая стратегия с понижением бюджета)
+# Версия 41 (Stable Survival: Увеличенные тайм-ауты, температура 1.0, новые модели)
 
 import logging
 import os
@@ -45,14 +45,15 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- МОДЕЛИ И REGEX ---
+# --- МОДЕЛИ ---
 AVAILABLE_MODELS = {
     'flash-2.5': 'gemini-2.5-flash-preview-09-2025', 
     'pro-2.5': 'gemini-2.5-pro',
-    'pro-3': 'gemini-3-pro-preview"
+    'pro-3': 'gemini-3-pro-preview'
 }
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
+# Regex
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
@@ -309,7 +310,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ: 4-СТУПЕНЧАТАЯ СТРАТЕГИЯ ---
+# --- ГЕНЕРАЦИЯ: SURVIVAL MODE (UPDATED) ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -317,12 +318,12 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # Steps: Auto -> 4k -> 1k -> Standard
+    # НОВЫЕ ШАГИ И ТАЙМАУТЫ
     steps = [
-        {"budget": None, "wait": 20}, # Auto, wait 20s
-        {"budget": 4096, "wait": 10}, # 4k, wait 10s (Компромисс)
-        {"budget": 1024, "wait": 5},  # 1k, wait 5s (Минимум)
-        {"budget": 0,    "wait": 0}   # 0 (Standard), last hope
+        {"budget": None, "wait": 30}, # Auto, wait 30s
+        {"budget": 8192, "wait": 20}, # 8k, wait 20s
+        {"budget": 4096, "wait": 10}, # 4k, wait 10s
+        {"budget": 0,    "wait": 0}   # 0 (Standard)
     ]
 
     for i, step in enumerate(steps):
@@ -330,18 +331,18 @@ async def generate(client, contents, context, tools_override=None):
             "safety_settings": SAFETY_SETTINGS,
             "tools": tools_override if tools_override else TEXT_TOOLS, 
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-            "temperature": 0.7
+            "temperature": 1.0 # Повышенная креативность
         }
 
-        # Apply Thinking Budget
+        # Thinking Logic
         if step["budget"] is None:
             gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
-            logger.info(f"Attempt {i+1}: Auto Budget")
+            logger.info(f"Attempt {i+1} ({model}): Auto Budget")
         elif step["budget"] > 0:
             gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"])
-            logger.info(f"Attempt {i+1}: Budget {step['budget']}")
+            logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']}")
         else:
-            logger.info(f"Attempt {i+1}: Standard Mode (Fallback)")
+            logger.info(f"Attempt {i+1} ({model}): Standard Mode")
 
         try:
             return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
@@ -355,7 +356,7 @@ async def generate(client, contents, context, tools_override=None):
                 tools_override = MEDIA_TOOLS
                 continue 
 
-            # Quota Hit
+            # Quota Hit (429)
             if "resource_exhausted" in err_str:
                 if i < len(steps) - 1:
                     wait_t = step["wait"]
@@ -560,13 +561,18 @@ async def clear_c(u, c):
     await u.message.reply_text("🧹 Память очищена.")
 @ignore_if_processing
 async def model_c(u, c): 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Flash (Thinking)", callback_data="m_flash"), InlineKeyboardButton("🧠 Pro", callback_data="m_pro")]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Flash 2.5", callback_data="m_flash-2.5")],
+        [InlineKeyboardButton("🧠 Pro 2.5", callback_data="m_pro-2.5")],
+        [InlineKeyboardButton("💎 Pro 3.0", callback_data="m_pro-3")]
+    ])
     await u.message.reply_html(f"Текущая модель: <b>{c.chat_data.get('model', DEFAULT_MODEL)}</b>", reply_markup=kb)
 async def model_cb(u, c): 
-    key = 'flash' if 'flash' in u.callback_query.data else 'pro'
-    c.chat_data['model'] = AVAILABLE_MODELS.get(key, DEFAULT_MODEL)
+    code = u.callback_query.data.replace('m_', '')
+    model = AVAILABLE_MODELS.get(code, DEFAULT_MODEL)
+    c.chat_data['model'] = model
     await c.application.persistence.update_chat_data(u.effective_chat.id, c.chat_data)
-    await u.callback_query.edit_message_text(f"✅ Установлена модель: {c.chat_data['model']}")
+    await u.callback_query.edit_message_text(f"✅ Установлена модель: {model}")
 
 # --- MAIN ---
 async def main():
@@ -585,7 +591,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v39)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v41)") 
         except: pass
 
     stop = asyncio.Event()
