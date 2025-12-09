@@ -1,4 +1,4 @@
-# Версия 34 (Smart Backoff: Агрессивное ожидание квот и жесткая типизация инструментов)
+# Версия 36 (Auto-Thinking: Динамический бюджет + Щедрый повтор 10k)
 
 import logging
 import os
@@ -6,7 +6,6 @@ import asyncio
 import signal
 import re
 import pickle
-import random
 from collections import defaultdict, OrderedDict
 import psycopg2
 from psycopg2 import pool, extensions
@@ -74,9 +73,7 @@ MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ ---
-# Текст: Можно гуглить и выполнять код
 TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
-# Медиа: ТОЛЬКО поиск. Code Execution строго запрещен для аудио.
 MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
 
 SAFETY_SETTINGS = [
@@ -311,7 +308,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ С AGGRESSIVE BACKOFF ---
+# --- ГЕНЕРАЦИЯ: SMART AUTO MODE ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -319,62 +316,50 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # 4 попытки с понижением бюджета
-    thinking_budgets = [16384, 4096, 1024, 0]
+    # ПОПЫТКА 1: ДИНАМИЧЕСКИЙ БЮДЖЕТ (AUTO)
+    # Мы не передаем thinking_config вообще (или передаем -1, но отсутствие = auto default)
+    gen_config_args = {
+        "safety_settings": SAFETY_SETTINGS,
+        "tools": tools_override if tools_override else TEXT_TOOLS, 
+        "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
+        "temperature": 0.7
+    }
 
-    for attempt, budget in enumerate(thinking_budgets):
-        gen_config_args = {
-            "safety_settings": SAFETY_SETTINGS,
-            "tools": tools_override if tools_override else TEXT_TOOLS, 
-            "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-            "temperature": 0.7
-        }
-
-        # Применяем бюджет только если он > 0 и если это не попытка отката
-        if budget > 0:
-            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
-            logger.info(f"Attempt {attempt+1}: Budget {budget}")
-        else:
-            logger.info(f"Attempt {attempt+1}: Standard Mode (No Thinking)")
-
-        config = types.GenerateContentConfig(**gen_config_args)
+    try:
+        logger.info("Attempt 1: Auto Budget (Dynamic)")
+        return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
+    
+    except genai_errors.APIError as e:
+        err_str = str(e).lower()
         
-        try:
-            res = await client.aio.models.generate_content(model=model, contents=contents, config=config)
-            if res and (res.candidates or res.prompt_feedback): return res
+        # Audio Code Fix
+        if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
+            logger.warning("Disabling Code Tool for Audio.")
+            gen_config_args["tools"] = MEDIA_TOOLS
+            try:
+                return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
+            except Exception: pass
+
+        # QUOTA HIT -> COOL DOWN -> RETRY WITH 10k
+        if "resource_exhausted" in err_str:
+            logger.warning("Quota Hit! Cooling down 15s...")
+            await asyncio.sleep(15)
             
-        except genai_errors.APIError as e:
-            err_str = str(e).lower()
+            # Вторая попытка: Явно ставим 10000, как просил пользователь
+            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=10240) 
+            logger.info("Attempt 2: Budget 10k")
             
-            # 1. Если Code Execution не поддерживается для Audio (ошибка 400),
-            # мы перехватываем это и принудительно убираем tools в следующей попытке.
-            if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
-                logger.warning("Audio/Code mismatch detected. Disabling tools for retry.")
-                tools_override = MEDIA_TOOLS # Force media tools
-                continue
-
-            # 2. Если модель не умеет думать (Invalid Argument для thinking_config)
-            if "invalid_argument" in err_str and "thinking_config" in str(gen_config_args):
-                logger.warning(f"Thinking not supported. Retrying standard.")
-                # Переходим сразу к последней попытке (budget 0)
-                if budget != 0: continue 
-
-            # 3. GLAVNOE: Resource Exhausted (Перегрузка)
-            if "resource_exhausted" in err_str:
-                # АГРЕССИВНОЕ ОЖИДАНИЕ: 5s, 10s, 20s, 40s
-                wait_time = 5 * (2 ** attempt) + random.uniform(0, 2)
-                logger.warning(f"Quota Hit! Waiting {wait_time:.1f}s before retry with budget {budget}...")
-                await asyncio.sleep(wait_time)
-                continue 
-
-            # Если другая ошибка и это последняя попытка - отдаем её
-            if attempt == len(thinking_budgets) - 1:
-                return f"❌ API Error: {html.escape(str(e))}"
-            
-        except Exception as e:
-            return f"❌ Error: {html.escape(str(e))}"
-
-    return "⏳ Сервер Google перегружен. Пожалуйста, повторите запрос через минуту."
+            try:
+                return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
+            except genai_errors.APIError as e2:
+                if "resource_exhausted" in str(e2).lower():
+                    return "⏳ Сервер всё ещё перегружен. Пожалуйста, подождите минуту."
+                return f"❌ API Error: {html.escape(str(e2))}"
+        
+        return f"❌ API Error: {html.escape(str(e))}"
+        
+    except Exception as e:
+        return f"❌ Error: {html.escape(str(e))}"
 
 def format_response(response):
     try:
@@ -446,7 +431,6 @@ async def process_request(update, context, parts):
 
         parts_final.append(types.Part(text=final_prompt))
         
-        # Строгий выбор инструментов
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
         res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
@@ -469,7 +453,7 @@ async def process_request(update, context, parts):
             if len(rmap) > MAX_HISTORY_ITEMS * 2: 
                 for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]: del rmap[k]
 
-            if is_media_request:
+            if is_media:
                 m_part = next((p for p in parts if p.file_data), None)
                 if m_part:
                     m_store = context.application.bot_data.setdefault('media_contexts', {}).setdefault(msg.chat_id, OrderedDict())
@@ -590,7 +574,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v34: Smart Backoff)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v36)") 
         except: pass
 
     stop = asyncio.Event()
