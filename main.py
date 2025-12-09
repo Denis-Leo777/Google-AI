@@ -321,11 +321,11 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # 4 Steps: Auto -> 8k -> 4k -> Standard
+    # 4 Steps: 20k -> 10k -> 5k -> Standard
     steps = [
-        {"budget": None, "wait": 30},
-        {"budget": 8192, "wait": 20},
-        {"budget": 4096, "wait": 10},
+        {"budget": 20000, "wait": 20},
+        {"budget": 10000, "wait": 15},
+        {"budget": 5000, "wait": 10},
         {"budget": 0,    "wait": 0}
     ]
 
