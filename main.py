@@ -72,7 +72,7 @@ RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 # Это оставляет ~200k токенов в минуту на "размышления" и файлы.
 MAX_CONTEXT_CHARS = 120000 
 MAX_HISTORY_RESPONSE_LEN = 4000
-MAX_HISTORY_ITEMS = 30 # Уменьшил кол-во сообщений, чтобы старые быстрее вымывались
+MAX_HISTORY_ITEMS = 100
 MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
