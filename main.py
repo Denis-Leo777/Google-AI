@@ -47,10 +47,11 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 
 # --- МОДЕЛИ И REGEX ---
 AVAILABLE_MODELS = {
-    'flash': 'gemini-flash-latest', 
-    'pro': 'gemini-pro'
+    'flash-2.5': 'gemini-2.5-flash-preview-09-2025', 
+    'pro-2.5': 'gemini-2.5-pro',
+    'pro-3': 'gemini-3-pro-preview"
 }
-DEFAULT_MODEL = 'gemini-flash-latest'
+DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
@@ -65,7 +66,7 @@ RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
-MAX_CONTEXT_CHARS = 500000
+MAX_CONTEXT_CHARS = 200000
 MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 50
 MAX_MEDIA_CONTEXTS = 50
