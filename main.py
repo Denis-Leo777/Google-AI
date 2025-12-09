@@ -1,4 +1,4 @@
-# Версия 37 (Hotfix: Исправлена переменная is_media -> is_media_request)
+# Версия 38 (Final Stable: Исправлен Webhook Timeout / Fire-and-Forget)
 
 import logging
 import os
@@ -450,7 +450,6 @@ async def process_request(update, context, parts):
             if len(rmap) > MAX_HISTORY_ITEMS * 2: 
                 for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]: del rmap[k]
 
-            # ИСПРАВЛЕННАЯ ПЕРЕМЕННАЯ ЗДЕСЬ:
             if is_media_request:
                 m_part = next((p for p in parts if p.file_data), None)
                 if m_part:
@@ -572,7 +571,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v37)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v38)") 
         except: pass
 
     stop = asyncio.Event()
@@ -587,10 +586,28 @@ async def main():
         token = r.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if token != TELEGRAM_SECRET_TOKEN:
             return aiohttp.web.Response(status=403, text="Forbidden")
+        
+        # --- FIRE-AND-FORGET FIX ---
         try:
-            await app.process_update(Update.de_json(await r.json(), app.bot))
+            # Читаем JSON сразу, пока connection жив
+            update_data = await r.json()
+            
+            # Запускаем обработку в фоне и НЕ ждем её завершения
+            asyncio.create_task(
+                process_update_safe(app, update_data)
+            )
+            
+            # Отвечаем Telegram'у мгновенно
             return aiohttp.web.Response(text='OK')
-        except: return aiohttp.web.Response(status=500)
+        except Exception:
+            return aiohttp.web.Response(status=500)
+
+    # Обертка для безопасного запуска
+    async def process_update_safe(application, data):
+        try:
+            await application.process_update(Update.de_json(data, application.bot))
+        except Exception as e:
+            logger.error(f"Background Update Error: {e}", exc_info=True)
 
     server.router.add_post(f"/{GEMINI_WEBHOOK_PATH.strip('/')}", wh)
     server.router.add_get('/', lambda r: aiohttp.web.Response(text="Running"))
