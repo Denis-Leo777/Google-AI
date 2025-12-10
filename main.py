@@ -1,4 +1,4 @@
-# Версия 54 (Smart Fallback: Empty Check & Mixed Strategy)
+# Версия 56 (Rate Limit Enforcer: Strict 5 RPM Queue)
 
 import logging
 import os
@@ -65,11 +65,14 @@ RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 
-# Ослабленный Regex (убрал опасные паттерны, оставил только явные теги мыслей)
 RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)', re.DOTALL | re.IGNORECASE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
-# --- ЛИМИТЫ ---
+# --- ЛИМИТЫ (СТРОГИЕ) ---
+# Лимит API: 5 запросов в минуту.
+# Безопасный интервал: 60 сек / 5 = 12 секунд. Берем 13 для гарантии.
+API_REQUEST_INTERVAL = 13.0 
+
 MAX_CONTEXT_CHARS = 55000 
 MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 100 
@@ -94,6 +97,26 @@ try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
 except FileNotFoundError:
     SYSTEM_INSTRUCTION = DEFAULT_SYSTEM_PROMPT
+
+# --- RATE LIMITER ---
+class RequestRateLimiter:
+    def __init__(self, interval):
+        self.interval = interval
+        self.last_request_time = 0
+        self.lock = asyncio.Lock()
+
+    async def wait(self):
+        async with self.lock:
+            now = time.time()
+            elapsed = now - self.last_request_time
+            if elapsed < self.interval:
+                wait_time = self.interval - elapsed
+                logger.info(f"Rate Limit: Waiting {wait_time:.2f}s...")
+                await asyncio.sleep(wait_time)
+            self.last_request_time = time.time()
+
+# Глобальный лимитер (один на весь бот, так как лимит на API ключ)
+GLOBAL_LIMITER = RequestRateLimiter(API_REQUEST_INTERVAL)
 
 # --- WORKER ---
 class TypingWorker:
@@ -234,26 +257,21 @@ def get_current_time_str(timezone="Europe/Moscow"):
 def convert_markdown_to_html(text: str) -> str:
     if not text: return text
     code_blocks = {}
-    
     def store_code(match):
         key = f"__CODE_{len(code_blocks)}__"
         content = html.escape(match.group(2) if match.lastindex == 2 else match.group(1))
         code_blocks[key] = f"<pre>{content}</pre>" if match.group(0).startswith("```") else f"<code>{content}</code>"
         return key
-
     text = RE_CODE_BLOCK.sub(store_code, text)
     text = RE_INLINE_CODE.sub(store_code, text)
     text = RE_BOLD.sub(r'<b>\1</b>', text)
     text = RE_ITALIC.sub(r'<i>\1</i>', text)
     text = RE_HEADER.sub(r'<b>\1</b>', text)
-
     for key, val in code_blocks.items(): text = text.replace(key, val)
     return text
 
 def sanitize_and_balance_html(text: str) -> str:
     allowed = {'b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler'}
-    
-    # Балансировка тегов
     stack = []
     for m in HTML_TAG_REGEX.finditer(text):
         tag = m.group(2).lower()
@@ -262,7 +280,6 @@ def sanitize_and_balance_html(text: str) -> str:
         if not closing: stack.append(tag)
         else:
             if stack and stack[-1] == tag: stack.pop()
-    
     for tag in reversed(stack): text += f"</{tag}>"
     return text
 
@@ -283,18 +300,6 @@ def html_safe_chunker(text: str, size=4096):
     chunks.append(text)
     return chunks
 
-def ignore_if_processing(func):
-    @wraps(func)
-    async def wrapper(update, context, *args, **kwargs):
-        if not update.effective_message: return
-        key = f"{update.effective_chat.id}_{update.effective_message.message_id}"
-        processing = context.application.bot_data.setdefault('processing_messages', set())
-        if key in processing: return
-        processing.add(key)
-        try: await func(update, context, *args, **kwargs)
-        finally: processing.discard(key)
-    return wrapper
-
 def part_to_dict(part):
     if part.text: return {'type': 'text', 'content': part.text}
     if part.file_data: return {'type': 'file', 'uri': part.file_data.file_uri, 'mime': part.file_data.mime_type, 'timestamp': time.time()}
@@ -313,15 +318,12 @@ def build_history(history, char_limit=MAX_CONTEXT_CHARS):
     for entry in reversed(history):
         if not entry.get("parts"): continue
         api_parts, text_len = [], 0
-        
         prefix = f"[{entry.get('user_id', 'Unknown')}; Name: {entry.get('user_name', 'User')}]: " if entry['role'] == 'user' else ""
-        
         for p in entry["parts"]:
             if p.get('type') == 'text':
                 t = f"{prefix}{p.get('content', '')}" if entry['role'] == 'user' else p.get('content', '')
                 api_parts.append(types.Part(text=t))
                 text_len += len(t)
-        
         if not api_parts: continue
         if chars + text_len > char_limit: break
         valid.append(types.Content(role=entry["role"], parts=api_parts))
@@ -342,22 +344,21 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ (СМАРТ ПРОВЕРКА) ---
+# --- ГЕНЕРАЦИЯ ---
 async def generate(client, contents, context, tools_override=None):
+    # ОЖИДАНИЕ ОЧЕРЕДИ
+    await GLOBAL_LIMITER.wait()
+
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # 4 Steps: 
-    # 1-2. Auto Think + Tools (Максимум ума)
-    # 3. Standard + Tools (Если ум сломался об поиск)
-    # 4. Standard + No Tools (Паника)
     steps = [
         {"wait": 4, "think": True, "tools": True},
         {"wait": 10, "think": True, "tools": True},
-        {"wait": 5, "think": False, "tools": True}, # ВАЖНО: Fallback на "без мыслей", но с поиском
+        {"wait": 5, "think": False, "tools": True}, 
         {"wait": 5, "think": False, "tools": False}
     ]
 
@@ -377,28 +378,19 @@ async def generate(client, contents, context, tools_override=None):
         logger.info(f"Attempt {i+1} ({model}): {mode_name} {tools_name}")
 
         try:
-            response = await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
-            
-            # ВАЛИДАЦИЯ ОТВЕТА (Новая фича)
-            # Если ответ пустой (модель запуталась в мыслях), вызываем исключение, чтобы сработал ретрай
-            final_text = format_response(response)
-            if not final_text or final_text == "Пустой контент.":
-                logger.warning("Empty response detected! Triggering retry...")
-                raise ValueError("Empty Content") # Это перекинет в блок except и вызовет следующий шаг
-            
-            return response # Если все ок, возвращаем объект ответа
+            return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
         
         except (genai_errors.APIError, ValueError) as e:
             err_str = str(e).lower()
-            
-            # Ловим все: Лимиты, Перегрузку (503), и нашу ошибку "Пустой контент"
             is_retryable = any(x in err_str for x in ["resource_exhausted", "unavailable", "overloaded", "503", "empty content"])
             
             if is_retryable:
                 if i < len(steps) - 1:
                     wait_t = step["wait"]
                     logger.warning(f"Retry Issue ({e})! Waiting {wait_t}s...")
+                    # Если мы словили лимит даже после очереди, ждем еще дольше
                     await asyncio.sleep(wait_t)
+                    await GLOBAL_LIMITER.wait() # Снова ждем слот в очереди
                     continue 
                 else:
                     return "⏳ Сервер перегружен. Попробуйте позже."
@@ -412,7 +404,7 @@ async def generate(client, contents, context, tools_override=None):
 
 def format_response(response):
     try:
-        if isinstance(response, str): return response # Если это строка ошибки
+        if isinstance(response, str): return response 
         if not response: return "Пустой контент."
 
         if not response.candidates: return "Ответ заблокирован фильтрами."
@@ -430,7 +422,7 @@ def format_response(response):
         text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
         
-        if not text.strip(): return "Пустой контент." # Двойная проверка
+        if not text.strip(): return "Пустой контент."
 
         html_text = convert_markdown_to_html(text.strip())
         return sanitize_and_balance_html(html_text)
@@ -456,9 +448,18 @@ async def send_smart(msg, text, hint=False):
             sent = await msg.reply_text(ch)
     return sent
 
-async def process_request(update, context, parts):
-    msg, client = update.message, context.bot_data['gemini_client']
-    typer = TypingWorker(context.bot, msg.chat_id)
+async def process_request(chat_id, bot_data, application):
+    group_data = bot_data.get('media_buffer', {}).pop(chat_id, None)
+    if not group_data: return
+
+    parts = group_data['parts']
+    msg = group_data['msg']
+    
+    context_data = await application.persistence.get_chat_data()
+    chat_data = context_data.get(chat_id, {})
+    
+    client = application.bot_data['gemini_client']
+    typer = TypingWorker(application.bot, chat_id)
     typer.start()
     
     try:
@@ -468,23 +469,15 @@ async def process_request(update, context, parts):
             return
 
         is_media_request = any(p.file_data for p in parts)
+        current_model = chat_data.get('model', DEFAULT_MODEL)
         
-        current_model = context.chat_data.get('model', DEFAULT_MODEL)
+        if 'flash' in current_model: dynamic_limit = 55000 
+        else: dynamic_limit = 8000 
         
-        if 'flash' in current_model:
-            dynamic_limit = 55000 
-        else:
-            dynamic_limit = 8000 
-        
-        if is_media_request:
-            history = [] 
-        else:
-            history = build_history(context.chat_data.get("history", []), char_limit=dynamic_limit)
+        if is_media_request: history = [] 
+        else: history = build_history(chat_data.get("history", []), char_limit=dynamic_limit)
         
         user_name = msg.from_user.first_name
-        if msg.forward_origin:
-             if hasattr(msg.forward_origin, 'chat') and msg.forward_origin.chat: user_name = msg.forward_origin.chat.title
-             elif hasattr(msg.forward_origin, 'sender_user') and msg.forward_origin.sender_user: user_name = msg.forward_origin.sender_user.first_name
         
         parts_final = [p for p in parts if p.file_data]
         prompt_txt = next((p.text for p in parts if p.text), "")
@@ -499,25 +492,24 @@ async def process_request(update, context, parts):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
-        # ГЕНЕРАЦИЯ С ПРОВЕРКОЙ
-        res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
-        
-        # ФОРМАТИРОВАНИЕ
+        res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
         reply = format_response(res_obj)
         
+        if reply == "Пустой контент.": reply = "⏳ Сервер перегружен. Попробуйте позже."
+
         sent = await send_smart(msg, reply, hint=is_media_request)
         
-        if sent and "❌" not in reply:
+        if sent and "❌" not in reply and "⏳" not in reply:
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
-            context.chat_data.setdefault("history", []).append(hist_item)
+            chat_data.setdefault("history", []).append(hist_item)
             
             bot_item = {"role": "model", "parts": [{'type': 'text', 'content': reply[:MAX_HISTORY_RESPONSE_LEN]}]}
-            context.chat_data["history"].append(bot_item)
+            chat_data["history"].append(bot_item)
             
-            if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
-                context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
+            if len(chat_data["history"]) > MAX_HISTORY_ITEMS:
+                chat_data["history"] = chat_data["history"][-MAX_HISTORY_ITEMS:]
 
-            rmap = context.chat_data.setdefault('reply_map', {})
+            rmap = chat_data.setdefault('reply_map', {})
             rmap[sent.message_id] = msg.message_id
             if len(rmap) > MAX_HISTORY_ITEMS * 2: 
                 for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]: del rmap[k]
@@ -525,11 +517,11 @@ async def process_request(update, context, parts):
             if is_media_request:
                 m_part = next((p for p in parts if p.file_data), None)
                 if m_part:
-                    m_store = context.application.bot_data.setdefault('media_contexts', {}).setdefault(msg.chat_id, OrderedDict())
+                    m_store = application.bot_data.setdefault('media_contexts', {}).setdefault(chat_id, OrderedDict())
                     m_store[msg.message_id] = part_to_dict(m_part)
                     if len(m_store) > MAX_MEDIA_CONTEXTS: m_store.popitem(last=False)
             
-            await context.application.persistence.update_chat_data(msg.chat_id, context.chat_data)
+            await application.persistence.update_chat_data(chat_id, chat_data)
 
     except Exception as e:
         logger.error(f"Proc Error: {e}", exc_info=True)
@@ -538,7 +530,6 @@ async def process_request(update, context, parts):
         typer.stop()
 
 # --- HANDLERS ---
-@ignore_if_processing
 async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg: return
@@ -547,6 +538,36 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = []
     client = context.bot_data['gemini_client']
     text = msg.caption or msg.text or ""
+
+    if msg.media_group_id:
+        buffer = context.bot_data.setdefault('media_buffer', {})
+        if msg.chat_id in buffer:
+            if buffer[msg.chat_id]['task']:
+                buffer[msg.chat_id]['task'].cancel()
+        else:
+            buffer[msg.chat_id] = {'parts': [], 'msg': msg, 'task': None}
+        
+        media = msg.audio or msg.voice or msg.video or msg.video_note or (msg.photo[-1] if msg.photo else None) or msg.document
+        if media:
+            try:
+                f = await media.get_file()
+                b = await f.download_as_bytearray()
+                mime = 'image/jpeg' if msg.photo else 'audio/ogg' if msg.voice else 'video/mp4' if msg.video_note else getattr(media, 'mime_type', 'application/octet-stream')
+                part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
+                buffer[msg.chat_id]['parts'].append(part)
+            except Exception as e:
+                logger.error(f"Media Buffer Error: {e}")
+
+        if text:
+            buffer[msg.chat_id]['parts'].append(types.Part(text=text))
+            buffer[msg.chat_id]['msg'] = msg 
+
+        async def delayed_processing():
+            await asyncio.sleep(2.5) # Ждем чуть дольше сбора альбома
+            await process_request(msg.chat_id, context.bot_data, context.application)
+
+        buffer[msg.chat_id]['task'] = asyncio.create_task(delayed_processing())
+        return
 
     media = msg.audio or msg.voice or msg.video or msg.video_note or (msg.photo[-1] if msg.photo else None) or msg.document
     if media:
@@ -578,7 +599,10 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if p: parts.append(p)
 
     if text: parts.append(types.Part(text=text))
-    if parts: await process_request(update, context, parts)
+    
+    if parts:
+        context.bot_data.setdefault('media_buffer', {})[msg.chat_id] = {'parts': parts, 'msg': msg}
+        await process_request(msg.chat_id, context.bot_data, context.application)
 
 async def util_cmd(update, context, prompt):
     msg = update.message
@@ -607,7 +631,9 @@ async def util_cmd(update, context, prompt):
             
     if not parts: return await msg.reply_text("❌ Нет медиа.")
     parts.append(types.Part(text=prompt))
-    await process_request(update, context, parts)
+    
+    context.bot_data.setdefault('media_buffer', {})[msg.chat_id] = {'parts': parts, 'msg': msg}
+    await process_request(msg.chat_id, context.bot_data, context.application)
 
 @ignore_if_processing
 async def start_c(u, c): await u.message.reply_html("👋 <b>Привет! Я Женя.</b>\nКидай файлы, фото, аудио или просто пиши!")
@@ -648,7 +674,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v54 - Smart Fallback)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v56 - 5 RPM Enforcer)") 
         except: pass
 
     stop = asyncio.Event()
