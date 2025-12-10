@@ -1,4 +1,4 @@
-# Версия 58 (Fixed: Restored missing decorator definition)
+# Версия 59 (Hotfix: Global Queue Attachment)
 
 import logging
 import os
@@ -327,7 +327,6 @@ def html_safe_chunker(text: str, size=4096):
     chunks.append(text)
     return chunks
 
-# ВОТ ОНА, ВОССТАНОВЛЕННАЯ ФУНКЦИЯ!
 def ignore_if_processing(func):
     @wraps(func)
     async def wrapper(update, context, *args, **kwargs):
@@ -495,7 +494,9 @@ async def process_request(chat_id, bot_data, application):
     chat_data = context_data.get(chat_id, {})
     
     client = application.bot_data['gemini_client']
-    queue = application.bot_data['request_queue'] 
+    
+    # 💥 ИСПРАВЛЕНО ЗДЕСЬ: Берем очередь из application (атрибут), а не из словаря данных
+    queue = application.request_queue 
     
     typer = TypingWorker(application.bot, chat_id)
     typer.start()
@@ -705,9 +706,10 @@ async def main():
     pers = PostgresPersistence(DATABASE_URL)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
 
-    # ИНИЦИАЛИЗАЦИЯ ОЧЕРЕДИ
-    app.bot_data['request_queue'] = SmartQueue(interval=MIN_REQUEST_INTERVAL)
-    app.bot_data['request_queue'].start()
+    # --- ИСПРАВЛЕНИЕ: КРЕПИМ ОЧЕРЕДЬ К APPLICATION ---
+    # Не к bot_data (которая сохраняется в БД), а как отдельный атрибут
+    app.request_queue = SmartQueue(interval=MIN_REQUEST_INTERVAL)
+    app.request_queue.start()
 
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("clear", clear_c))
@@ -721,7 +723,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v58 - Fixed NameError)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v59 - Global Queue Hotfix)") 
         except: pass
 
     stop = asyncio.Event()
@@ -757,7 +759,7 @@ async def main():
     await stop.wait()
     
     # Остановка очереди при выключении
-    app.bot_data['request_queue'].stop()
+    app.request_queue.stop()
     
     await runner.cleanup()
     pers.close()
