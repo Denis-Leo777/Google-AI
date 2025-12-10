@@ -1,4 +1,4 @@
-# Версия 48 (Auto-Thinking: Вернул модели + Автоматический бюджет мышления)
+# Версия 49 (Survival Mode: Auto-Thinking -> Standard -> No-Tools Fallback)
 
 import logging
 import os
@@ -45,7 +45,7 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- МОДЕЛИ (ВЕРНУЛ ИСХОДНЫЕ) ---
+# --- МОДЕЛИ ---
 AVAILABLE_MODELS = {
     'flash-2.5': 'gemini-2.5-flash-preview-09-2025', 
     'pro-2.5': 'gemini-2.5-pro',
@@ -324,7 +324,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ (AUTO THINKING) ---
+# --- ГЕНЕРАЦИЯ (SURVIVAL MODE) ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -332,41 +332,39 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # Steps: Auto (Trust Model) -> 2k (Safe) -> Standard (No Think)
+    # Steps: 
+    # 1. Auto Think + Tools
+    # 2. Auto Think + No Tools
+    # 3. No Think + Tools (Standard)
+    # 4. No Think + NO TOOLS (Survival / Panic Mode)
     steps = [
-        # 1. АВТО: Не передаем budget. Модель сама решает, можно ли думать.
-        {"budget": None, "wait": 4},
-        
-        # 2. МИНИМУМ: Если авто не дали, просим крохи (2к).
-        {"budget": 2048, "wait": 5},
-        
-        # 3. СТАНДАРТ: Отключаем все.
-        {"budget": 0,    "wait": 5} 
+        {"budget": None, "wait": 4, "tools": True},
+        {"budget": None, "wait": 5, "tools": False},
+        {"budget": 0,    "wait": 5, "tools": True},
+        {"budget": 0,    "wait": 5, "tools": False} # Если Google забанил поиск - отключаем его
     ]
 
     for i, step in enumerate(steps):
+        # Если это шаг без инструментов - ставим None
+        current_tools = tools_override if step["tools"] else None
+        
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
-            "tools": tools_override if tools_override else TEXT_TOOLS, 
+            "tools": current_tools if current_tools else None, # Явно None если tools=False
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0
         }
 
         # Thinking Logic
         if step["budget"] is None:
-            # AUTO MODE: include_thoughts=True, но budget НЕ указываем
             gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
-            logger.info(f"Attempt {i+1} ({model}): Auto Budget")
-            
+            logger.info(f"Attempt {i+1} ({model}): Auto Budget {'+ Tools' if step['tools'] else ''}")
         elif step["budget"] > 0:
-            # FIXED MODE
             gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"], include_thoughts=True)
-            logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']}")
-            
+            logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']} {'+ Tools' if step['tools'] else ''}")
         else:
-            # OFF MODE
             gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=False)
-            logger.info(f"Attempt {i+1} ({model}): Standard Mode (No Think)")
+            logger.info(f"Attempt {i+1} ({model}): Standard {'+ Tools' if step['tools'] else '(NO TOOLS)'}")
 
         try:
             return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
@@ -620,7 +618,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v48 - Auto-Thinking)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v49 - Survival Mode)") 
         except: pass
 
     stop = asyncio.Event()
