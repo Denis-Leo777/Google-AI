@@ -1,4 +1,4 @@
-# Версия 59 (Hotfix: Global Queue Attachment)
+# Версия 60 (Global Variable Fix: Solving AttributeError & Pickle Issues)
 
 import logging
 import os
@@ -144,6 +144,9 @@ class SmartQueue:
         future = asyncio.get_running_loop().create_future()
         await self.queue.put((future, func, args, kwargs))
         return await future
+
+# ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ДЛЯ ОЧЕРЕДИ
+GLOBAL_QUEUE = None
 
 # --- WORKER ---
 class TypingWorker:
@@ -495,8 +498,8 @@ async def process_request(chat_id, bot_data, application):
     
     client = application.bot_data['gemini_client']
     
-    # 💥 ИСПРАВЛЕНО ЗДЕСЬ: Берем очередь из application (атрибут), а не из словаря данных
-    queue = application.request_queue 
+    # 💥 ИСПРАВЛЕНИЕ: ИСПОЛЬЗУЕМ ГЛОБАЛЬНУЮ ПЕРЕМЕННУЮ
+    queue = GLOBAL_QUEUE
     
     typer = TypingWorker(application.bot, chat_id)
     typer.start()
@@ -510,11 +513,8 @@ async def process_request(chat_id, bot_data, application):
         is_media_request = any(p.file_data for p in parts)
         current_model = chat_data.get('model', DEFAULT_MODEL)
         
-        # --- ОБНОВЛЕННАЯ ЛОГИКА ЛИМИТОВ ---
-        if 'flash' in current_model: 
-            dynamic_limit = 300000 
-        else: 
-            dynamic_limit = 28000 
+        if 'flash' in current_model: dynamic_limit = 300000 
+        else: dynamic_limit = 28000 
         
         if is_media_request: history = [] 
         else: history = build_history(chat_data.get("history", []), char_limit=dynamic_limit)
@@ -535,7 +535,12 @@ async def process_request(chat_id, bot_data, application):
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
         # ВАЖНО: ВЫЗОВ ЧЕРЕЗ ОЧЕРЕДЬ
-        res_obj = await queue.add(generate, client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
+        if queue:
+            res_obj = await queue.add(generate, client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
+        else:
+            # Fallback на случай, если очередь мертва
+            res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
+            
         reply = format_response(res_obj)
         
         if reply == "Пустой контент.": reply = "⏳ Сервер перегружен. Попробуйте позже."
@@ -703,13 +708,13 @@ async def model_cb(u, c):
 
 # --- MAIN ---
 async def main():
+    # --- ИНИЦИАЛИЗАЦИЯ ГЛОБАЛЬНОЙ ОЧЕРЕДИ ---
+    global GLOBAL_QUEUE
+    GLOBAL_QUEUE = SmartQueue(interval=MIN_REQUEST_INTERVAL)
+    GLOBAL_QUEUE.start()
+
     pers = PostgresPersistence(DATABASE_URL)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
-
-    # --- ИСПРАВЛЕНИЕ: КРЕПИМ ОЧЕРЕДЬ К APPLICATION ---
-    # Не к bot_data (которая сохраняется в БД), а как отдельный атрибут
-    app.request_queue = SmartQueue(interval=MIN_REQUEST_INTERVAL)
-    app.request_queue.start()
 
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("clear", clear_c))
@@ -723,7 +728,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v59 - Global Queue Hotfix)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v60 - Global Singleton Fix)") 
         except: pass
 
     stop = asyncio.Event()
@@ -759,7 +764,7 @@ async def main():
     await stop.wait()
     
     # Остановка очереди при выключении
-    app.request_queue.stop()
+    if GLOBAL_QUEUE: GLOBAL_QUEUE.stop()
     
     await runner.cleanup()
     pers.close()
