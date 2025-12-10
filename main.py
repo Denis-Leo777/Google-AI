@@ -1,4 +1,4 @@
-# Версия 51 (Persistent: Auto-Thinking Only + 4 Retries)
+# Версия 52 (Robust: Retry on 503/Overloaded + Auto-Thinking)
 
 import logging
 import os
@@ -65,7 +65,6 @@ RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 
-# Очистка мыслей
 RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)|(\*\*Thinking Process:\*\*.*?\n\n)', re.DOTALL | re.IGNORECASE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
@@ -326,7 +325,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ (PERSISTENT AUTO) ---
+# --- ГЕНЕРАЦИЯ (ROBUST RETRY) ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -334,23 +333,20 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # СТРАТЕГИЯ: 1 попытка + 4 ретрая = 5 попыток.
-    # Конфигурация ВСЕГДА одна и та же: Auto Thinking + Tools.
-    # Меняется только время ожидания перед попыткой.
+    # 5 Attempts: 4s -> 10s -> 20s -> 30s -> Quit
     steps = [
-        {"wait": 4},   # Ретрай 1 (после 1й неудачи ждать 4с)
-        {"wait": 10},  # Ретрай 2
-        {"wait": 20},  # Ретрай 3
-        {"wait": 30},  # Ретрай 4
-        {"wait": 0}    # Конец
+        {"wait": 4},
+        {"wait": 10},
+        {"wait": 20},
+        {"wait": 30},
+        {"wait": 0} 
     ]
 
     for i, step in enumerate(steps):
-        # Всегда включаем инструменты (если переданы) и мысли
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
             "tools": tools_override if tools_override else TEXT_TOOLS, 
-            "thinking_config": types.ThinkingConfig(include_thoughts=True), # ВСЕГДА TRUE
+            "thinking_config": types.ThinkingConfig(include_thoughts=True),
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0
         }
@@ -363,15 +359,17 @@ async def generate(client, contents, context, tools_override=None):
         except genai_errors.APIError as e:
             err_str = str(e).lower()
             
+            # Аудио фикс (если надо)
             if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
                 logger.warning("Auto-fix: Disabling Code Tool for Audio.")
                 tools_override = MEDIA_TOOLS
                 continue 
 
-            if "resource_exhausted" in err_str:
+            # ГЛАВНОЕ ИЗМЕНЕНИЕ: Ловим не только лимиты, но и перегрузку (503)
+            if "resource_exhausted" in err_str or "unavailable" in err_str or "overloaded" in err_str or "503" in err_str:
                 if i < len(steps) - 1:
                     wait_t = step["wait"]
-                    logger.warning(f"Quota Hit! Waiting {wait_t}s...")
+                    logger.warning(f"Server/Quota Issue! Waiting {wait_t}s...")
                     await asyncio.sleep(wait_t)
                     continue 
                 else:
@@ -615,7 +613,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v51 - Persistent)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v52 - 503 Retry)") 
         except: pass
 
     stop = asyncio.Event()
