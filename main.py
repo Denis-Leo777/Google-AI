@@ -1,4 +1,4 @@
-# Версия 56 (Rate Limit Enforcer: Strict 5 RPM Queue)
+# Версия 57 (Unleashed Context: 300k chars for Flash & 28k for Pro)
 
 import logging
 import os
@@ -53,6 +53,15 @@ AVAILABLE_MODELS = {
 }
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
+# --- ЛИМИТЫ (UNLEASHED) ---
+MIN_REQUEST_INTERVAL = 13.0 # Очередь держит удар по RPM
+MAX_CONTEXT_CHARS = 300000 # Глобальный технический лимит (для Flash)
+MAX_HISTORY_RESPONSE_LEN = 4000
+MAX_HISTORY_ITEMS = 100 
+MAX_MEDIA_CONTEXTS = 50
+MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
+TELEGRAM_FILE_LIMIT_MB = 20
+
 # Regex
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
@@ -64,21 +73,8 @@ RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
-
 RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)', re.DOTALL | re.IGNORECASE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
-
-# --- ЛИМИТЫ (СТРОГИЕ) ---
-# Лимит API: 5 запросов в минуту.
-# Безопасный интервал: 60 сек / 5 = 12 секунд. Берем 13 для гарантии.
-API_REQUEST_INTERVAL = 13.0 
-
-MAX_CONTEXT_CHARS = 55000 
-MAX_HISTORY_RESPONSE_LEN = 4000
-MAX_HISTORY_ITEMS = 100 
-MAX_MEDIA_CONTEXTS = 50
-MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
-TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ ---
 TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
@@ -98,25 +94,56 @@ try:
 except FileNotFoundError:
     SYSTEM_INSTRUCTION = DEFAULT_SYSTEM_PROMPT
 
-# --- RATE LIMITER ---
-class RequestRateLimiter:
+# --- SMART QUEUE ---
+class SmartQueue:
     def __init__(self, interval):
+        self.queue = asyncio.Queue()
         self.interval = interval
-        self.last_request_time = 0
-        self.lock = asyncio.Lock()
+        self.last_call_time = 0
+        self.running = False
+        self._task = None
 
-    async def wait(self):
-        async with self.lock:
-            now = time.time()
-            elapsed = now - self.last_request_time
-            if elapsed < self.interval:
-                wait_time = self.interval - elapsed
-                logger.info(f"Rate Limit: Waiting {wait_time:.2f}s...")
-                await asyncio.sleep(wait_time)
-            self.last_request_time = time.time()
+    def start(self):
+        if not self.running:
+            self.running = True
+            self._task = asyncio.create_task(self._worker())
 
-# Глобальный лимитер (один на весь бот, так как лимит на API ключ)
-GLOBAL_LIMITER = RequestRateLimiter(API_REQUEST_INTERVAL)
+    def stop(self):
+        self.running = False
+        if self._task: self._task.cancel()
+
+    async def _worker(self):
+        logger.info(f"SmartQueue started. Interval: {self.interval}s")
+        while self.running:
+            try:
+                future, func, args, kwargs = await self.queue.get()
+                
+                now = time.time()
+                elapsed = now - self.last_call_time
+                if elapsed < self.interval:
+                    wait_time = self.interval - elapsed
+                    logger.info(f"🚦 Rate Limit: Waiting {wait_time:.2f}s...")
+                    await asyncio.sleep(wait_time)
+                
+                try:
+                    self.last_call_time = time.time()
+                    result = await func(*args, **kwargs)
+                    if not future.cancelled():
+                        future.set_result(result)
+                except Exception as e:
+                    if not future.cancelled():
+                        future.set_exception(e)
+                finally:
+                    self.queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Queue Error: {e}")
+
+    async def add(self, func, *args, **kwargs):
+        future = asyncio.get_running_loop().create_future()
+        await self.queue.put((future, func, args, kwargs))
+        return await future
 
 # --- WORKER ---
 class TypingWorker:
@@ -346,9 +373,6 @@ async def upload_file(client, b, mime, name):
 
 # --- ГЕНЕРАЦИЯ ---
 async def generate(client, contents, context, tools_override=None):
-    # ОЖИДАНИЕ ОЧЕРЕДИ
-    await GLOBAL_LIMITER.wait()
-
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
@@ -388,9 +412,7 @@ async def generate(client, contents, context, tools_override=None):
                 if i < len(steps) - 1:
                     wait_t = step["wait"]
                     logger.warning(f"Retry Issue ({e})! Waiting {wait_t}s...")
-                    # Если мы словили лимит даже после очереди, ждем еще дольше
                     await asyncio.sleep(wait_t)
-                    await GLOBAL_LIMITER.wait() # Снова ждем слот в очереди
                     continue 
                 else:
                     return "⏳ Сервер перегружен. Попробуйте позже."
@@ -449,6 +471,7 @@ async def send_smart(msg, text, hint=False):
     return sent
 
 async def process_request(chat_id, bot_data, application):
+    # Извлекаем контекст из bot_data (буфер)
     group_data = bot_data.get('media_buffer', {}).pop(chat_id, None)
     if not group_data: return
 
@@ -459,6 +482,8 @@ async def process_request(chat_id, bot_data, application):
     chat_data = context_data.get(chat_id, {})
     
     client = application.bot_data['gemini_client']
+    queue = application.bot_data['request_queue'] 
+    
     typer = TypingWorker(application.bot, chat_id)
     typer.start()
     
@@ -471,8 +496,13 @@ async def process_request(chat_id, bot_data, application):
         is_media_request = any(p.file_data for p in parts)
         current_model = chat_data.get('model', DEFAULT_MODEL)
         
-        if 'flash' in current_model: dynamic_limit = 55000 
-        else: dynamic_limit = 8000 
+        # --- ОБНОВЛЕННАЯ ЛОГИКА ЛИМИТОВ ---
+        # Flash: Практически безлимит (300к символов)
+        # Pro: Умеренный лимит (28к символов), чтобы пролезть в 32k TPM
+        if 'flash' in current_model: 
+            dynamic_limit = 300000 
+        else: 
+            dynamic_limit = 28000 
         
         if is_media_request: history = [] 
         else: history = build_history(chat_data.get("history", []), char_limit=dynamic_limit)
@@ -492,7 +522,7 @@ async def process_request(chat_id, bot_data, application):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
-        res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
+        res_obj = await queue.add(generate, client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
         reply = format_response(res_obj)
         
         if reply == "Пустой контент.": reply = "⏳ Сервер перегружен. Попробуйте позже."
@@ -530,6 +560,7 @@ async def process_request(chat_id, bot_data, application):
         typer.stop()
 
 # --- HANDLERS ---
+@ignore_if_processing
 async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg: return
@@ -563,7 +594,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buffer[msg.chat_id]['msg'] = msg 
 
         async def delayed_processing():
-            await asyncio.sleep(2.5) # Ждем чуть дольше сбора альбома
+            await asyncio.sleep(2.0)
             await process_request(msg.chat_id, context.bot_data, context.application)
 
         buffer[msg.chat_id]['task'] = asyncio.create_task(delayed_processing())
@@ -662,6 +693,10 @@ async def main():
     pers = PostgresPersistence(DATABASE_URL)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
 
+    # ИНИЦИАЛИЗАЦИЯ ОЧЕРЕДИ
+    app.bot_data['request_queue'] = SmartQueue(interval=MIN_REQUEST_INTERVAL)
+    app.bot_data['request_queue'].start()
+
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("clear", clear_c))
     app.add_handler(CommandHandler("model", model_c))
@@ -674,7 +709,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v56 - 5 RPM Enforcer)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v57 - Unleashed Context)") 
         except: pass
 
     stop = asyncio.Event()
@@ -708,6 +743,10 @@ async def main():
     
     logger.info("Ready.")
     await stop.wait()
+    
+    # Остановка очереди при выключении
+    app.bot_data['request_queue'].stop()
+    
     await runner.cleanup()
     pers.close()
 
