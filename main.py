@@ -1,4 +1,4 @@
-# Версия 49 (Survival Mode: Auto-Thinking -> Standard -> No-Tools Fallback)
+# Версия 51 (Persistent: Auto-Thinking Only + 4 Retries)
 
 import logging
 import os
@@ -64,7 +64,9 @@ RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
-RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
+
+# Очистка мыслей
+RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)|(\*\*Thinking Process:\*\*.*?\n\n)', re.DOTALL | re.IGNORECASE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
 # --- ЛИМИТЫ ---
@@ -324,7 +326,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ (SURVIVAL MODE) ---
+# --- ГЕНЕРАЦИЯ (PERSISTENT AUTO) ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -332,39 +334,28 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # Steps: 
-    # 1. Auto Think + Tools
-    # 2. Auto Think + No Tools
-    # 3. No Think + Tools (Standard)
-    # 4. No Think + NO TOOLS (Survival / Panic Mode)
+    # СТРАТЕГИЯ: 1 попытка + 4 ретрая = 5 попыток.
+    # Конфигурация ВСЕГДА одна и та же: Auto Thinking + Tools.
+    # Меняется только время ожидания перед попыткой.
     steps = [
-        {"budget": None, "wait": 4, "tools": True},
-        {"budget": None, "wait": 5, "tools": False},
-        {"budget": 0,    "wait": 5, "tools": True},
-        {"budget": 0,    "wait": 5, "tools": False} # Если Google забанил поиск - отключаем его
+        {"wait": 4},   # Ретрай 1 (после 1й неудачи ждать 4с)
+        {"wait": 10},  # Ретрай 2
+        {"wait": 20},  # Ретрай 3
+        {"wait": 30},  # Ретрай 4
+        {"wait": 0}    # Конец
     ]
 
     for i, step in enumerate(steps):
-        # Если это шаг без инструментов - ставим None
-        current_tools = tools_override if step["tools"] else None
-        
+        # Всегда включаем инструменты (если переданы) и мысли
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
-            "tools": current_tools if current_tools else None, # Явно None если tools=False
+            "tools": tools_override if tools_override else TEXT_TOOLS, 
+            "thinking_config": types.ThinkingConfig(include_thoughts=True), # ВСЕГДА TRUE
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0
         }
 
-        # Thinking Logic
-        if step["budget"] is None:
-            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
-            logger.info(f"Attempt {i+1} ({model}): Auto Budget {'+ Tools' if step['tools'] else ''}")
-        elif step["budget"] > 0:
-            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"], include_thoughts=True)
-            logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']} {'+ Tools' if step['tools'] else ''}")
-        else:
-            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=False)
-            logger.info(f"Attempt {i+1} ({model}): Standard {'+ Tools' if step['tools'] else '(NO TOOLS)'}")
+        logger.info(f"Attempt {i+1} ({model}): Auto Budget + Tools")
 
         try:
             return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
@@ -404,9 +395,15 @@ def format_response(response):
         
         if not cand.content or not cand.content.parts: return "Пустой контент."
 
-        text = "".join([p.text for p in cand.content.parts if p.text])
+        text_parts = []
+        for p in cand.content.parts:
+            if hasattr(p, 'thought') and p.thought: continue
+            if p.text: text_parts.append(p.text)
+            
+        text = "".join(text_parts)
         text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
+        
         return convert_markdown_to_html(text.strip())
     except Exception as e:
         return f"Format Error: {e}"
@@ -618,7 +615,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v49 - Survival Mode)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v51 - Persistent)") 
         except: pass
 
     stop = asyncio.Event()
