@@ -1,4 +1,4 @@
-# Версия 43 (Balanced: Оптимизированный контекст 120к для работы Thinking Mode)
+# Версия 45 (Final Stable: Optimized Limits & Retries)
 
 import logging
 import os
@@ -67,12 +67,10 @@ RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
-# --- ЛИМИТЫ (ОПТИМИЗИРОВАНО) ---
-# 120,000 символов ~= 40-50k токенов.
-# Это оставляет ~200k токенов в минуту на "размышления" и файлы.
+# --- ЛИМИТЫ ---
 MAX_CONTEXT_CHARS = 120000 
 MAX_HISTORY_RESPONSE_LEN = 4000
-MAX_HISTORY_ITEMS = 100
+MAX_HISTORY_ITEMS = 100 
 MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
@@ -87,13 +85,9 @@ SAFETY_SETTINGS = [
               types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT)
 ]
 
+# Короткая заглушка, реальная инструкция загружается из файла system_prompt.md
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
-ВАЖНОЕ ТЕХНИЧЕСКОЕ ТРЕБОВАНИЕ:
-Ты работаешь через API Telegram.
-1. Используй ТОЛЬКО HTML теги: <b>жирный</b>, <i>курсив</i>, <code>код</code>, <pre>блок кода</pre>.
-2. СТРОГО ЗАПРЕЩЕНО использовать Markdown (**bold**, *italic*, ```code```).
-3. Для списков используй символы (-, •).
-"""
+Ты работаешь через API Telegram. Используй ТОЛЬКО HTML теги."""
 
 try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
@@ -279,7 +273,7 @@ def dict_to_part(d):
         return types.Part(file_data=types.FileData(file_uri=d['uri'], mime_type=d['mime'])), False
     return None, False
 
-def build_history(history):
+def build_history(history, char_limit=MAX_CONTEXT_CHARS):
     valid, chars = [], 0
     for entry in reversed(history):
         if not entry.get("parts"): continue
@@ -294,7 +288,7 @@ def build_history(history):
                 text_len += len(t)
         
         if not api_parts: continue
-        if chars + text_len > MAX_CONTEXT_CHARS: break
+        if chars + text_len > char_limit: break
         valid.append(types.Content(role=entry["role"], parts=api_parts))
         chars += text_len
     return valid[::-1]
@@ -321,11 +315,18 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # 4 Steps: 20k -> 10k -> 5k -> Standard
+    # 4 Steps: 20k (Maximum) -> 8k (Retry) -> 4k (Safe) -> No Think
     steps = [
-        {"budget": 20000, "wait": 20},
-        {"budget": 10000, "wait": 15},
-        {"budget": 5000, "wait": 10},
+        # 1. Сначала пробуем "на полную" - 20k. Ждем 4 сек.
+        {"budget": 20000, "wait": 4},
+        
+        # 2. Если не лезет - 8k. Ждем 10 сек.
+        {"budget": 8192, "wait": 10},
+        
+        # 3. Жесткая экономия - 4k. Ждем 25 сек (Pro успеет откатиться).
+        {"budget": 4096, "wait": 25},
+        
+        # 4. Без мыслей.
         {"budget": 0,    "wait": 0}
     ]
 
@@ -339,15 +340,13 @@ async def generate(client, contents, context, tools_override=None):
 
         # Thinking Logic
         if step["budget"] is None:
-            # Auto budget (hide thoughts)
+             # На всякий случай fallback, хотя в массиве выше мы это убрали
             gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=False)
             logger.info(f"Attempt {i+1} ({model}): Auto Budget")
         elif step["budget"] > 0:
-            # Fixed budget (hide thoughts)
             gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"], include_thoughts=False)
             logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']}")
         else:
-            # No thinking
             logger.info(f"Attempt {i+1} ({model}): Standard Mode")
 
         try:
@@ -428,10 +427,19 @@ async def process_request(update, context, parts):
 
         is_media_request = any(p.file_data for p in parts)
         
+        current_model = context.chat_data.get('model', DEFAULT_MODEL)
+        
+        # АДАПТИВНАЯ ЛОГИКА
+        if 'flash' in current_model:
+            dynamic_limit = MAX_CONTEXT_CHARS
+        else:
+            # 10000 char history + 20000 token thinking + 800 sys + output < 32000 TPM
+            dynamic_limit = 10000 
+        
         if is_media_request:
             history = [] 
         else:
-            history = build_history(context.chat_data.get("history", []))
+            history = build_history(context.chat_data.get("history", []), char_limit=dynamic_limit)
         
         user_name = msg.from_user.first_name
         if msg.forward_origin:
@@ -597,7 +605,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v43)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v45 - Final Stable)") 
         except: pass
 
     stop = asyncio.Event()
