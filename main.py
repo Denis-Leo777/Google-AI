@@ -1,4 +1,4 @@
-# Версия 63 (The Survivalist: Smart Limits & Waterfall)
+# Версия 62 (Model Cascade: 3.0 -> 2.5 Pro -> 2.5 Flash -> Lite)
 
 import logging
 import os
@@ -45,37 +45,21 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- МОДЕЛИ И ЛИМИТЫ (REALITY CHECK DEC 2025) ---
-MODELS_CONFIG = {
-    'pro-3': {
-        'id': 'gemini-3-pro-preview',
-        'interval': 30.0,      # 2 RPM (Очень медленно)
-        'output_limit': 8192,  # Технический лимит Pro моделей
-        'thinking': True
-    },
-    'pro-2.5': {
-        'id': 'gemini-2.5-pro',
-        'interval': 30.0,      # 2 RPM
-        'output_limit': 8192,  # Технический лимит
-        'thinking': True
-    },
-    'flash-2.5': {
-        'id': 'gemini-2.5-flash-preview-09-2025',
-        'interval': 4.5,       # ~13 RPM (Safe margin)
-        'output_limit': 65536, # Огромный выход
-        'thinking': True
-    },
-    'lite': {
-        'id': 'gemini-2.5-flash-lite-preview-09-2025',
-        'interval': 2.0,       # ~30 RPM (Очень быстро)
-        'output_limit': 65536, 
-        'thinking': False      # НЕ ПОДДЕРЖИВАЕТ!
-    }
-}
+# --- МОДЕЛИ И ЛИМИТЫ (2025) ---
+# RPM: Requests Per Minute, RPD: Requests Per Day
+MODELS_CONFIG = [
+    # 1. Flagship (Experimental)
+    {'id': 'gemini-3-pro-preview', 'rpm': 2, 'rpd': 50, 'name': 'Gemini 3.0 Pro'},
+    # 2. Stable High-End
+    {'id': 'gemini-2.5-pro', 'rpm': 5, 'rpd': 50, 'name': 'Gemini 2.5 Pro'},
+    # 3. Standard Flash (Strict Limits observed in logs)
+    {'id': 'gemini-2.5-flash-preview-09-2025', 'rpm': 5, 'rpd': 20, 'name': 'Gemini 2.5 Flash'},
+    # 4. Fallback / High Throughput
+    {'id': 'gemini-2.5-flash-lite-preview-09-2025', 'rpm': 15, 'rpd': 1500, 'name': 'Gemini 2.5 Lite'}
+]
 
-# Порядок перебора (Waterfall Priority)
-PRIORITY_ORDER = ['pro-3', 'pro-2.5', 'flash-2.5', 'lite']
-
+# --- ЛИМИТЫ ---
+MAX_CONTEXT_CHARS = 300000 
 MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 100 
 MAX_MEDIA_CONTEXTS = 50
@@ -114,58 +98,76 @@ try:
 except FileNotFoundError:
     SYSTEM_INSTRUCTION = DEFAULT_SYSTEM_PROMPT
 
-# --- SMART QUEUE ---
-class SmartQueue:
+# --- MODEL MANAGER (CASCADE) ---
+class ModelCascade:
     def __init__(self):
-        self.queue = asyncio.Queue()
-        self.last_call_time = 0
-        self.running = False
-        self._task = None
+        self.models = {}
+        for m in MODELS_CONFIG:
+            self.models[m['id']] = {
+                'config': m,
+                'last_req': 0,
+                'day_reqs': 0,
+                'cooldown_until': 0,
+                'reset_day': datetime.date.today()
+            }
+        self.lock = asyncio.Lock()
 
-    def start(self):
-        if not self.running:
-            self.running = True
-            self._task = asyncio.create_task(self._worker())
-
-    def stop(self):
-        self.running = False
-        if self._task: self._task.cancel()
-
-    async def _worker(self):
-        logger.info(f"SmartQueue started.")
-        while self.running:
-            try:
-                future, func, args, kwargs, interval = await self.queue.get()
+    async def get_best_model(self):
+        async with self.lock:
+            now = time.time()
+            today = datetime.date.today()
+            
+            best_model_id = None
+            min_wait = float('inf')
+            
+            for m_conf in MODELS_CONFIG:
+                mid = m_conf['id']
+                state = self.models[mid]
                 
-                now = time.time()
-                elapsed = now - self.last_call_time
+                # Сброс дневного счетчика
+                if state['reset_day'] != today:
+                    state['day_reqs'] = 0
+                    state['reset_day'] = today
                 
-                if elapsed < interval:
-                    wait_time = interval - elapsed
-                    logger.info(f"🚦 Rate Limit: Waiting {wait_time:.2f}s (Interval: {interval}s)...")
-                    await asyncio.sleep(wait_time)
+                # 1. Проверка RPD (Daily Limit)
+                if state['day_reqs'] >= m_conf['rpd']:
+                    continue
                 
-                try:
-                    self.last_call_time = time.time()
-                    result = await func(*args, **kwargs)
-                    if not future.cancelled():
-                        future.set_result(result)
-                except Exception as e:
-                    if not future.cancelled():
-                        future.set_exception(e)
-                finally:
-                    self.queue.task_done()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Queue Error: {e}")
+                # 2. Проверка Cooldown (после 429)
+                if now < state['cooldown_until']:
+                    wait = state['cooldown_until'] - now
+                    if wait < min_wait: min_wait = wait
+                    continue
+                
+                # 3. Проверка RPM (Rate Limit)
+                interval = 60.0 / m_conf['rpm']
+                time_passed = now - state['last_req']
+                
+                if time_passed >= interval:
+                    # Модель свободна!
+                    return mid, 0
+                else:
+                    # Модель занята, считаем сколько ждать
+                    wait = interval - time_passed
+                    if wait < min_wait: min_wait = wait
 
-    async def add(self, interval, func, *args, **kwargs):
-        future = asyncio.get_running_loop().create_future()
-        await self.queue.put((future, func, args, kwargs, interval))
-        return await future
+            # Если все заняты или исчерпаны
+            return None, (min_wait if min_wait != float('inf') else 5.0)
 
-GLOBAL_QUEUE = None
+    async def mark_success(self, mid):
+        async with self.lock:
+            self.models[mid]['last_req'] = time.time()
+            self.models[mid]['day_reqs'] += 1
+            logger.info(f"✅ Used {mid}. Daily: {self.models[mid]['day_reqs']}/{self.models[mid]['config']['rpd']}")
+
+    async def mark_exhausted(self, mid):
+        async with self.lock:
+            # Если словили 429 - в бан на 60 сек
+            self.models[mid]['cooldown_until'] = time.time() + 60.0
+            logger.warning(f"⛔ {mid} exhausted/banned. Cooldown 60s.")
+
+# ГЛОБАЛЬНЫЙ МЕНЕДЖЕР
+CASCADE = None
 
 # --- WORKER ---
 class TypingWorker:
@@ -405,59 +407,66 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ С ВОДОПАДОМ (WATERFALL) ---
-async def cascade_generate(client, contents, tools_override=None):
+# --- ГЕНЕРАЦИЯ ---
+async def generate_with_cascade(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
-    for model_key in PRIORITY_ORDER:
-        config = MODELS_CONFIG[model_key]
-        model_name = config['id']
-        interval = config['interval']
-        max_output = config['output_limit']
-        use_thinking = config['thinking']
+    # Пробуем получить доступную модель из каскада
+    while True:
+        model_id, wait_time = await CASCADE.get_best_model()
         
-        logger.info(f"🌊 Waterfall Attempt: {model_key} ({model_name}) | Int: {interval}s")
+        if model_id is None:
+            # Все модели заняты
+            logger.info(f"🚦 All models busy. Waiting {wait_time:.2f}s...")
+            await asyncio.sleep(wait_time)
+            continue
+        
+        if wait_time > 0:
+             # Модель доступна, но надо подождать RPM
+             logger.info(f"⏳ Waiting for {model_id}: {wait_time:.2f}s")
+             await asyncio.sleep(wait_time)
 
+        # Конфигурация
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
             "tools": tools_override,
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0,
-            "max_output_tokens": max_output 
+            # Thinking включаем для всех (как просил юзер), бюджет ставим стандартный
+            "thinking_config": types.ThinkingConfig(include_thoughts=True)
         }
-        
-        # Только если модель поддерживает thinking
-        if use_thinking:
-            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
+
+        logger.info(f"🚀 Attempting: {model_id}")
 
         try:
-            queue = GLOBAL_QUEUE
-            if queue:
-                response = await queue.add(interval, client.aio.models.generate_content, 
-                                           model=model_name, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
-            else:
-                response = await client.aio.models.generate_content(model=model_name, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
-
-            return response, model_name
-
+            response = await client.aio.models.generate_content(
+                model=model_id, 
+                contents=contents, 
+                config=types.GenerateContentConfig(**gen_config_args)
+            )
+            
+            # Успех!
+            await CASCADE.mark_success(model_id)
+            return response, model_id
+            
         except (genai_errors.APIError, ValueError) as e:
             err_str = str(e).lower()
-            if any(x in err_str for x in ["resource_exhausted", "unavailable", "overloaded", "503", "429"]):
-                logger.warning(f"⚠️ {model_name} exhausted! Switching...")
-                continue 
+            if "resource_exhausted" in err_str or "429" in err_str:
+                # Модель сдохла, баним её и идем на следующий круг цикла (берем другую модель)
+                await CASCADE.mark_exhausted(model_id)
+                continue
             
-            return f"❌ API Error ({model_name}): {html.escape(str(e))}", model_name
-        
+            # Другая ошибка - возвращаем как есть
+            return f"❌ API Error ({model_id}): {html.escape(str(e))}", model_id
         except Exception as e:
-            logger.error(f"Fatal Error {model_key}: {e}")
-            continue
+             return f"❌ Error ({model_id}): {html.escape(str(e))}", model_id
 
-    return "⏳ Все модели перегружены (RPD Limit Reached). Попробуйте позже.", "None"
-
-def format_response(response, model_name):
+def format_response(response, model_name_id):
     try:
+        model_pretty = next((m['name'] for m in MODELS_CONFIG if m['id'] == model_name_id), model_name_id)
+        
         if isinstance(response, str): return response 
         if not response: return "Пустой контент."
 
@@ -479,12 +488,11 @@ def format_response(response, model_name):
         if not text.strip(): return "Пустой контент."
 
         html_text = convert_markdown_to_html(text.strip())
-        final_html = sanitize_and_balance_html(html_text)
+        final_text = sanitize_and_balance_html(html_text)
         
-        # Подпись модели
-        final_html += f"\n\n🤖 <code>{model_name.replace('gemini-', '').replace('preview', '')}</code>"
-        
-        return final_html
+        # Подпись
+        final_text += f"\n\n🤖 <i>Model: {model_pretty}</i>"
+        return final_text
         
     except Exception as e:
         return f"Format Error: {e}"
@@ -530,7 +538,8 @@ async def process_request(chat_id, bot_data, application):
 
         is_media_request = any(p.file_data for p in parts)
         
-        dynamic_limit = 50000 
+        # Контекст: всегда большой, так как мы каскадируем модели
+        dynamic_limit = 300000 
         
         if is_media_request: history = [] 
         else: history = build_history(chat_data.get("history", []), char_limit=dynamic_limit)
@@ -550,19 +559,19 @@ async def process_request(chat_id, bot_data, application):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
-        res_obj, used_model = await cascade_generate(client, history + [types.Content(parts=parts_final, role="user")], tools_override=current_tools)
+        # ЗАПУСК КАСКАДА
+        res_obj, used_model = await generate_with_cascade(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
         
         reply = format_response(res_obj, used_model)
         
-        if "⏳" in reply: reply = "⏳ Лимиты на день исчерпаны. Попробуйте завтра."
-
         sent = await send_smart(msg, reply, hint=is_media_request)
         
-        if sent and "❌" not in reply and "⏳" not in reply:
+        if sent and "❌" not in reply:
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             chat_data.setdefault("history", []).append(hist_item)
             
-            clean_reply = reply.split('\n\n🤖')[0]
+            # Сохраняем без подписи модели в историю, чтобы не путать
+            clean_reply = reply.rsplit('\n\n🤖', 1)[0]
             bot_item = {"role": "model", "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]}
             chat_data["history"].append(bot_item)
             
@@ -703,14 +712,15 @@ async def clear_c(u, c):
     c.chat_data.clear()
     c.application.bot_data.get('media_contexts', {}).pop(u.effective_chat.id, None)
     await u.message.reply_text("🧹 Память очищена.")
+@ignore_if_processing
 async def model_c(u, c): 
-    await u.message.reply_html("🤖 <b>Авто-режим:</b>\nЯ автоматически выбираю лучшую доступную модель (от Pro 3.0 до Lite), чтобы вы всегда получали ответ.")
+    # В этой версии модель выбирается автоматически (каскад), но команда осталась для совместимости
+    await u.message.reply_html(f"ℹ️ <b>Авто-режим активен.</b>\nЯ использую лучшую доступную модель (от Pro 3.0 до Flash Lite).")
 
 # --- MAIN ---
 async def main():
-    global GLOBAL_QUEUE
-    GLOBAL_QUEUE = SmartQueue()
-    GLOBAL_QUEUE.start()
+    global CASCADE
+    CASCADE = ModelCascade()
 
     pers = PostgresPersistence(DATABASE_URL)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
@@ -726,7 +736,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v63 - Survival Mode)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v62 - Model Cascade 2025)") 
         except: pass
 
     stop = asyncio.Event()
@@ -760,8 +770,6 @@ async def main():
     
     logger.info("Ready.")
     await stop.wait()
-    
-    if GLOBAL_QUEUE: GLOBAL_QUEUE.stop()
     
     await runner.cleanup()
     pers.close()
