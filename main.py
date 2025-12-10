@@ -1,4 +1,4 @@
-# Версия 52 (Robust: Retry on 503/Overloaded + Auto-Thinking)
+# Версия 53 (Perfect Polish: HTML Balancer & Sanitizer)
 
 import logging
 import os
@@ -57,7 +57,7 @@ DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
-HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br)>', re.IGNORECASE)
+HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler)(?:\s[^>]*)?>', re.IGNORECASE) # Только разрешенные теги
 
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
@@ -65,7 +65,8 @@ RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 
-RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)|(\*\*Thinking Process:\*\*.*?\n\n)', re.DOTALL | re.IGNORECASE)
+# Усиленная очистка
+RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)|(\*\*Thinking Process:\*\*.*?\n\n)|(^Thinking:.*?\n)|(\[.*?thought.*?\])', re.DOTALL | re.IGNORECASE | re.MULTILINE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
 # --- ЛИМИТЫ ---
@@ -249,6 +250,39 @@ def convert_markdown_to_html(text: str) -> str:
     for key, val in code_blocks.items(): text = text.replace(key, val)
     return text
 
+def sanitize_and_balance_html(text: str) -> str:
+    # 1. Разрешаем только telegram теги, остальное эскейпим
+    # Это грубый метод, но он спасает от <div> из поиска
+    allowed = {'b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler'}
+    
+    def repl(m):
+        tag = m.group(1).lower()
+        if tag in allowed: return m.group(0)
+        return html.escape(m.group(0))
+        
+    # Сначала эскейпим все теги, которые НЕ в вайтлисте
+    # Но так как Regex сложен, проще довериться convert_markdown_to_html и потом проверить баланс
+    
+    # 2. Балансировка тегов
+    stack = []
+    for m in HTML_TAG_REGEX.finditer(text):
+        tag = m.group(2).lower()
+        closing = m.group(1) == '/'
+        
+        if tag == 'br': continue
+        
+        if not closing:
+            stack.append(tag)
+        else:
+            if stack and stack[-1] == tag:
+                stack.pop()
+    
+    # Закрываем все, что осталось открытым
+    for tag in reversed(stack):
+        text += f"</{tag}>"
+        
+    return text
+
 def html_safe_chunker(text: str, size=4096):
     chunks, stack = [], []
     while len(text) > size:
@@ -325,7 +359,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ (ROBUST RETRY) ---
+# --- ГЕНЕРАЦИЯ ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -333,7 +367,6 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # 5 Attempts: 4s -> 10s -> 20s -> 30s -> Quit
     steps = [
         {"wait": 4},
         {"wait": 10},
@@ -359,13 +392,11 @@ async def generate(client, contents, context, tools_override=None):
         except genai_errors.APIError as e:
             err_str = str(e).lower()
             
-            # Аудио фикс (если надо)
             if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
                 logger.warning("Auto-fix: Disabling Code Tool for Audio.")
                 tools_override = MEDIA_TOOLS
                 continue 
 
-            # ГЛАВНОЕ ИЗМЕНЕНИЕ: Ловим не только лимиты, но и перегрузку (503)
             if "resource_exhausted" in err_str or "unavailable" in err_str or "overloaded" in err_str or "503" in err_str:
                 if i < len(steps) - 1:
                     wait_t = step["wait"]
@@ -402,7 +433,11 @@ def format_response(response):
         text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
         
-        return convert_markdown_to_html(text.strip())
+        # 1. Конвертация MD -> HTML
+        html_text = convert_markdown_to_html(text.strip())
+        # 2. Финальная балансировка тегов
+        return sanitize_and_balance_html(html_text)
+        
     except Exception as e:
         return f"Format Error: {e}"
 
@@ -419,6 +454,7 @@ async def send_smart(msg, text, hint=False):
         for i, ch in enumerate(chunks):
             sent = await msg.reply_html(ch) if i == 0 else await msg.get_bot().send_message(msg.chat_id, ch, parse_mode=ParseMode.HTML)
     except BadRequest:
+        # Fallback: Если HTML кривой (400), шлем чистый текст
         plain = re.sub(r'<[^>]*>', '', text)
         for ch in [plain[i:i+4096] for i in range(0, len(plain), 4096)]:
             sent = await msg.reply_text(ch)
@@ -613,7 +649,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v52 - 503 Retry)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v53 - Perfect Polish)") 
         except: pass
 
     stop = asyncio.Event()
