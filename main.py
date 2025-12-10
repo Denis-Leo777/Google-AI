@@ -1,4 +1,4 @@
-# Версия 53 (Perfect Polish: HTML Balancer & Sanitizer)
+# Версия 54 (Smart Fallback: Empty Check & Mixed Strategy)
 
 import logging
 import os
@@ -57,7 +57,7 @@ DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
-HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler)(?:\s[^>]*)?>', re.IGNORECASE) # Только разрешенные теги
+HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler)(?:\s[^>]*)?>', re.IGNORECASE)
 
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
@@ -65,8 +65,8 @@ RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 
-# Усиленная очистка
-RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)|(\*\*Thinking Process:\*\*.*?\n\n)|(^Thinking:.*?\n)|(\[.*?thought.*?\])', re.DOTALL | re.IGNORECASE | re.MULTILINE)
+# Ослабленный Regex (убрал опасные паттерны, оставил только явные теги мыслей)
+RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)', re.DOTALL | re.IGNORECASE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
 # --- ЛИМИТЫ ---
@@ -251,36 +251,19 @@ def convert_markdown_to_html(text: str) -> str:
     return text
 
 def sanitize_and_balance_html(text: str) -> str:
-    # 1. Разрешаем только telegram теги, остальное эскейпим
-    # Это грубый метод, но он спасает от <div> из поиска
     allowed = {'b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler'}
     
-    def repl(m):
-        tag = m.group(1).lower()
-        if tag in allowed: return m.group(0)
-        return html.escape(m.group(0))
-        
-    # Сначала эскейпим все теги, которые НЕ в вайтлисте
-    # Но так как Regex сложен, проще довериться convert_markdown_to_html и потом проверить баланс
-    
-    # 2. Балансировка тегов
+    # Балансировка тегов
     stack = []
     for m in HTML_TAG_REGEX.finditer(text):
         tag = m.group(2).lower()
         closing = m.group(1) == '/'
-        
         if tag == 'br': continue
-        
-        if not closing:
-            stack.append(tag)
+        if not closing: stack.append(tag)
         else:
-            if stack and stack[-1] == tag:
-                stack.pop()
+            if stack and stack[-1] == tag: stack.pop()
     
-    # Закрываем все, что осталось открытым
-    for tag in reversed(stack):
-        text += f"</{tag}>"
-        
+    for tag in reversed(stack): text += f"</{tag}>"
     return text
 
 def html_safe_chunker(text: str, size=4096):
@@ -359,7 +342,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ ---
+# --- ГЕНЕРАЦИЯ (СМАРТ ПРОВЕРКА) ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -367,40 +350,54 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
+    # 4 Steps: 
+    # 1-2. Auto Think + Tools (Максимум ума)
+    # 3. Standard + Tools (Если ум сломался об поиск)
+    # 4. Standard + No Tools (Паника)
     steps = [
-        {"wait": 4},
-        {"wait": 10},
-        {"wait": 20},
-        {"wait": 30},
-        {"wait": 0} 
+        {"wait": 4, "think": True, "tools": True},
+        {"wait": 10, "think": True, "tools": True},
+        {"wait": 5, "think": False, "tools": True}, # ВАЖНО: Fallback на "без мыслей", но с поиском
+        {"wait": 5, "think": False, "tools": False}
     ]
 
     for i, step in enumerate(steps):
+        current_tools = tools_override if step["tools"] else None
+        
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
-            "tools": tools_override if tools_override else TEXT_TOOLS, 
-            "thinking_config": types.ThinkingConfig(include_thoughts=True),
+            "tools": current_tools if current_tools else None, 
+            "thinking_config": types.ThinkingConfig(include_thoughts=step["think"]),
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0
         }
 
-        logger.info(f"Attempt {i+1} ({model}): Auto Budget + Tools")
+        mode_name = "Thinking" if step["think"] else "Standard"
+        tools_name = "+ Tools" if step["tools"] else "(NO TOOLS)"
+        logger.info(f"Attempt {i+1} ({model}): {mode_name} {tools_name}")
 
         try:
-            return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
+            response = await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
+            
+            # ВАЛИДАЦИЯ ОТВЕТА (Новая фича)
+            # Если ответ пустой (модель запуталась в мыслях), вызываем исключение, чтобы сработал ретрай
+            final_text = format_response(response)
+            if not final_text or final_text == "Пустой контент.":
+                logger.warning("Empty response detected! Triggering retry...")
+                raise ValueError("Empty Content") # Это перекинет в блок except и вызовет следующий шаг
+            
+            return response # Если все ок, возвращаем объект ответа
         
-        except genai_errors.APIError as e:
+        except (genai_errors.APIError, ValueError) as e:
             err_str = str(e).lower()
             
-            if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
-                logger.warning("Auto-fix: Disabling Code Tool for Audio.")
-                tools_override = MEDIA_TOOLS
-                continue 
-
-            if "resource_exhausted" in err_str or "unavailable" in err_str or "overloaded" in err_str or "503" in err_str:
+            # Ловим все: Лимиты, Перегрузку (503), и нашу ошибку "Пустой контент"
+            is_retryable = any(x in err_str for x in ["resource_exhausted", "unavailable", "overloaded", "503", "empty content"])
+            
+            if is_retryable:
                 if i < len(steps) - 1:
                     wait_t = step["wait"]
-                    logger.warning(f"Server/Quota Issue! Waiting {wait_t}s...")
+                    logger.warning(f"Retry Issue ({e})! Waiting {wait_t}s...")
                     await asyncio.sleep(wait_t)
                     continue 
                 else:
@@ -415,8 +412,8 @@ async def generate(client, contents, context, tools_override=None):
 
 def format_response(response):
     try:
-        if not response: return "Пустой ответ."
-        if isinstance(response, str): return response
+        if isinstance(response, str): return response # Если это строка ошибки
+        if not response: return "Пустой контент."
 
         if not response.candidates: return "Ответ заблокирован фильтрами."
         cand = response.candidates[0]
@@ -433,9 +430,9 @@ def format_response(response):
         text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
         
-        # 1. Конвертация MD -> HTML
+        if not text.strip(): return "Пустой контент." # Двойная проверка
+
         html_text = convert_markdown_to_html(text.strip())
-        # 2. Финальная балансировка тегов
         return sanitize_and_balance_html(html_text)
         
     except Exception as e:
@@ -454,7 +451,6 @@ async def send_smart(msg, text, hint=False):
         for i, ch in enumerate(chunks):
             sent = await msg.reply_html(ch) if i == 0 else await msg.get_bot().send_message(msg.chat_id, ch, parse_mode=ParseMode.HTML)
     except BadRequest:
-        # Fallback: Если HTML кривой (400), шлем чистый текст
         plain = re.sub(r'<[^>]*>', '', text)
         for ch in [plain[i:i+4096] for i in range(0, len(plain), 4096)]:
             sent = await msg.reply_text(ch)
@@ -503,7 +499,10 @@ async def process_request(update, context, parts):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
+        # ГЕНЕРАЦИЯ С ПРОВЕРКОЙ
         res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
+        
+        # ФОРМАТИРОВАНИЕ
         reply = format_response(res_obj)
         
         sent = await send_smart(msg, reply, hint=is_media_request)
@@ -649,7 +648,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v53 - Perfect Polish)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v54 - Smart Fallback)") 
         except: pass
 
     stop = asyncio.Event()
