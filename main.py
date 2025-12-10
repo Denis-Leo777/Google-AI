@@ -1,4 +1,4 @@
-# Версия 46 (Stable Fix: Optimized Quotas & Connection Heal)
+# Версия 48 (Auto-Thinking: Вернул модели + Автоматический бюджет мышления)
 
 import logging
 import os
@@ -45,7 +45,7 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- МОДЕЛИ ---
+# --- МОДЕЛИ (ВЕРНУЛ ИСХОДНЫЕ) ---
 AVAILABLE_MODELS = {
     'flash-2.5': 'gemini-2.5-flash-preview-09-2025', 
     'pro-2.5': 'gemini-2.5-pro',
@@ -67,8 +67,8 @@ RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
-# --- ЛИМИТЫ (FIXED) ---
-MAX_CONTEXT_CHARS = 60000 # Снижено со 120к для стабильности Flash
+# --- ЛИМИТЫ ---
+MAX_CONTEXT_CHARS = 55000 
 MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 100 
 MAX_MEDIA_CONTEXTS = 50
@@ -110,57 +110,58 @@ class TypingWorker:
         self.running = False
         if self.task: self.task.cancel()
 
-# --- PERSISTENCE (FIXED SSL) ---
+# --- PERSISTENCE ---
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
         super().__init__()
         self.db_pool = None
         self.dsn = database_url
-        self._connect_with_retry()
+        self._ensure_pool()
 
-    def _connect_with_retry(self, retries=5, delay=5):
-        for attempt in range(retries):
-            try:
-                self._connect()
-                self._initialize_db()
-                logger.info("DB Connected.")
-                return
-            except psycopg2.Error as e:
-                logger.error(f"DB Connect Error ({attempt+1}): {e}")
-                if attempt < retries - 1: time.sleep(delay)
-                else: raise
-
-    def _connect(self):
-        if self.db_pool and not self.db_pool.closed: self.db_pool.closeall()
-        dsn = self.dsn
-        opts = "keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
-        dsn = f"{dsn}&{opts}" if "?" in dsn else f"{dsn}?{opts}"
-        self.db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, dsn=dsn)
+    def _ensure_pool(self):
+        if self.db_pool and not self.db_pool.closed: return
+        logger.info("Connecting to DB...")
+        try:
+            self.db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, dsn=self.dsn, 
+                                                              keepalives=1, 
+                                                              keepalives_idle=30, 
+                                                              keepalives_interval=10, 
+                                                              keepalives_count=5)
+            self._initialize_db()
+        except Exception as e:
+            logger.error(f"DB Init Error: {e}")
+            raise
 
     def _execute(self, query: str, params: tuple = None, fetch: str = None, retries=3):
         last_ex = None
         for attempt in range(retries):
             conn = None
             try:
-                conn = self.db_pool.getconn()
-                # Проверка соединения перед запросом
-                if conn.status != extensions.STATUS_READY:
-                     conn.rollback()
+                if not self.db_pool or self.db_pool.closed:
+                    self._ensure_pool()
                 
+                conn = self.db_pool.getconn()
+                
+                if conn.status != extensions.STATUS_READY:
+                    conn.rollback()
+                
+                try:
+                    with conn.cursor() as c: c.execute("SELECT 1")
+                except:
+                    try: self.db_pool.putconn(conn, close=True)
+                    except: pass
+                    conn = None
+                    self._ensure_pool() 
+                    continue
+
                 with conn.cursor() as cur:
-                     # Легкий пинг базы
-                    try:
-                        cur.execute("SELECT 1")
-                    except:
-                        conn.rollback()
-                        raise psycopg2.InterfaceError("Connection dead")
-                    
                     cur.execute(query, params)
                     res = cur.fetchone() if fetch == "one" else cur.fetchall() if fetch == "all" else True
                     conn.commit()
                     return res
-            except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
-                logger.warning(f"DB Error ({attempt+1}): {e}")
+
+            except Exception as e:
+                logger.warning(f"DB Query Error ({attempt+1}): {e}")
                 last_ex = e
                 if conn:
                     try: conn.rollback()
@@ -168,18 +169,25 @@ class PostgresPersistence(BasePersistence):
                     try: self.db_pool.putconn(conn, close=True)
                     except: pass
                     conn = None
-                if attempt < retries - 1: time.sleep(0.5 * (attempt + 1))
-            except Exception as e:
-                if conn: 
-                    try: conn.rollback()
-                    except: pass
-                    self.db_pool.putconn(conn, close=True)
-                raise e
+                time.sleep(0.5)
             finally:
-                if conn: self.db_pool.putconn(conn)
-        raise last_ex
+                if conn: 
+                    try: self.db_pool.putconn(conn)
+                    except: pass
+        
+        logger.error(f"DB Final Failure: {last_ex}")
+        return None
 
-    def _initialize_db(self): self._execute("CREATE TABLE IF NOT EXISTS persistence_data (key TEXT PRIMARY KEY, data BYTEA NOT NULL);")
+    def _initialize_db(self): 
+        try:
+            conn = self.db_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute("CREATE TABLE IF NOT EXISTS persistence_data (key TEXT PRIMARY KEY, data BYTEA NOT NULL);")
+            conn.commit()
+        except: pass
+        finally:
+            if conn: self.db_pool.putconn(conn)
+
     def _get_pickled(self, key: str):
         res = self._execute("SELECT data FROM persistence_data WHERE key = %s;", (key,), fetch="one")
         return pickle.loads(res[0]) if res and res[0] else None
@@ -316,7 +324,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ (FIXED RETRY) ---
+# --- ГЕНЕРАЦИЯ (AUTO THINKING) ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -324,17 +332,16 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # 4 Steps: 16k (Optimal) -> 4k (Safe) -> No Think (Panic)
+    # Steps: Auto (Trust Model) -> 2k (Safe) -> Standard (No Think)
     steps = [
-        # 1. 16k - Хороший баланс для сложного вопроса
-        {"budget": 16000, "wait": 4},
+        # 1. АВТО: Не передаем budget. Модель сама решает, можно ли думать.
+        {"budget": None, "wait": 4},
         
-        # 2. 4k - Резко снижаем, если серверу тяжело
-        {"budget": 4096, "wait": 10},
+        # 2. МИНИМУМ: Если авто не дали, просим крохи (2к).
+        {"budget": 2048, "wait": 5},
         
-        # 3. 0 - Стандартный режим (спасательный круг)
-        # Ждем 25 сек перед этим, если предыдущие были Pro модели
-        {"budget": 0,    "wait": 25}
+        # 3. СТАНДАРТ: Отключаем все.
+        {"budget": 0,    "wait": 5} 
     ]
 
     for i, step in enumerate(steps):
@@ -345,12 +352,19 @@ async def generate(client, contents, context, tools_override=None):
             "temperature": 1.0
         }
 
-        # Thinking Logic (ЯВНОЕ ОТКЛЮЧЕНИЕ)
-        if step["budget"] > 0:
-            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"], include_thoughts=False)
+        # Thinking Logic
+        if step["budget"] is None:
+            # AUTO MODE: include_thoughts=True, но budget НЕ указываем
+            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
+            logger.info(f"Attempt {i+1} ({model}): Auto Budget")
+            
+        elif step["budget"] > 0:
+            # FIXED MODE
+            gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"], include_thoughts=True)
             logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']}")
+            
         else:
-            # ВАЖНО: Явно отключаем thinking для стандартного режима
+            # OFF MODE
             gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=False)
             logger.info(f"Attempt {i+1} ({model}): Standard Mode (No Think)")
 
@@ -432,11 +446,9 @@ async def process_request(update, context, parts):
         
         current_model = context.chat_data.get('model', DEFAULT_MODEL)
         
-        # АДАПТИВНАЯ ЛОГИКА (БЕЗОПАСНАЯ)
         if 'flash' in current_model:
-            dynamic_limit = 60000 # Снижено до 60к для стабильности
+            dynamic_limit = 55000 
         else:
-            # 8000 char history + 16000 token thinking + 800 sys + output < 32000 TPM
             dynamic_limit = 8000 
         
         if is_media_request:
@@ -608,7 +620,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v46 - Stable Fix)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v48 - Auto-Thinking)") 
         except: pass
 
     stop = asyncio.Event()
