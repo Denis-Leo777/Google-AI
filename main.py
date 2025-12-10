@@ -1,4 +1,4 @@
-# Версия 45 (Final Stable: Optimized Limits & Retries)
+# Версия 46 (Stable Fix: Optimized Quotas & Connection Heal)
 
 import logging
 import os
@@ -67,8 +67,8 @@ RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
-# --- ЛИМИТЫ ---
-MAX_CONTEXT_CHARS = 120000 
+# --- ЛИМИТЫ (FIXED) ---
+MAX_CONTEXT_CHARS = 60000 # Снижено со 120к для стабильности Flash
 MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 100 
 MAX_MEDIA_CONTEXTS = 50
@@ -85,7 +85,6 @@ SAFETY_SETTINGS = [
               types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT)
 ]
 
-# Короткая заглушка, реальная инструкция загружается из файла system_prompt.md
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
 Ты работаешь через API Telegram. Используй ТОЛЬКО HTML теги."""
 
@@ -111,7 +110,7 @@ class TypingWorker:
         self.running = False
         if self.task: self.task.cancel()
 
-# --- PERSISTENCE ---
+# --- PERSISTENCE (FIXED SSL) ---
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
         super().__init__()
@@ -144,8 +143,18 @@ class PostgresPersistence(BasePersistence):
             conn = None
             try:
                 conn = self.db_pool.getconn()
-                if conn.status == extensions.STATUS_IN_TRANSACTION: conn.rollback()
+                # Проверка соединения перед запросом
+                if conn.status != extensions.STATUS_READY:
+                     conn.rollback()
+                
                 with conn.cursor() as cur:
+                     # Легкий пинг базы
+                    try:
+                        cur.execute("SELECT 1")
+                    except:
+                        conn.rollback()
+                        raise psycopg2.InterfaceError("Connection dead")
+                    
                     cur.execute(query, params)
                     res = cur.fetchone() if fetch == "one" else cur.fetchall() if fetch == "all" else True
                     conn.commit()
@@ -307,7 +316,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ ---
+# --- ГЕНЕРАЦИЯ (FIXED RETRY) ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -315,19 +324,17 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # 4 Steps: 20k (Maximum) -> 8k (Retry) -> 4k (Safe) -> No Think
+    # 4 Steps: 16k (Optimal) -> 4k (Safe) -> No Think (Panic)
     steps = [
-        # 1. Сначала пробуем "на полную" - 20k. Ждем 4 сек.
-        {"budget": 20000, "wait": 4},
+        # 1. 16k - Хороший баланс для сложного вопроса
+        {"budget": 16000, "wait": 4},
         
-        # 2. Если не лезет - 8k. Ждем 10 сек.
-        {"budget": 8192, "wait": 10},
+        # 2. 4k - Резко снижаем, если серверу тяжело
+        {"budget": 4096, "wait": 10},
         
-        # 3. Жесткая экономия - 4k. Ждем 25 сек (Pro успеет откатиться).
-        {"budget": 4096, "wait": 25},
-        
-        # 4. Без мыслей.
-        {"budget": 0,    "wait": 0}
+        # 3. 0 - Стандартный режим (спасательный круг)
+        # Ждем 25 сек перед этим, если предыдущие были Pro модели
+        {"budget": 0,    "wait": 25}
     ]
 
     for i, step in enumerate(steps):
@@ -338,16 +345,14 @@ async def generate(client, contents, context, tools_override=None):
             "temperature": 1.0
         }
 
-        # Thinking Logic
-        if step["budget"] is None:
-             # На всякий случай fallback, хотя в массиве выше мы это убрали
-            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=False)
-            logger.info(f"Attempt {i+1} ({model}): Auto Budget")
-        elif step["budget"] > 0:
+        # Thinking Logic (ЯВНОЕ ОТКЛЮЧЕНИЕ)
+        if step["budget"] > 0:
             gen_config_args["thinking_config"] = types.ThinkingConfig(thinking_budget=step["budget"], include_thoughts=False)
             logger.info(f"Attempt {i+1} ({model}): Budget {step['budget']}")
         else:
-            logger.info(f"Attempt {i+1} ({model}): Standard Mode")
+            # ВАЖНО: Явно отключаем thinking для стандартного режима
+            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=False)
+            logger.info(f"Attempt {i+1} ({model}): Standard Mode (No Think)")
 
         try:
             return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
@@ -355,13 +360,11 @@ async def generate(client, contents, context, tools_override=None):
         except genai_errors.APIError as e:
             err_str = str(e).lower()
             
-            # Audio/Code Fix
             if "invalid_argument" in err_str and "audio" in err_str and "code" in err_str:
                 logger.warning("Auto-fix: Disabling Code Tool for Audio.")
                 tools_override = MEDIA_TOOLS
                 continue 
 
-            # Quota Hit
             if "resource_exhausted" in err_str:
                 if i < len(steps) - 1:
                     wait_t = step["wait"]
@@ -429,12 +432,12 @@ async def process_request(update, context, parts):
         
         current_model = context.chat_data.get('model', DEFAULT_MODEL)
         
-        # АДАПТИВНАЯ ЛОГИКА
+        # АДАПТИВНАЯ ЛОГИКА (БЕЗОПАСНАЯ)
         if 'flash' in current_model:
-            dynamic_limit = MAX_CONTEXT_CHARS
+            dynamic_limit = 60000 # Снижено до 60к для стабильности
         else:
-            # 10000 char history + 20000 token thinking + 800 sys + output < 32000 TPM
-            dynamic_limit = 10000 
+            # 8000 char history + 16000 token thinking + 800 sys + output < 32000 TPM
+            dynamic_limit = 8000 
         
         if is_media_request:
             history = [] 
@@ -605,7 +608,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v45 - Final Stable)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v46 - Stable Fix)") 
         except: pass
 
     stop = asyncio.Event()
