@@ -1,4 +1,4 @@
-# Версия 60 (Global Variable Fix: Solving AttributeError & Pickle Issues)
+# Версия 63 (The Survivalist: Smart Limits & Waterfall)
 
 import logging
 import os
@@ -45,17 +45,37 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- МОДЕЛИ ---
-AVAILABLE_MODELS = {
-    'flash-2.5': 'gemini-2.5-flash-preview-09-2025', 
-    'pro-2.5': 'gemini-2.5-pro',
-    'pro-3': 'gemini-3-pro-preview'
+# --- МОДЕЛИ И ЛИМИТЫ (REALITY CHECK DEC 2025) ---
+MODELS_CONFIG = {
+    'pro-3': {
+        'id': 'gemini-3-pro-preview',
+        'interval': 30.0,      # 2 RPM (Очень медленно)
+        'output_limit': 8192,  # Технический лимит Pro моделей
+        'thinking': True
+    },
+    'pro-2.5': {
+        'id': 'gemini-2.5-pro',
+        'interval': 30.0,      # 2 RPM
+        'output_limit': 8192,  # Технический лимит
+        'thinking': True
+    },
+    'flash-2.5': {
+        'id': 'gemini-2.5-flash-preview-09-2025',
+        'interval': 4.5,       # ~13 RPM (Safe margin)
+        'output_limit': 65536, # Огромный выход
+        'thinking': True
+    },
+    'lite': {
+        'id': 'gemini-2.5-flash-lite-preview-09-2025',
+        'interval': 2.0,       # ~30 RPM (Очень быстро)
+        'output_limit': 65536, 
+        'thinking': False      # НЕ ПОДДЕРЖИВАЕТ!
+    }
 }
-DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
-# --- ЛИМИТЫ ---
-MIN_REQUEST_INTERVAL = 13.0 
-MAX_CONTEXT_CHARS = 300000 
+# Порядок перебора (Waterfall Priority)
+PRIORITY_ORDER = ['pro-3', 'pro-2.5', 'flash-2.5', 'lite']
+
 MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 100 
 MAX_MEDIA_CONTEXTS = 50
@@ -96,9 +116,8 @@ except FileNotFoundError:
 
 # --- SMART QUEUE ---
 class SmartQueue:
-    def __init__(self, interval):
+    def __init__(self):
         self.queue = asyncio.Queue()
-        self.interval = interval
         self.last_call_time = 0
         self.running = False
         self._task = None
@@ -113,16 +132,17 @@ class SmartQueue:
         if self._task: self._task.cancel()
 
     async def _worker(self):
-        logger.info(f"SmartQueue started. Interval: {self.interval}s")
+        logger.info(f"SmartQueue started.")
         while self.running:
             try:
-                future, func, args, kwargs = await self.queue.get()
+                future, func, args, kwargs, interval = await self.queue.get()
                 
                 now = time.time()
                 elapsed = now - self.last_call_time
-                if elapsed < self.interval:
-                    wait_time = self.interval - elapsed
-                    logger.info(f"🚦 Rate Limit: Waiting {wait_time:.2f}s...")
+                
+                if elapsed < interval:
+                    wait_time = interval - elapsed
+                    logger.info(f"🚦 Rate Limit: Waiting {wait_time:.2f}s (Interval: {interval}s)...")
                     await asyncio.sleep(wait_time)
                 
                 try:
@@ -140,12 +160,11 @@ class SmartQueue:
             except Exception as e:
                 logger.error(f"Queue Error: {e}")
 
-    async def add(self, func, *args, **kwargs):
+    async def add(self, interval, func, *args, **kwargs):
         future = asyncio.get_running_loop().create_future()
-        await self.queue.put((future, func, args, kwargs))
+        await self.queue.put((future, func, args, kwargs, interval))
         return await future
 
-# ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ДЛЯ ОЧЕРЕДИ
 GLOBAL_QUEUE = None
 
 # --- WORKER ---
@@ -386,60 +405,58 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ГЕНЕРАЦИЯ ---
-async def generate(client, contents, context, tools_override=None):
+# --- ГЕНЕРАЦИЯ С ВОДОПАДОМ (WATERFALL) ---
+async def cascade_generate(client, contents, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
-    model = context.chat_data.get('model', DEFAULT_MODEL)
-    
-    steps = [
-        {"wait": 4, "think": True, "tools": True},
-        {"wait": 10, "think": True, "tools": True},
-        {"wait": 5, "think": False, "tools": True}, 
-        {"wait": 5, "think": False, "tools": False}
-    ]
-
-    for i, step in enumerate(steps):
-        current_tools = tools_override if step["tools"] else None
+    for model_key in PRIORITY_ORDER:
+        config = MODELS_CONFIG[model_key]
+        model_name = config['id']
+        interval = config['interval']
+        max_output = config['output_limit']
+        use_thinking = config['thinking']
         
+        logger.info(f"🌊 Waterfall Attempt: {model_key} ({model_name}) | Int: {interval}s")
+
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
-            "tools": current_tools if current_tools else None, 
-            "thinking_config": types.ThinkingConfig(include_thoughts=step["think"]),
+            "tools": tools_override,
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-            "temperature": 1.0
+            "temperature": 1.0,
+            "max_output_tokens": max_output 
         }
-
-        mode_name = "Thinking" if step["think"] else "Standard"
-        tools_name = "+ Tools" if step["tools"] else "(NO TOOLS)"
-        logger.info(f"Attempt {i+1} ({model}): {mode_name} {tools_name}")
+        
+        # Только если модель поддерживает thinking
+        if use_thinking:
+            gen_config_args["thinking_config"] = types.ThinkingConfig(include_thoughts=True)
 
         try:
-            return await client.aio.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
-        
+            queue = GLOBAL_QUEUE
+            if queue:
+                response = await queue.add(interval, client.aio.models.generate_content, 
+                                           model=model_name, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
+            else:
+                response = await client.aio.models.generate_content(model=model_name, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
+
+            return response, model_name
+
         except (genai_errors.APIError, ValueError) as e:
             err_str = str(e).lower()
-            is_retryable = any(x in err_str for x in ["resource_exhausted", "unavailable", "overloaded", "503", "empty content"])
+            if any(x in err_str for x in ["resource_exhausted", "unavailable", "overloaded", "503", "429"]):
+                logger.warning(f"⚠️ {model_name} exhausted! Switching...")
+                continue 
             
-            if is_retryable:
-                if i < len(steps) - 1:
-                    wait_t = step["wait"]
-                    logger.warning(f"Retry Issue ({e})! Waiting {wait_t}s...")
-                    await asyncio.sleep(wait_t)
-                    continue 
-                else:
-                    return "⏳ Сервер перегружен. Попробуйте позже."
-
-            return f"❌ API Error: {html.escape(str(e))}"
-            
+            return f"❌ API Error ({model_name}): {html.escape(str(e))}", model_name
+        
         except Exception as e:
-            return f"❌ Error: {html.escape(str(e))}"
+            logger.error(f"Fatal Error {model_key}: {e}")
+            continue
 
-    return "Неизвестная ошибка."
+    return "⏳ Все модели перегружены (RPD Limit Reached). Попробуйте позже.", "None"
 
-def format_response(response):
+def format_response(response, model_name):
     try:
         if isinstance(response, str): return response 
         if not response: return "Пустой контент."
@@ -462,7 +479,12 @@ def format_response(response):
         if not text.strip(): return "Пустой контент."
 
         html_text = convert_markdown_to_html(text.strip())
-        return sanitize_and_balance_html(html_text)
+        final_html = sanitize_and_balance_html(html_text)
+        
+        # Подпись модели
+        final_html += f"\n\n🤖 <code>{model_name.replace('gemini-', '').replace('preview', '')}</code>"
+        
+        return final_html
         
     except Exception as e:
         return f"Format Error: {e}"
@@ -486,7 +508,6 @@ async def send_smart(msg, text, hint=False):
     return sent
 
 async def process_request(chat_id, bot_data, application):
-    # Извлекаем контекст из bot_data (буфер)
     group_data = bot_data.get('media_buffer', {}).pop(chat_id, None)
     if not group_data: return
 
@@ -498,9 +519,6 @@ async def process_request(chat_id, bot_data, application):
     
     client = application.bot_data['gemini_client']
     
-    # 💥 ИСПРАВЛЕНИЕ: ИСПОЛЬЗУЕМ ГЛОБАЛЬНУЮ ПЕРЕМЕННУЮ
-    queue = GLOBAL_QUEUE
-    
     typer = TypingWorker(application.bot, chat_id)
     typer.start()
     
@@ -511,10 +529,8 @@ async def process_request(chat_id, bot_data, application):
             return
 
         is_media_request = any(p.file_data for p in parts)
-        current_model = chat_data.get('model', DEFAULT_MODEL)
         
-        if 'flash' in current_model: dynamic_limit = 300000 
-        else: dynamic_limit = 28000 
+        dynamic_limit = 50000 
         
         if is_media_request: history = [] 
         else: history = build_history(chat_data.get("history", []), char_limit=dynamic_limit)
@@ -534,16 +550,11 @@ async def process_request(chat_id, bot_data, application):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
-        # ВАЖНО: ВЫЗОВ ЧЕРЕЗ ОЧЕРЕДЬ
-        if queue:
-            res_obj = await queue.add(generate, client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
-        else:
-            # Fallback на случай, если очередь мертва
-            res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
-            
-        reply = format_response(res_obj)
+        res_obj, used_model = await cascade_generate(client, history + [types.Content(parts=parts_final, role="user")], tools_override=current_tools)
         
-        if reply == "Пустой контент.": reply = "⏳ Сервер перегружен. Попробуйте позже."
+        reply = format_response(res_obj, used_model)
+        
+        if "⏳" in reply: reply = "⏳ Лимиты на день исчерпаны. Попробуйте завтра."
 
         sent = await send_smart(msg, reply, hint=is_media_request)
         
@@ -551,7 +562,8 @@ async def process_request(chat_id, bot_data, application):
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             chat_data.setdefault("history", []).append(hist_item)
             
-            bot_item = {"role": "model", "parts": [{'type': 'text', 'content': reply[:MAX_HISTORY_RESPONSE_LEN]}]}
+            clean_reply = reply.split('\n\n🤖')[0]
+            bot_item = {"role": "model", "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]}
             chat_data["history"].append(bot_item)
             
             if len(chat_data["history"]) > MAX_HISTORY_ITEMS:
@@ -691,26 +703,13 @@ async def clear_c(u, c):
     c.chat_data.clear()
     c.application.bot_data.get('media_contexts', {}).pop(u.effective_chat.id, None)
     await u.message.reply_text("🧹 Память очищена.")
-@ignore_if_processing
 async def model_c(u, c): 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Flash 2.5", callback_data="m_flash-2.5")],
-        [InlineKeyboardButton("🧠 Pro 2.5", callback_data="m_pro-2.5")],
-        [InlineKeyboardButton("💎 Pro 3.0", callback_data="m_pro-3")]
-    ])
-    await u.message.reply_html(f"Текущая модель: <b>{c.chat_data.get('model', DEFAULT_MODEL)}</b>", reply_markup=kb)
-async def model_cb(u, c): 
-    code = u.callback_query.data.replace('m_', '')
-    model = AVAILABLE_MODELS.get(code, DEFAULT_MODEL)
-    c.chat_data['model'] = model
-    await c.application.persistence.update_chat_data(u.effective_chat.id, c.chat_data)
-    await u.callback_query.edit_message_text(f"✅ Установлена модель: {model}")
+    await u.message.reply_html("🤖 <b>Авто-режим:</b>\nЯ автоматически выбираю лучшую доступную модель (от Pro 3.0 до Lite), чтобы вы всегда получали ответ.")
 
 # --- MAIN ---
 async def main():
-    # --- ИНИЦИАЛИЗАЦИЯ ГЛОБАЛЬНОЙ ОЧЕРЕДИ ---
     global GLOBAL_QUEUE
-    GLOBAL_QUEUE = SmartQueue(interval=MIN_REQUEST_INTERVAL)
+    GLOBAL_QUEUE = SmartQueue()
     GLOBAL_QUEUE.start()
 
     pers = PostgresPersistence(DATABASE_URL)
@@ -721,14 +720,13 @@ async def main():
     app.add_handler(CommandHandler("model", model_c))
     app.add_handler(CommandHandler("summarize", lambda u, c: util_cmd(u, c, "Сделай подробный конспект (summary) этого материала.")))
     app.add_handler(CommandHandler("transcript", lambda u, c: util_cmd(u, c, "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words.")))
-    app.add_handler(CallbackQueryHandler(model_cb, pattern='^m_'))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
 
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v60 - Global Singleton Fix)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v63 - Survival Mode)") 
         except: pass
 
     stop = asyncio.Event()
@@ -763,7 +761,6 @@ async def main():
     logger.info("Ready.")
     await stop.wait()
     
-    # Остановка очереди при выключении
     if GLOBAL_QUEUE: GLOBAL_QUEUE.stop()
     
     await runner.cleanup()
