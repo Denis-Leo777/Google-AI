@@ -1,4 +1,4 @@
-# Версия 57 (Unleashed Context: 300k chars for Flash & 28k for Pro)
+# Версия 58 (Fixed: Restored missing decorator definition)
 
 import logging
 import os
@@ -53,9 +53,9 @@ AVAILABLE_MODELS = {
 }
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
-# --- ЛИМИТЫ (UNLEASHED) ---
-MIN_REQUEST_INTERVAL = 13.0 # Очередь держит удар по RPM
-MAX_CONTEXT_CHARS = 300000 # Глобальный технический лимит (для Flash)
+# --- ЛИМИТЫ ---
+MIN_REQUEST_INTERVAL = 13.0 
+MAX_CONTEXT_CHARS = 300000 
 MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 100 
 MAX_MEDIA_CONTEXTS = 50
@@ -327,6 +327,19 @@ def html_safe_chunker(text: str, size=4096):
     chunks.append(text)
     return chunks
 
+# ВОТ ОНА, ВОССТАНОВЛЕННАЯ ФУНКЦИЯ!
+def ignore_if_processing(func):
+    @wraps(func)
+    async def wrapper(update, context, *args, **kwargs):
+        if not update.effective_message: return
+        key = f"{update.effective_chat.id}_{update.effective_message.message_id}"
+        processing = context.application.bot_data.setdefault('processing_messages', set())
+        if key in processing: return
+        processing.add(key)
+        try: await func(update, context, *args, **kwargs)
+        finally: processing.discard(key)
+    return wrapper
+
 def part_to_dict(part):
     if part.text: return {'type': 'text', 'content': part.text}
     if part.file_data: return {'type': 'file', 'uri': part.file_data.file_uri, 'mime': part.file_data.mime_type, 'timestamp': time.time()}
@@ -497,8 +510,6 @@ async def process_request(chat_id, bot_data, application):
         current_model = chat_data.get('model', DEFAULT_MODEL)
         
         # --- ОБНОВЛЕННАЯ ЛОГИКА ЛИМИТОВ ---
-        # Flash: Практически безлимит (300к символов)
-        # Pro: Умеренный лимит (28к символов), чтобы пролезть в 32k TPM
         if 'flash' in current_model: 
             dynamic_limit = 300000 
         else: 
@@ -522,6 +533,7 @@ async def process_request(chat_id, bot_data, application):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
+        # ВАЖНО: ВЫЗОВ ЧЕРЕЗ ОЧЕРЕДЬ
         res_obj = await queue.add(generate, client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
         reply = format_response(res_obj)
         
@@ -709,7 +721,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v57 - Unleashed Context)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v58 - Fixed NameError)") 
         except: pass
 
     stop = asyncio.Event()
