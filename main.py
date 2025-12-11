@@ -1,4 +1,4 @@
-# Версия 65 (Clean Output: Hidden Thoughts)
+# Версия 66 (Max Thinking 24k + Empty Answer Rescue)
 
 import logging
 import os
@@ -47,9 +47,9 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 
 # --- МОДЕЛИ И ЛИМИТЫ ---
 MODELS_CONFIG = [
-    # 1. Flash 2.5
+    # 1. Flash 2.5 (Priority)
     {'id': 'gemini-2.5-flash-preview-09-2025', 'rpm': 5, 'rpd': 20, 'name': 'Gemini 2.5 Flash'},
-    # 2. Flash Lite 2.5
+    # 2. Flash Lite 2.5 (High Speed Backup)
     {'id': 'gemini-2.5-flash-lite-preview-09-2025', 'rpm': 15, 'rpd': 1500, 'name': 'Gemini 2.5 Lite'}
 ]
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
@@ -61,6 +61,7 @@ MAX_HISTORY_ITEMS = 100
 MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
+THINKING_BUDGET = 24576 # 24k tokens limit
 
 # Regex
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
@@ -88,7 +89,7 @@ SAFETY_SETTINGS = [
 
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
 Ты работаешь через API Telegram. Используй ТОЛЬКО HTML теги.
-Если ты используешь Thinking (мышление), обязательно сформируй финальный ответ в конце."""
+Если ты используешь Thinking (мышление), ОБЯЗАТЕЛЬНО напиши итоговый ответ в конце."""
 
 try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
@@ -414,13 +415,13 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
              logger.info(f"⏳ Waiting for {model_id}: {wait_time:.2f}s")
              await asyncio.sleep(wait_time)
 
-        # ВКЛЮЧАЕМ THINKING ДЛЯ ВСЕХ МОДЕЛЕЙ (и Flash, и Lite)
+        # ВКЛЮЧАЕМ THINKING ДЛЯ ВСЕХ МОДЕЛЕЙ + БЮДЖЕТ
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
             "tools": tools_override,
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0,
-            "thinking_config": types.ThinkingConfig(include_thoughts=True)
+            "thinking_config": types.ThinkingConfig(include_thoughts=True, budget_token_limit=THINKING_BUDGET)
         }
 
         logger.info(f"🚀 Attempting: {model_id}")
@@ -459,16 +460,23 @@ def format_response(response, model_name_id):
         if not cand.content or not cand.content.parts: return "Пустой контент."
 
         text_parts = []
-        # Мысли игнорируем!
+        thoughts_parts = []
         
         for p in cand.content.parts:
-            # Пропускаем thoughts, берем только text
-            if hasattr(p, 'thought') and p.thought: continue
-            if p.text: text_parts.append(p.text)
+            if hasattr(p, 'thought') and p.thought: 
+                thoughts_parts.append(p.thought)
+            if p.text: 
+                text_parts.append(p.text)
             
         text = "".join(text_parts)
-        text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
+        
+        # --- ЛОГИКА СПАСЕНИЯ ПУСТОГО ОТВЕТА ---
+        # Если текста нет, но были мысли - берем их в качестве ответа!
+        # Но не показываем "thoughts_parts", если текст есть.
+        if not text.strip() and thoughts_parts:
+            # Превращаем мысли в ответ, чтобы пользователь не получил пустоту
+            text = "\n\n".join(thoughts_parts)
         
         if not text.strip(): return "Пустой контент."
 
@@ -715,7 +723,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v65 - Clean Output)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v66 - Max Thinking + Empty Rescue)") 
         except: pass
 
     stop = asyncio.Event()
