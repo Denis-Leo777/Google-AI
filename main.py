@@ -1,4 +1,4 @@
-# Версия 66 (Max Thinking 24k + Empty Answer Rescue)
+# Версия 67 (Fix: Remove unsupported budget_token_limit)
 
 import logging
 import os
@@ -61,7 +61,6 @@ MAX_HISTORY_ITEMS = 100
 MAX_MEDIA_CONTEXTS = 50
 MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
-THINKING_BUDGET = 24576 # 24k tokens limit
 
 # Regex
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
@@ -415,13 +414,13 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
              logger.info(f"⏳ Waiting for {model_id}: {wait_time:.2f}s")
              await asyncio.sleep(wait_time)
 
-        # ВКЛЮЧАЕМ THINKING ДЛЯ ВСЕХ МОДЕЛЕЙ + БЮДЖЕТ
+        # ИСПРАВЛЕНО: Убрали 'budget_token_limit', т.к. SDK на сервере старый
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
             "tools": tools_override,
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0,
-            "thinking_config": types.ThinkingConfig(include_thoughts=True, budget_token_limit=THINKING_BUDGET)
+            "thinking_config": types.ThinkingConfig(include_thoughts=True)
         }
 
         logger.info(f"🚀 Attempting: {model_id}")
@@ -471,11 +470,8 @@ def format_response(response, model_name_id):
         text = "".join(text_parts)
         text = RE_CLEAN_NAMES.sub('', text)
         
-        # --- ЛОГИКА СПАСЕНИЯ ПУСТОГО ОТВЕТА ---
-        # Если текста нет, но были мысли - берем их в качестве ответа!
-        # Но не показываем "thoughts_parts", если текст есть.
+        # Если текста нет, но были мысли - берем их (Спасение)
         if not text.strip() and thoughts_parts:
-            # Превращаем мысли в ответ, чтобы пользователь не получил пустоту
             text = "\n\n".join(thoughts_parts)
         
         if not text.strip(): return "Пустой контент."
@@ -723,7 +719,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v66 - Max Thinking + Empty Rescue)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v67 - Fixed Pydantic Error)") 
         except: pass
 
     stop = asyncio.Event()
