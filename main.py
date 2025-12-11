@@ -1,4 +1,4 @@
-# Версия 64 (Corrected: Lite 2.5 with Thinking)
+# Версия 65 (Clean Output: Hidden Thoughts)
 
 import logging
 import os
@@ -45,12 +45,11 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- МОДЕЛИ И ЛИМИТЫ (Flash 2.5 + Lite 2.5) ---
+# --- МОДЕЛИ И ЛИМИТЫ ---
 MODELS_CONFIG = [
-    # 1. Flash 2.5 (Priority 1: Smarter)
+    # 1. Flash 2.5
     {'id': 'gemini-2.5-flash-preview-09-2025', 'rpm': 5, 'rpd': 20, 'name': 'Gemini 2.5 Flash'},
-    
-    # 2. Flash Lite 2.5 (Priority 2: High Speed + Thinking support)
+    # 2. Flash Lite 2.5
     {'id': 'gemini-2.5-flash-lite-preview-09-2025', 'rpm': 15, 'rpd': 1500, 'name': 'Gemini 2.5 Lite'}
 ]
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
@@ -74,6 +73,7 @@ RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
+RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)', re.DOTALL | re.IGNORECASE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
 # --- ИНСТРУМЕНТЫ ---
@@ -459,20 +459,16 @@ def format_response(response, model_name_id):
         if not cand.content or not cand.content.parts: return "Пустой контент."
 
         text_parts = []
-        thoughts_parts = []
+        # Мысли игнорируем!
         
         for p in cand.content.parts:
-            if hasattr(p, 'thought') and p.thought: 
-                thoughts_parts.append(p.thought)
-            if p.text: 
-                text_parts.append(p.text)
+            # Пропускаем thoughts, берем только text
+            if hasattr(p, 'thought') and p.thought: continue
+            if p.text: text_parts.append(p.text)
             
         text = "".join(text_parts)
+        text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
-        
-        # Спасение мыслей
-        if not text.strip() and thoughts_parts:
-            text = "<i>(Модель не сформулировала ответ, но вот о чем она думала):</i>\n\n" + "\n\n".join(thoughts_parts)
         
         if not text.strip(): return "Пустой контент."
 
@@ -719,7 +715,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v64 - Corrected Lite + Thinking)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v65 - Clean Output)") 
         except: pass
 
     stop = asyncio.Event()
