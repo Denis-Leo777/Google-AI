@@ -1,4 +1,4 @@
-# Версия 62 (Model Cascade: 3.0 -> 2.5 Pro -> 2.5 Flash -> Lite)
+# Версия 64 (Corrected: Lite 2.5 with Thinking)
 
 import logging
 import os
@@ -45,18 +45,15 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- МОДЕЛИ И ЛИМИТЫ (2025) ---
-# RPM: Requests Per Minute, RPD: Requests Per Day
+# --- МОДЕЛИ И ЛИМИТЫ (Flash 2.5 + Lite 2.5) ---
 MODELS_CONFIG = [
-    # 1. Flagship (Experimental)
-    {'id': 'gemini-3-pro-preview', 'rpm': 2, 'rpd': 50, 'name': 'Gemini 3.0 Pro'},
-    # 2. Stable High-End
-    {'id': 'gemini-2.5-pro', 'rpm': 5, 'rpd': 50, 'name': 'Gemini 2.5 Pro'},
-    # 3. Standard Flash (Strict Limits observed in logs)
+    # 1. Flash 2.5 (Priority 1: Smarter)
     {'id': 'gemini-2.5-flash-preview-09-2025', 'rpm': 5, 'rpd': 20, 'name': 'Gemini 2.5 Flash'},
-    # 4. Fallback / High Throughput
+    
+    # 2. Flash Lite 2.5 (Priority 2: High Speed + Thinking support)
     {'id': 'gemini-2.5-flash-lite-preview-09-2025', 'rpm': 15, 'rpd': 1500, 'name': 'Gemini 2.5 Lite'}
 ]
+DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
 # --- ЛИМИТЫ ---
 MAX_CONTEXT_CHARS = 300000 
@@ -77,7 +74,6 @@ RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
-RE_CLEAN_THOUGHTS = re.compile(r'(<thought>.*?</thought>)|(```thought\n.*?```)|(tool_code\n.*?thought\n)', re.DOTALL | re.IGNORECASE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
 # --- ИНСТРУМЕНТЫ ---
@@ -91,7 +87,8 @@ SAFETY_SETTINGS = [
 ]
 
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
-Ты работаешь через API Telegram. Используй ТОЛЬКО HTML теги."""
+Ты работаешь через API Telegram. Используй ТОЛЬКО HTML теги.
+Если ты используешь Thinking (мышление), обязательно сформируй финальный ответ в конце."""
 
 try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
@@ -124,34 +121,27 @@ class ModelCascade:
                 mid = m_conf['id']
                 state = self.models[mid]
                 
-                # Сброс дневного счетчика
                 if state['reset_day'] != today:
                     state['day_reqs'] = 0
                     state['reset_day'] = today
                 
-                # 1. Проверка RPD (Daily Limit)
                 if state['day_reqs'] >= m_conf['rpd']:
                     continue
                 
-                # 2. Проверка Cooldown (после 429)
                 if now < state['cooldown_until']:
                     wait = state['cooldown_until'] - now
                     if wait < min_wait: min_wait = wait
                     continue
                 
-                # 3. Проверка RPM (Rate Limit)
                 interval = 60.0 / m_conf['rpm']
                 time_passed = now - state['last_req']
                 
                 if time_passed >= interval:
-                    # Модель свободна!
                     return mid, 0
                 else:
-                    # Модель занята, считаем сколько ждать
                     wait = interval - time_passed
                     if wait < min_wait: min_wait = wait
 
-            # Если все заняты или исчерпаны
             return None, (min_wait if min_wait != float('inf') else 5.0)
 
     async def mark_success(self, mid):
@@ -162,7 +152,6 @@ class ModelCascade:
 
     async def mark_exhausted(self, mid):
         async with self.lock:
-            # Если словили 429 - в бан на 60 сек
             self.models[mid]['cooldown_until'] = time.time() + 60.0
             logger.warning(f"⛔ {mid} exhausted/banned. Cooldown 60s.")
 
@@ -413,28 +402,24 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
-    # Пробуем получить доступную модель из каскада
     while True:
         model_id, wait_time = await CASCADE.get_best_model()
         
         if model_id is None:
-            # Все модели заняты
             logger.info(f"🚦 All models busy. Waiting {wait_time:.2f}s...")
             await asyncio.sleep(wait_time)
             continue
         
         if wait_time > 0:
-             # Модель доступна, но надо подождать RPM
              logger.info(f"⏳ Waiting for {model_id}: {wait_time:.2f}s")
              await asyncio.sleep(wait_time)
 
-        # Конфигурация
+        # ВКЛЮЧАЕМ THINKING ДЛЯ ВСЕХ МОДЕЛЕЙ (и Flash, и Lite)
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
             "tools": tools_override,
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0,
-            # Thinking включаем для всех (как просил юзер), бюджет ставим стандартный
             "thinking_config": types.ThinkingConfig(include_thoughts=True)
         }
 
@@ -447,18 +432,15 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
                 config=types.GenerateContentConfig(**gen_config_args)
             )
             
-            # Успех!
             await CASCADE.mark_success(model_id)
             return response, model_id
             
         except (genai_errors.APIError, ValueError) as e:
             err_str = str(e).lower()
             if "resource_exhausted" in err_str or "429" in err_str:
-                # Модель сдохла, баним её и идем на следующий круг цикла (берем другую модель)
                 await CASCADE.mark_exhausted(model_id)
                 continue
             
-            # Другая ошибка - возвращаем как есть
             return f"❌ API Error ({model_id}): {html.escape(str(e))}", model_id
         except Exception as e:
              return f"❌ Error ({model_id}): {html.escape(str(e))}", model_id
@@ -477,20 +459,26 @@ def format_response(response, model_name_id):
         if not cand.content or not cand.content.parts: return "Пустой контент."
 
         text_parts = []
+        thoughts_parts = []
+        
         for p in cand.content.parts:
-            if hasattr(p, 'thought') and p.thought: continue
-            if p.text: text_parts.append(p.text)
+            if hasattr(p, 'thought') and p.thought: 
+                thoughts_parts.append(p.thought)
+            if p.text: 
+                text_parts.append(p.text)
             
         text = "".join(text_parts)
-        text = RE_CLEAN_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
+        
+        # Спасение мыслей
+        if not text.strip() and thoughts_parts:
+            text = "<i>(Модель не сформулировала ответ, но вот о чем она думала):</i>\n\n" + "\n\n".join(thoughts_parts)
         
         if not text.strip(): return "Пустой контент."
 
         html_text = convert_markdown_to_html(text.strip())
         final_text = sanitize_and_balance_html(html_text)
         
-        # Подпись
         final_text += f"\n\n🤖 <i>Model: {model_pretty}</i>"
         return final_text
         
@@ -537,8 +525,6 @@ async def process_request(chat_id, bot_data, application):
             return
 
         is_media_request = any(p.file_data for p in parts)
-        
-        # Контекст: всегда большой, так как мы каскадируем модели
         dynamic_limit = 300000 
         
         if is_media_request: history = [] 
@@ -559,7 +545,6 @@ async def process_request(chat_id, bot_data, application):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
-        # ЗАПУСК КАСКАДА
         res_obj, used_model = await generate_with_cascade(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
         
         reply = format_response(res_obj, used_model)
@@ -570,7 +555,6 @@ async def process_request(chat_id, bot_data, application):
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             chat_data.setdefault("history", []).append(hist_item)
             
-            # Сохраняем без подписи модели в историю, чтобы не путать
             clean_reply = reply.rsplit('\n\n🤖', 1)[0]
             bot_item = {"role": "model", "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]}
             chat_data["history"].append(bot_item)
@@ -714,8 +698,7 @@ async def clear_c(u, c):
     await u.message.reply_text("🧹 Память очищена.")
 @ignore_if_processing
 async def model_c(u, c): 
-    # В этой версии модель выбирается автоматически (каскад), но команда осталась для совместимости
-    await u.message.reply_html(f"ℹ️ <b>Авто-режим активен.</b>\nЯ использую лучшую доступную модель (от Pro 3.0 до Flash Lite).")
+    await u.message.reply_html(f"ℹ️ <b>Авто-режим активен.</b>\nЯ использую лучшую доступную модель (Flash или Lite).")
 
 # --- MAIN ---
 async def main():
@@ -736,7 +719,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v62 - Model Cascade 2025)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v64 - Corrected Lite + Thinking)") 
         except: pass
 
     stop = asyncio.Event()
