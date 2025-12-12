@@ -1,4 +1,4 @@
-# Версия 67 (Fix: Remove unsupported budget_token_limit)
+# Версия 68 (Smart Rescue: Show Thoughts ONLY if Text is Empty)
 
 import logging
 import os
@@ -88,7 +88,7 @@ SAFETY_SETTINGS = [
 
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
 Ты работаешь через API Telegram. Используй ТОЛЬКО HTML теги.
-Если ты используешь Thinking (мышление), ОБЯЗАТЕЛЬНО напиши итоговый ответ в конце."""
+Если ты используешь Thinking (мышление), ОБЯЗАТЕЛЬНО напиши итоговый ответ в конце, а не только мысли."""
 
 try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
@@ -414,7 +414,7 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
              logger.info(f"⏳ Waiting for {model_id}: {wait_time:.2f}s")
              await asyncio.sleep(wait_time)
 
-        # ИСПРАВЛЕНО: Убрали 'budget_token_limit', т.к. SDK на сервере старый
+        # Config
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
             "tools": tools_override,
@@ -445,6 +445,7 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
         except Exception as e:
              return f"❌ Error ({model_id}): {html.escape(str(e))}", model_id
 
+# 💥 FIX: SMART RESCUE
 def format_response(response, model_name_id):
     try:
         model_pretty = next((m['name'] for m in MODELS_CONFIG if m['id'] == model_name_id), model_name_id)
@@ -462,17 +463,20 @@ def format_response(response, model_name_id):
         thoughts_parts = []
         
         for p in cand.content.parts:
+            # 1. Собираем мысли
             if hasattr(p, 'thought') and p.thought: 
                 thoughts_parts.append(p.thought)
+            # 2. Собираем текст
             if p.text: 
                 text_parts.append(p.text)
             
         text = "".join(text_parts)
         text = RE_CLEAN_NAMES.sub('', text)
         
-        # Если текста нет, но были мысли - берем их (Спасение)
+        # --- ЛОГИКА СПАСЕНИЯ ---
+        # Если текста НЕТ, но есть мысли -> показываем мысли (иначе юзер получит пустоту)
         if not text.strip() and thoughts_parts:
-            text = "\n\n".join(thoughts_parts)
+            text = "<b>💭 Мысли модели (текстового ответа не поступило):</b>\n\n" + "\n\n".join(thoughts_parts)
         
         if not text.strip(): return "Пустой контент."
 
@@ -719,7 +723,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v67 - Fixed Pydantic Error)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v68 - Smart Rescue)") 
         except: pass
 
     stop = asyncio.Event()
