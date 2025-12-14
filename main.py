@@ -1,4 +1,4 @@
-# Версия 72 (Final Fix: Safe Parser, No Placeholders, Anti-Loop)
+# Версия 74 (Stability Fix: Disable Code Execution Loop + Safe Logic)
 
 import logging
 import os
@@ -47,7 +47,9 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 
 # --- МОДЕЛИ ---
 MODELS_CONFIG = [
+    # Приоритет 1: Flash Preview (Умная)
     {'id': 'gemini-2.5-flash-preview-09-2025', 'rpm': 5, 'rpd': 20, 'name': 'Gemini 2.5 Flash'},
+    # Приоритет 2: Flash Lite (Быстрая, резерв)
     {'id': 'gemini-2.5-flash-lite-preview-09-2025', 'rpm': 15, 'rpd': 1500, 'name': 'Gemini 2.5 Lite'}
 ]
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
@@ -65,17 +67,15 @@ YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:w
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
 
-# Простое форматирование
+# Formatting
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*') 
 
 # --- ИНСТРУМЕНТЫ ---
-# Оставляем Google Search, но Code Execution для Flash может вызывать циклы. 
-# Ограничим его использование только явными задачами, но пока оставим включенным.
-TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
-MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
+# ВАЖНО: Убрали Code Execution из дефолтных инструментов, чтобы избежать циклов (TOO_MANY_TOOL_CALLS)
+DEFAULT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
 
 SAFETY_SETTINGS = [
     types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
@@ -84,8 +84,8 @@ SAFETY_SETTINGS = [
 ]
 
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
-Ты работаешь через API Telegram. Используй HTML теги.
-Если используешь Thinking, ОБЯЗАТЕЛЬНО дай финальный текстовый ответ."""
+Ты работаешь через API Telegram. Используй HTML теги для форматирования.
+Если используешь Thinking (мышление), ты ОБЯЗАН написать финальный ответ в текстовом виде."""
 
 try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
@@ -130,7 +130,7 @@ class ModelCascade:
     async def mark_exhausted(self, mid):
         async with self.lock:
             self.models[mid]['cooldown_until'] = time.time() + 60.0
-            logger.warning(f"⛔ {mid} exhausted. Cooldown 60s.")
+            logger.warning(f"⛔ {mid} exhausted/banned. Cooldown 60s.")
 
 CASCADE = None
 
@@ -240,35 +240,18 @@ def get_current_time_str(timezone="Europe/Moscow"):
     now = datetime.datetime.now(pytz.timezone(timezone))
     return f"Сегодня {now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} (MSK)."
 
-# --- БЕЗОПАСНЫЙ ПАРСЕР (БЕЗ ЗАГЛУШЕК) ---
 def safe_markdown_to_html(text: str) -> str:
-    """
-    Разбивает текст на блоки кода и обычный текст.
-    Экранирует HTML в обоих случаях.
-    Применяет форматирование (жирный, курсив) ТОЛЬКО к обычному тексту.
-    """
     if not text: return text
-    
-    # Разбиваем по тройным кавычкам
     parts = re.split(r'(```(?:[\w+\-]+)?\n?[\s\S]*?```)', text)
     final_parts = []
     
     for part in parts:
         if part.startswith('```') and part.endswith('```'):
-            # Это код. Убираем кавычки, экранируем, оборачиваем в <pre>
             content = part.strip('`').strip()
-            # Пытаемся понять язык, если он указан в первой строке
             lines = content.split('\n', 1)
-            if len(lines) > 1 and lines[0].strip().isalpha():
-                lang = lines[0].strip()
-                code_body = lines[1]
-            else:
-                code_body = content
-                
-            safe_code = html.escape(code_body)
-            final_parts.append(f"<pre>{safe_code}</pre>")
+            code_body = lines[1] if len(lines) > 1 and lines[0].strip().isalpha() else content
+            final_parts.append(f"<pre>{html.escape(code_body)}</pre>")
         else:
-            # Это текст. Экранируем, потом применяем простые теги
             safe_text = html.escape(part)
             safe_text = RE_BOLD.sub(r'<b>\1</b>', safe_text)
             safe_text = RE_ITALIC.sub(r'<i>\1</i>', safe_text)
@@ -361,9 +344,12 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
             continue
         if wait_time > 0: await asyncio.sleep(wait_time)
 
+        # ОТКЛЮЧЕН CODE EXECUTION по умолчанию
+        current_tools = tools_override if tools_override else DEFAULT_TOOLS
+
         gen_config_args = {
             "safety_settings": SAFETY_SETTINGS,
-            "tools": tools_override,
+            "tools": current_tools,
             "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
             "temperature": 1.0,
             "thinking_config": types.ThinkingConfig(include_thoughts=True)
@@ -371,7 +357,11 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
 
         logger.info(f"🚀 Attempting: {model_id}")
         try:
-            response = await client.aio.models.generate_content(model=model_id, contents=contents, config=types.GenerateContentConfig(**gen_config_args))
+            response = await client.aio.models.generate_content(
+                model=model_id, 
+                contents=contents, 
+                config=types.GenerateContentConfig(**gen_config_args)
+            )
             await CASCADE.mark_success(model_id)
             return response, model_id
         except (genai_errors.APIError, ValueError) as e:
@@ -383,37 +373,35 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
         except Exception as e:
              return f"❌ Error ({model_id}): {html.escape(str(e))}", model_id
 
-# --- LOGICALLY FIXED FORMATTER ---
+# --- FORMATTER ---
 def format_response(response, model_name_id):
     try:
         model_pretty = next((m['name'] for m in MODELS_CONFIG if m['id'] == model_name_id), model_name_id)
         
         if isinstance(response, str): return response 
         if not response: return "Пустой контент."
-        if not response.candidates: return "Ответ заблокирован."
+        
+        # Проверка на блокировку или стоп-причины
+        if not response.candidates: return "Ответ заблокирован (No Candidates)."
         cand = response.candidates[0]
         
-        text_parts = []
-        thoughts_parts = []
-        code_parts = []
+        # Если модель остановлена из-за SAFETY
+        if cand.finish_reason.name == "SAFETY":
+            return "⛔ Ответ скрыт фильтрами безопасности."
+        
+        text_parts, thoughts_parts, code_parts = [], [], []
         
         if cand.content and cand.content.parts:
             for p in cand.content.parts:
-                # 1. Текст
                 if p.text: text_parts.append(p.text)
-                
-                # 2. Мысли (не показываем, если есть текст)
                 try:
                     if hasattr(p, 'thought') and p.thought: thoughts_parts.append(p.thought)
                 except: pass
-                
-                # 3. Исполняемый код (если модель решила покодить)
+                # Код собираем, но теперь его будет меньше
                 try:
                     if hasattr(p, 'executable_code') and p.executable_code: 
                         code_parts.append(f"```python\n{p.executable_code.code}\n```")
                 except: pass
-                
-                # 4. Результат кода (вывод)
                 try:
                     if hasattr(p, 'code_execution_result') and p.code_execution_result:
                         code_parts.append(f"```\nRESULT: {p.code_execution_result.output}\n```")
@@ -424,22 +412,17 @@ def format_response(response, model_name_id):
         
         final_content = ""
         
-        # ЛОГИКА ПРИОРИТЕТОВ
         if raw_text.strip():
-            # Если есть текст - показываем его (и код, если он был внутри текста или отдельно)
             final_content = raw_text
-            if code_parts and "```" not in raw_text: # Добавляем код, если он не был включен в текст моделью
-                 final_content += "\n\n" + "\n".join(code_parts)
+            if code_parts and "```" not in raw_text: final_content += "\n\n" + "\n".join(code_parts)
         elif code_parts:
-            # Текста нет, но есть код/результат
-            final_content = "⚙️ <b>Код и результат:</b>\n" + "\n".join(code_parts)
+            final_content = "⚙️ <b>Код (без текста):</b>\n" + "\n".join(code_parts)
         elif thoughts_parts:
-            # СОВСЕМ ПУСТО? Достаем мысли.
-            final_content = "💭 <i>(Нет текстового ответа, только мысли):</i>\n\n" + "\n\n".join(thoughts_parts)
+            # Если нет текста, показываем мысли (как спасение)
+            final_content = "💭 <i>(Нет текстового ответа, мысли):</i>\n\n" + "\n\n".join(thoughts_parts)
         else:
-            return "Пустой контент."
+            return f"Пустой контент. (Status: {cand.finish_reason.name})"
 
-        # БЕЗОПАСНОЕ ФОРМАТИРОВАНИЕ
         final_html = safe_markdown_to_html(final_content.strip())
         final_html += f"\n\n🤖 <i>Model: {model_pretty}</i>"
         return final_html
@@ -449,17 +432,17 @@ def format_response(response, model_name_id):
         return f"Format Error: {e}"
 
 async def send_smart(msg, text, hint=False):
-    # Пытаемся отправить HTML
     chunks = html_safe_chunker(text)
+    sent = None
     try:
         for i, ch in enumerate(chunks):
-            await msg.reply_html(ch) if i == 0 else await msg.get_bot().send_message(msg.chat_id, ch, parse_mode=ParseMode.HTML)
+            # ВАЖНО: Присваиваем sent
+            sent = await msg.reply_html(ch) if i == 0 else await msg.get_bot().send_message(msg.chat_id, ch, parse_mode=ParseMode.HTML)
     except BadRequest:
-        # Если HTML кривой (редко, но бывает), шлем чистый текст
         plain = re.sub(r'<[^>]*>', '', text)
-        chunks_plain = [plain[i:i+4096] for i in range(0, len(plain), 4096)]
-        for ch in chunks_plain:
-            await msg.reply_text(ch)
+        for ch in [plain[i:i+4096] for i in range(0, len(plain), 4096)]:
+            sent = await msg.reply_text(ch)
+    return sent
 
 async def process_request(chat_id, bot_data, application):
     group_data = bot_data.get('media_buffer', {}).pop(chat_id, None)
@@ -497,13 +480,13 @@ async def process_request(chat_id, bot_data, application):
 
         parts_final.append(types.Part(text=final_prompt))
         
-        current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
+        # DEFAULT TOOLS (без Code Execution)
+        res_obj, used_model = await generate_with_cascade(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=None)
         
-        res_obj, used_model = await generate_with_cascade(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
         reply = format_response(res_obj, used_model)
-        await send_smart(msg, reply, hint=is_media_request)
+        sent = await send_smart(msg, reply, hint=is_media_request)
         
-        if "❌" not in reply:
+        if sent and "❌" not in reply:
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             chat_data.setdefault("history", []).append(hist_item)
             
@@ -513,7 +496,9 @@ async def process_request(chat_id, bot_data, application):
             if len(chat_data["history"]) > MAX_HISTORY_ITEMS: chat_data["history"] = chat_data["history"][-MAX_HISTORY_ITEMS:]
 
             rmap = chat_data.setdefault('reply_map', {})
-            rmap[sent.message_id] = msg.message_id if 'sent' in locals() and sent else msg.message_id
+            # БЕЗОПАСНАЯ ЗАПИСЬ (уже проверено sent)
+            rmap[sent.message_id] = msg.message_id
+            
             if len(rmap) > MAX_HISTORY_ITEMS * 2: 
                 for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]: del rmap[k]
 
@@ -662,7 +647,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v72 - Final Fix: Parser + Loop Guard)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v74 - Final Fix: Tool Loop)") 
         except: pass
 
     stop = asyncio.Event()
