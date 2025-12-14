@@ -1,4 +1,4 @@
-# Версия 71 (Stable: Markdown Support + Smart Rescue + Cascade)
+# Версия 72 (Final Fix: Safe Parser, No Placeholders, Anti-Loop)
 
 import logging
 import os
@@ -64,17 +64,16 @@ TELEGRAM_FILE_LIMIT_MB = 20
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
-HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler)(?:\s[^>]*)?>', re.IGNORECASE)
 
-# Для Markdown -> HTML
-RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
-RE_INLINE_CODE = re.compile(r'`([^`]+)`')
+# Простое форматирование
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
-RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*') # Очистка имен
+RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*') 
 
 # --- ИНСТРУМЕНТЫ ---
+# Оставляем Google Search, но Code Execution для Flash может вызывать циклы. 
+# Ограничим его использование только явными задачами, но пока оставим включенным.
 TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
 MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
 
@@ -85,8 +84,8 @@ SAFETY_SETTINGS = [
 ]
 
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
-Ты работаешь через API Telegram. Используй HTML теги для форматирования.
-Если используешь Thinking (мышление), ОБЯЗАТЕЛЬНО сформируй финальный ответ в конце."""
+Ты работаешь через API Telegram. Используй HTML теги.
+Если используешь Thinking, ОБЯЗАТЕЛЬНО дай финальный текстовый ответ."""
 
 try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
@@ -241,45 +240,42 @@ def get_current_time_str(timezone="Europe/Moscow"):
     now = datetime.datetime.now(pytz.timezone(timezone))
     return f"Сегодня {now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} (MSK)."
 
-# --- ВОССТАНОВЛЕННЫЕ ФУНКЦИИ ФОРМАТИРОВАНИЯ ---
-def convert_markdown_to_html(text: str) -> str:
+# --- БЕЗОПАСНЫЙ ПАРСЕР (БЕЗ ЗАГЛУШЕК) ---
+def safe_markdown_to_html(text: str) -> str:
+    """
+    Разбивает текст на блоки кода и обычный текст.
+    Экранирует HTML в обоих случаях.
+    Применяет форматирование (жирный, курсив) ТОЛЬКО к обычному тексту.
+    """
     if not text: return text
-    code_blocks = {}
-    def store_code(match):
-        key = f"__CODE_{len(code_blocks)}__"
-        # Экранируем контент кода
-        content = html.escape(match.group(2) if match.lastindex == 2 else match.group(1))
-        code_blocks[key] = f"<pre>{content}</pre>" if match.group(0).startswith("```") else f"<code>{content}</code>"
-        return key
     
-    text = RE_CODE_BLOCK.sub(store_code, text)
-    text = RE_INLINE_CODE.sub(store_code, text)
-    text = RE_BOLD.sub(r'<b>\1</b>', text)
-    text = RE_ITALIC.sub(r'<i>\1</i>', text)
-    text = RE_HEADER.sub(r'<b>\1</b>', text)
+    # Разбиваем по тройным кавычкам
+    parts = re.split(r'(```(?:[\w+\-]+)?\n?[\s\S]*?```)', text)
+    final_parts = []
     
-    for key, val in code_blocks.items(): text = text.replace(key, val)
-    return text
-
-def sanitize_and_balance_html(text: str) -> str:
-    # Разрешенные теги
-    allowed = {'b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler'}
-    stack = []
-    # Экранируем всё, что похоже на теги, но не разрешено
-    # (Это простая реализация, для Telegram API обычно хватает сбалансированности)
-    
-    # 1. Сначала сбалансируем
-    for m in HTML_TAG_REGEX.finditer(text):
-        tag = m.group(2).lower()
-        closing = m.group(1) == '/'
-        if tag == 'br': continue
-        if not closing: stack.append(tag)
+    for part in parts:
+        if part.startswith('```') and part.endswith('```'):
+            # Это код. Убираем кавычки, экранируем, оборачиваем в <pre>
+            content = part.strip('`').strip()
+            # Пытаемся понять язык, если он указан в первой строке
+            lines = content.split('\n', 1)
+            if len(lines) > 1 and lines[0].strip().isalpha():
+                lang = lines[0].strip()
+                code_body = lines[1]
+            else:
+                code_body = content
+                
+            safe_code = html.escape(code_body)
+            final_parts.append(f"<pre>{safe_code}</pre>")
         else:
-            if stack and stack[-1] == tag: stack.pop()
+            # Это текст. Экранируем, потом применяем простые теги
+            safe_text = html.escape(part)
+            safe_text = RE_BOLD.sub(r'<b>\1</b>', safe_text)
+            safe_text = RE_ITALIC.sub(r'<i>\1</i>', safe_text)
+            safe_text = RE_HEADER.sub(r'<b>\1</b>', safe_text)
+            final_parts.append(safe_text)
             
-    # Закрываем незакрытые
-    for tag in reversed(stack): text += f"</{tag}>"
-    return text
+    return "".join(final_parts)
 
 def html_safe_chunker(text: str, size=4096):
     chunks, stack = [], []
@@ -287,10 +283,10 @@ def html_safe_chunker(text: str, size=4096):
         split = text.rfind('\n', 0, size)
         if split == -1: split = size
         chunk, temp_stack = text[:split], list(stack)
-        for m in HTML_TAG_REGEX.finditer(chunk):
+        for m in re.finditer(r'<(/?)(b|i|u|s|code|pre|a)(?:\s[^>]*)?>', chunk):
             tag, closing = m.group(2).lower(), bool(m.group(1))
-            if tag == 'br': continue
-            stack.pop() if closing and stack and stack[-1] == tag else stack.append(tag) if not closing else None
+            if not closing: stack.append(tag)
+            elif stack and stack[-1] == tag: stack.pop()
         
         chunk += ''.join(f'</{t}>' for t in reversed(stack[len(temp_stack):]))
         chunks.append(chunk)
@@ -387,14 +383,14 @@ async def generate_with_cascade(client, contents, context, tools_override=None):
         except Exception as e:
              return f"❌ Error ({model_id}): {html.escape(str(e))}", model_id
 
-# --- SMART FORMATTER v71 ---
+# --- LOGICALLY FIXED FORMATTER ---
 def format_response(response, model_name_id):
     try:
         model_pretty = next((m['name'] for m in MODELS_CONFIG if m['id'] == model_name_id), model_name_id)
         
         if isinstance(response, str): return response 
-        if not response: return "Пустой контент (No Response Object)."
-        if not response.candidates: return "Ответ заблокирован фильтрами."
+        if not response: return "Пустой контент."
+        if not response.candidates: return "Ответ заблокирован."
         cand = response.candidates[0]
         
         text_parts = []
@@ -403,71 +399,67 @@ def format_response(response, model_name_id):
         
         if cand.content and cand.content.parts:
             for p in cand.content.parts:
-                # 1. Text
+                # 1. Текст
                 if p.text: text_parts.append(p.text)
                 
-                # 2. Thoughts
+                # 2. Мысли (не показываем, если есть текст)
                 try:
                     if hasattr(p, 'thought') and p.thought: thoughts_parts.append(p.thought)
                 except: pass
                 
-                # 3. Executable Code
+                # 3. Исполняемый код (если модель решила покодить)
                 try:
                     if hasattr(p, 'executable_code') and p.executable_code: 
                         code_parts.append(f"```python\n{p.executable_code.code}\n```")
                 except: pass
                 
-                # 4. Results
+                # 4. Результат кода (вывод)
                 try:
                     if hasattr(p, 'code_execution_result') and p.code_execution_result:
                         code_parts.append(f"```\nRESULT: {p.code_execution_result.output}\n```")
                 except: pass
 
-        # Очистка текста от мусора
         raw_text = "".join(text_parts)
         raw_text = RE_CLEAN_NAMES.sub('', raw_text)
         
-        # --- ЛОГИКА ВЫБОРА КОНТЕНТА (Priority System) ---
         final_content = ""
         
+        # ЛОГИКА ПРИОРИТЕТОВ
         if raw_text.strip():
-            # Идеальный сценарий: есть текст
+            # Если есть текст - показываем его (и код, если он был внутри текста или отдельно)
             final_content = raw_text
+            if code_parts and "```" not in raw_text: # Добавляем код, если он не был включен в текст моделью
+                 final_content += "\n\n" + "\n".join(code_parts)
         elif code_parts:
-            # Текста нет, но есть код
-            final_content = "⚙️ <b>Model generated code:</b>\n" + "\n".join(code_parts)
+            # Текста нет, но есть код/результат
+            final_content = "⚙️ <b>Код и результат:</b>\n" + "\n".join(code_parts)
         elif thoughts_parts:
-            # Текста и кода нет, берем мысли (Rescue)
-            final_content = "💭 <i>(Thoughts only):</i>\n\n" + "\n\n".join(thoughts_parts)
+            # СОВСЕМ ПУСТО? Достаем мысли.
+            final_content = "💭 <i>(Нет текстового ответа, только мысли):</i>\n\n" + "\n\n".join(thoughts_parts)
         else:
-            logger.error(f"⚠️ EMPTY CONTENT DUMP for {model_name_id}: {cand}")
             return "Пустой контент."
 
-        # Превращаем Markdown в HTML + Чистим
-        html_text = convert_markdown_to_html(final_content.strip())
-        final_text = sanitize_and_balance_html(html_text)
-        
-        final_text += f"\n\n🤖 <i>Model: {model_pretty}</i>"
-        return final_text
+        # БЕЗОПАСНОЕ ФОРМАТИРОВАНИЕ
+        final_html = safe_markdown_to_html(final_content.strip())
+        final_html += f"\n\n🤖 <i>Model: {model_pretty}</i>"
+        return final_html
         
     except Exception as e:
         logger.error(f"Format Error: {e}", exc_info=True)
         return f"Format Error: {e}"
 
 async def send_smart(msg, text, hint=False):
-    text = re.sub(r'<br\s*/?>', '\n', text)
+    # Пытаемся отправить HTML
     chunks = html_safe_chunker(text)
-    
-    sent = None
     try:
         for i, ch in enumerate(chunks):
-            sent = await msg.reply_html(ch) if i == 0 else await msg.get_bot().send_message(msg.chat_id, ch, parse_mode=ParseMode.HTML)
+            await msg.reply_html(ch) if i == 0 else await msg.get_bot().send_message(msg.chat_id, ch, parse_mode=ParseMode.HTML)
     except BadRequest:
-        # Fallback на raw text если HTML битый
+        # Если HTML кривой (редко, но бывает), шлем чистый текст
         plain = re.sub(r'<[^>]*>', '', text)
-        for ch in [plain[i:i+4096] for i in range(0, len(plain), 4096)]:
-            sent = await msg.reply_text(ch)
-    return sent
+        chunks_plain = [plain[i:i+4096] for i in range(0, len(plain), 4096)]
+        for ch in chunks_plain:
+            await msg.reply_text(ch)
 
 async def process_request(chat_id, bot_data, application):
     group_data = bot_data.get('media_buffer', {}).pop(chat_id, None)
@@ -509,9 +501,9 @@ async def process_request(chat_id, bot_data, application):
         
         res_obj, used_model = await generate_with_cascade(client, history + [types.Content(parts=parts_final, role="user")], application, tools_override=current_tools)
         reply = format_response(res_obj, used_model)
-        sent = await send_smart(msg, reply, hint=is_media_request)
+        await send_smart(msg, reply, hint=is_media_request)
         
-        if sent and "❌" not in reply:
+        if "❌" not in reply:
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             chat_data.setdefault("history", []).append(hist_item)
             
@@ -521,7 +513,7 @@ async def process_request(chat_id, bot_data, application):
             if len(chat_data["history"]) > MAX_HISTORY_ITEMS: chat_data["history"] = chat_data["history"][-MAX_HISTORY_ITEMS:]
 
             rmap = chat_data.setdefault('reply_map', {})
-            rmap[sent.message_id] = msg.message_id
+            rmap[sent.message_id] = msg.message_id if 'sent' in locals() and sent else msg.message_id
             if len(rmap) > MAX_HISTORY_ITEMS * 2: 
                 for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]: del rmap[k]
 
@@ -670,7 +662,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v71 - Stable Release)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v72 - Final Fix: Parser + Loop Guard)") 
         except: pass
 
     stop = asyncio.Event()
