@@ -1,4 +1,4 @@
-# Версия 75 (Beautiful & Clean: No Placeholders, No Raw Thoughts)
+# Версия 76 (Database Hardening: Paranoid Connection Pool + Upload Retry)
 
 import logging
 import os
@@ -66,7 +66,6 @@ URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
 
 # --- ИНСТРУМЕНТЫ ---
-# Включаем только поиск. Code Execution отключен для стабильности.
 TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
 MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
 
@@ -108,11 +107,8 @@ class ModelCascade:
                 interval = 60.0 / m_conf['rpm']
                 passed = now - state['last_req']
                 if passed >= interval: return mid, 0
-                
-                # Если модель хорошая, но надо подождать пару секунд - ждем
                 wait = interval - passed
                 if wait < 10: return mid, wait
-                
             return None, 5.0
 
     async def mark_success(self, mid):
@@ -128,7 +124,7 @@ class ModelCascade:
 
 CASCADE = None
 
-# --- WORKER & HELPERS ---
+# --- WORKER ---
 class TypingWorker:
     def __init__(self, bot, chat_id):
         self.bot, self.chat_id, self.running, self.task = bot, chat_id, False, None
@@ -149,100 +145,116 @@ def get_current_time_str(timezone="Europe/Moscow"):
     now = datetime.datetime.now(pytz.timezone(timezone))
     return f"Сегодня {now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} (MSK)."
 
-# --- NEW BEAUTIFUL FORMATTER (NO PLACEHOLDERS) ---
+# --- FORMATTER ---
 def clean_and_format_text(text: str) -> str:
-    """
-    Превращает Markdown в HTML без использования заглушек CODE_0.
-    1. Экранирует весь текст.
-    2. Восстанавливает блоки кода <pre>.
-    3. Применяет форматирование <b>, <i>, <code>.
-    """
     if not text: return ""
-
-    # 1. Сначала экранируем всё, чтобы защитить HTML Telegram
     safe_text = html.escape(text)
-
-    # 2. Обрабатываем блоки кода ```code``` -> <pre>code</pre>
-    # Мы ищем экранированные ``` (которые стали безопасными строками) и превращаем их в теги
     safe_text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', safe_text, flags=re.DOTALL)
-
-    # 3. Обрабатываем инлайн код `code` -> <code>code</code>
     safe_text = re.sub(r'`([^`]+)`', r'<code>\1</code>', safe_text)
-
-    # 4. Жирный **text** -> <b>text</b>
     safe_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe_text)
-    
-    # 5. Курсив *text* -> <i>text</i> (аккуратно, чтобы не задеть списки)
     safe_text = re.sub(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)', r'<i>\1</i>', safe_text)
-
-    # 6. Заголовки # Header -> <b>Header</b>
     safe_text = re.sub(r'^#{1,6}\s+(.*?)$', r'<b>\1</b>', safe_text, flags=re.MULTILINE)
-
     return safe_text
 
 def balance_html_tags(text: str) -> str:
-    """Гарантирует, что все открытые теги закрыты."""
     stack = []
-    # Находим все теги
     tags = re.findall(r'<(/?)(b|i|u|s|code|pre|a)(?:\s[^>]*)?>', text)
-    
     for closing, tag in tags:
-        if not closing:
-            stack.append(tag)
+        if not closing: stack.append(tag)
         else:
-            if stack and stack[-1] == tag:
-                stack.pop()
-    
-    # Закрываем всё, что осталось в стеке
-    for tag in reversed(stack):
-        text += f"</{tag}>"
+            if stack and stack[-1] == tag: stack.pop()
+    for tag in reversed(stack): text += f"</{tag}>"
     return text
 
 def html_safe_chunker(text: str, size=4096):
     chunks = []
     while len(text) > size:
-        # Ищем перенос строки
         split_idx = text.rfind('\n', 0, size)
         if split_idx == -1: split_idx = size
-        
         chunk = text[:split_idx]
-        # Балансируем теги в куске, если режем посередине
         chunk = balance_html_tags(chunk)
         chunks.append(chunk)
-        
         text = text[split_idx:].lstrip()
-    
-    if text:
-        chunks.append(balance_html_tags(text))
+    if text: chunks.append(balance_html_tags(text))
     return chunks
 
-# --- DATABASE ---
+# --- PARANOID DATABASE PERSISTENCE ---
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
         super().__init__()
-        self.db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, dsn=database_url, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
-        self._init_db()
+        self.dsn = database_url
+        self.db_pool = None
+        self._init_pool()
 
-    def _init_db(self):
-        with self.db_pool.getconn() as conn:
-            with conn.cursor() as cur: cur.execute("CREATE TABLE IF NOT EXISTS persistence_data (key TEXT PRIMARY KEY, data BYTEA NOT NULL);")
-            conn.commit()
-            self.db_pool.putconn(conn)
-
-    def _execute(self, sql, params=None, fetch=None):
-        conn = self.db_pool.getconn()
+    def _init_pool(self):
+        if self.db_pool and not self.db_pool.closed: return
+        logger.info("Initializing DB Pool...")
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                res = cur.fetchone() if fetch == 'one' else cur.fetchall() if fetch == 'all' else None
+            self.db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, dsn=self.dsn, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
+            self._init_tables()
+        except Exception as e:
+            logger.critical(f"DB Connect Error: {e}")
+            raise
+
+    def _init_tables(self):
+        with self.db_pool.getconn() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("CREATE TABLE IF NOT EXISTS persistence_data (key TEXT PRIMARY KEY, data BYTEA NOT NULL);")
                 conn.commit()
-                return res
-        except: conn.rollback(); raise
-        finally: self.db_pool.putconn(conn)
+            finally:
+                self.db_pool.putconn(conn)
+
+    def _execute(self, sql, params=None, fetch=None, retries=3):
+        """Параноидальное выполнение запроса с проверкой жизни соединения"""
+        for attempt in range(retries):
+            conn = None
+            try:
+                if not self.db_pool or self.db_pool.closed: self._init_pool()
+                
+                conn = self.db_pool.getconn()
+                
+                # Check liveness
+                if conn.closed or conn.status != extensions.STATUS_READY:
+                    self.db_pool.putconn(conn, close=True) # Discard bad conn
+                    continue # Get new one
+                
+                # Double check with simple query
+                try:
+                    with conn.cursor() as c: c.execute("SELECT 1")
+                except:
+                    self.db_pool.putconn(conn, close=True)
+                    continue
+
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    res = cur.fetchone() if fetch == 'one' else cur.fetchall() if fetch == 'all' else None
+                    conn.commit()
+                    return res
+            except Exception as e:
+                if attempt == retries - 1:
+                    logger.error(f"DB Fatal ({attempt}): {e}")
+                    raise
+                if conn: 
+                    try: conn.rollback()
+                    except: pass
+                    try: self.db_pool.putconn(conn, close=True)
+                    except: pass
+                    conn = None
+                time.sleep(0.2)
+            finally:
+                if conn: 
+                    try: self.db_pool.putconn(conn)
+                    except: pass
+        return None
 
     async def get_chat_data(self):
-        data = await asyncio.to_thread(self._execute, "SELECT key, data FROM persistence_data WHERE key LIKE 'chat_data_%';", fetch='all')
-        return {int(k.split('_')[-1]): pickle.loads(v) for k, v in data} if data else defaultdict(dict)
+        try:
+            data = await asyncio.to_thread(self._execute, "SELECT key, data FROM persistence_data WHERE key LIKE 'chat_data_%';", fetch='all')
+            return {int(k.split('_')[-1]): pickle.loads(v) for k, v in data} if data else defaultdict(dict)
+        except Exception as e:
+            logger.error(f"Get Chat Data Error: {e}")
+            return defaultdict(dict)
 
     async def update_chat_data(self, chat_id, data):
         await asyncio.to_thread(self._execute, "INSERT INTO persistence_data (key, data) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET data = %s;", (f"chat_data_{chat_id}", pickle.dumps(data), pickle.dumps(data)))
@@ -251,7 +263,8 @@ class PostgresPersistence(BasePersistence):
     async def update_bot_data(self, data): pass
     async def get_user_data(self): return defaultdict(dict)
     async def update_user_data(self, uid, data): pass
-    async def drop_chat_data(self, cid): pass
+    async def drop_chat_data(self, cid): 
+        await asyncio.to_thread(self._execute, "DELETE FROM persistence_data WHERE key = %s;", (f"chat_data_{cid}",))
     async def drop_user_data(self, uid): pass
     async def get_callback_data(self): return None
     async def update_callback_data(self, data): pass
@@ -261,6 +274,8 @@ class PostgresPersistence(BasePersistence):
     async def refresh_user_data(self, user_id, user_data): pass
     async def refresh_chat_data(self, chat_id, chat_data): pass
     async def flush(self): pass
+    def close(self):
+        if self.db_pool: self.db_pool.closeall()
 
 def part_to_dict(part):
     if part.text: return {'type': 'text', 'content': part.text}
@@ -294,12 +309,15 @@ def build_history(history, char_limit=MAX_CONTEXT_CHARS):
 
 async def upload_file(client, b, mime, name):
     logger.info(f"Upload: {name}")
-    try:
-        up = await client.aio.files.upload(file=io.BytesIO(b), config=types.UploadFileConfig(mime_type=mime, display_name=name))
-        return types.Part(file_data=types.FileData(file_uri=up.uri, mime_type=mime))
-    except Exception as e:
-        logger.error(f"Upload Fail: {e}")
-        raise IOError(f"Upload Error: {e}")
+    # Retry logic for uploads
+    for i in range(3):
+        try:
+            up = await client.aio.files.upload(file=io.BytesIO(b), config=types.UploadFileConfig(mime_type=mime, display_name=name))
+            return types.Part(file_data=types.FileData(file_uri=up.uri, mime_type=mime))
+        except Exception as e:
+            if i == 2: raise
+            logger.warning(f"Upload Retry {i+1}: {e}")
+            await asyncio.sleep(1)
 
 # --- LOGIC ---
 async def generate_response(client, contents, tools=None):
@@ -314,7 +332,6 @@ async def generate_response(client, contents, tools=None):
 
         logger.info(f"🚀 Attempting: {model_id}")
         try:
-            # ВКЛЮЧАЕМ THINKING, но фильтруем результат
             config = types.GenerateContentConfig(
                 safety_settings=SAFETY_SETTINGS,
                 tools=tools,
@@ -343,30 +360,25 @@ def format_clean_response(response, model_id):
     
     if cand.content and cand.content.parts:
         for p in cand.content.parts:
-            # 1. Текст берем всегда
             if p.text: text_parts.append(p.text)
-            # 2. Мысли сохраняем, но не показываем (пока не прижмет)
             try:
                 if hasattr(p, 'thought') and p.thought: thoughts_parts.append(p.thought)
             except: pass
 
-    # Сборка
     final_text = "".join(text_parts).strip()
     
-    # СПАСЕНИЕ: Если текста нет вообще, но модель думала
+    # Rescue
     if not final_text and thoughts_parts:
-        # Превращаем мысли в текст, но без пометок "Мысли"
         final_text = "\n\n".join(thoughts_parts)
     
     if not final_text: return "Пустой контент."
 
-    # Форматирование
     html_text = clean_and_format_text(final_text)
     html_text = balance_html_tags(html_text)
     
-    # Подпись модели (неброская)
-    model_name = next((m['name'] for m in MODELS_CONFIG if m['id'] == model_id), model_id)
-    html_text += f"\n\n🤖 <i>{model_name}</i>"
+    # Подпись только для Lite, чтобы не засорять эфир
+    if "lite" in model_id:
+        html_text += f"\n\n⚡ <i>Flash Lite</i>"
     
     return html_text
 
@@ -377,7 +389,6 @@ async def send_reply(msg, text):
         for i, ch in enumerate(chunks):
             sent = await msg.reply_html(ch) if i == 0 else await msg.get_bot().send_message(msg.chat_id, ch, parse_mode=ParseMode.HTML)
     except BadRequest:
-        # Fallback на текст
         for ch in [text[i:i+4096] for i in range(0, len(text), 4096)]:
             sent = await msg.reply_text(ch)
     return sent
@@ -386,27 +397,23 @@ async def process_request(chat_id, bot_data, application):
     data = bot_data.get('media_buffer', {}).pop(chat_id, None)
     if not data: return
     
-    # БЛОКИРОВКА ДУБЛЕЙ
     processing = bot_data.setdefault('processing_locks', set())
-    if chat_id in processing: return # Уже обрабатываем
+    if chat_id in processing: return 
     processing.add(chat_id)
 
     try:
         parts, msg = data['parts'], data['msg']
         client = application.bot_data['gemini_client']
         
-        # Индикатор
         typer = TypingWorker(application.bot, chat_id)
         typer.start()
 
-        # История
         chat_data = await application.persistence.get_chat_data()
         c_data = chat_data.get(chat_id, {})
         
         is_media = any(p.file_data for p in parts)
         history = [] if is_media else build_history(c_data.get("history", []))
         
-        # Промпт
         prompt_txt = next((p.text for p in parts if p.text), "")
         user_part = f"[{msg.from_user.id} {msg.from_user.first_name}]: {prompt_txt}"
         
@@ -415,19 +422,18 @@ async def process_request(chat_id, bot_data, application):
         
         parts_final = [p for p in parts if p.file_data] + [types.Part(text=user_part)]
         
-        # Генерация
         res, model = await generate_response(client, history + [types.Content(role="user", parts=parts_final)], tools=MEDIA_TOOLS if is_media else TEXT_TOOLS)
         reply = format_clean_response(res, model)
         
         sent = await send_reply(msg, reply)
         
-        # Сохранение
         if sent and "Error" not in reply:
             hist_u = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id}
             c_data.setdefault("history", []).append(hist_u)
             
-            clean_reply = reply.rsplit('\n\n🤖', 1)[0]
-            hist_b = {"role": "model", "parts": [{'type': 'text', 'content': clean_reply[:4000]}]}
+            # Сохраняем чистый текст без подписи модели
+            clean_reply_hist = reply.rsplit('\n\n⚡', 1)[0]
+            hist_b = {"role": "model", "parts": [{'type': 'text', 'content': clean_reply_hist[:4000]}]}
             c_data["history"].append(hist_b)
             
             if len(c_data["history"]) > 60: c_data["history"] = c_data["history"][-60:]
@@ -438,20 +444,17 @@ async def process_request(chat_id, bot_data, application):
             
             if is_media:
                 m_store = application.bot_data.setdefault('media_contexts', {}).setdefault(chat_id, OrderedDict())
-                m_store[msg.message_id] = part_to_dict(parts[0]) # Сохраняем первый файл
+                m_store[msg.message_id] = part_to_dict(parts[0]) 
                 if len(m_store) > 20: m_store.popitem(last=False)
 
             await application.persistence.update_chat_data(chat_id, c_data)
 
     except Exception as e:
-        logger.error(f"Err: {e}")
-        await msg.reply_text("❌ Ошибка.")
+        logger.error(f"Process Err: {e}", exc_info=True)
+        await msg.reply_text("❌ Внутренняя ошибка.")
     finally:
         typer.stop()
         processing.discard(chat_id)
-
-def ignore_if_processing(func):
-    return func # Логика перенесена внутрь process_request
 
 async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -461,10 +464,8 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = context.bot_data['gemini_client']
     text = msg.caption or msg.text or ""
 
-    # 1. Media Group / Single Media
     media = msg.audio or msg.voice or msg.video or msg.video_note or (msg.photo[-1] if msg.photo else None) or msg.document
     
-    # Буфер
     buffer = context.bot_data.setdefault('media_buffer', {})
     
     if msg.media_group_id:
@@ -473,7 +474,6 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             buffer[msg.chat_id] = {'parts': [], 'msg': msg, 'task': None}
     else:
-        # Для одиночных сообщений тоже используем буфер для унификации
         if msg.chat_id in buffer and buffer[msg.chat_id]['task']:
              buffer[msg.chat_id]['task'].cancel()
         buffer[msg.chat_id] = {'parts': [], 'msg': msg, 'task': None}
@@ -489,12 +489,10 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text:
         buffer[msg.chat_id]['parts'].append(types.Part(text=text))
-        # Если текст есть, обновляем ссылку на сообщение (чтобы отвечать на него)
         buffer[msg.chat_id]['msg'] = msg
 
-    # Запуск таймера
     async def delayed():
-        await asyncio.sleep(2.5) # Ждем чуть дольше для надежности
+        await asyncio.sleep(2.5) 
         await process_request(msg.chat_id, context.bot_data, context.application)
 
     buffer[msg.chat_id]['task'] = asyncio.create_task(delayed())
@@ -503,12 +501,9 @@ async def util_cmd(update, context, prompt):
     msg = update.message
     if not msg.reply_to_message: return await msg.reply_text("⚠️ Ответьте на сообщение с файлом.")
     
-    # Эмуляция входящего сообщения для буфера
-    # Упрощаем: просто кидаем в тот же буфер с принудительным текстом
     buffer = context.bot_data.setdefault('media_buffer', {})
     if msg.chat_id in buffer and buffer[msg.chat_id]['task']: buffer[msg.chat_id]['task'].cancel()
     
-    # Достаем файл из реплая
     reply = msg.reply_to_message
     parts = []
     client = context.bot_data['gemini_client']
@@ -525,12 +520,11 @@ async def util_cmd(update, context, prompt):
     parts.append(types.Part(text=prompt))
     buffer[msg.chat_id] = {'parts': parts, 'msg': msg, 'task': None}
     
-    # Запускаем сразу
     await process_request(msg.chat_id, context.bot_data, context.application)
 
 async def start_c(u, c): await u.message.reply_html("👋 <b>Привет!</b> Я готов.")
 async def clear_c(u, c): 
-    c.application.persistence.drop_chat_data(u.effective_chat.id)
+    await c.application.persistence.drop_chat_data(u.effective_chat.id)
     await u.message.reply_text("🧹 Память очищена.")
 async def model_c(u, c): await u.message.reply_html(f"ℹ️ Использую: <b>{DEFAULT_MODEL}</b>")
 
@@ -553,7 +547,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v75 - Clean & Beautiful)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v76 - Hardened DB & Retry)") 
         except: pass
 
     stop = asyncio.Event()
