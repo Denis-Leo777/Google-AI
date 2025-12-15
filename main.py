@@ -1,4 +1,4 @@
-# Версия 28 (Final + HTML Formatting Fix + Thinking Safety)
+# Версия 29 (Final Production Release с исправленным HTML-парсером)
 
 import logging
 import os
@@ -46,15 +46,13 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 # --- МОДЕЛИ И ЛИМИТЫ ---
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 FALLBACK_MODEL = 'gemini-2.5-flash-lite-preview-09-2025'
-
 MAX_CONTEXT_CHARS = 100000
 MAX_HISTORY_ITEMS = 100
-MAX_HISTORY_RESPONSE_LEN = 4000
-MAX_MEDIA_CONTEXTS = 100
-MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 MEDIA_GROUP_BUFFER_SECONDS = 2.0
 THINKING_BUDGET = 24000 
+MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
+MAX_MEDIA_CONTEXTS = 100
 
 YOUTUBE_REGEX = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})'
 URL_REGEX = r'https?:\/\/[^\s/$.?#].[^\s]*'
@@ -69,13 +67,12 @@ SAFETY_SETTINGS = [
     for c in (types.HarmCategory.HARM_CATEGORY_HARASSMENT, types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
               types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT)
 ]
-
 try:
     with open('system_prompt.md', 'r', encoding='utf-8') as f: SYSTEM_INSTRUCTION = f.read()
 except FileNotFoundError:
     SYSTEM_INSTRUCTION = """(System Note: Today is {current_time}.)"""
 
-# --- БАЗА ДАННЫХ (PostgreSQL) ---
+# --- БАЗА ДАННЫХ ---
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
         super().__init__()
@@ -170,7 +167,6 @@ def get_current_time_str() -> str:
     months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
     return f"Сегодня {days[now.weekday()]}, {now.day} {months[now.month-1]} {now.year} года, время {now.strftime('%H:%M')} (MSK)."
 
-# Улучшенный чанкер для HTML
 def html_safe_chunker(text: str, chunk_size: int = 4096) -> list[str]:
     chunks, tag_stack, remaining_text = [], [], text
     tag_regex = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br)>', re.IGNORECASE)
@@ -192,30 +188,29 @@ def html_safe_chunker(text: str, chunk_size: int = 4096) -> list[str]:
     chunks.append(remaining_text)
     return chunks
 
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ ФОРМАТИРОВАНИЯ
 def convert_gemini_to_html(text: str) -> str:
-    # 1. Сначала вырезаем теги мышления, если они есть (чтобы не сломать HTML и не показывать внутренности)
+    # 1. Убираем "мысли" модели, чтобы они не мешали
     text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL)
     
-    # 2. Экранируем ВСЕ спецсимволы HTML (теперь < и > безопасны)
+    # 2. Экранируем основные HTML-символы, чтобы избежать ошибок парсинга в Telegram
+    # Это сделает текст безопасным, но сохранит Markdown-разметку для следующего шага
     text = html.escape(text)
     
-    # 3. Превращаем Markdown в Telegram HTML
-    
+    # 3. Преобразуем Markdown в HTML-теги.
+    # Так как `*` и `_` были заэкранированы, ищем их в исходном виде
     # Жирный: **text** -> <b>text</b>
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    # Курсив: __text__ или _text_ -> <i>text</i>
+    text = re.sub(r'__(.*?)__', r'<i>\1</i>', text)
+    text = re.sub(r'_(.*?)_', r'<i>\1</i>', text)
     
-    # Курсив: __text__ -> <i>text</i> (Gemini иногда использует _)
-    text = re.sub(r'__(.+?)__', r'<i>\1</i>', text)
-    
-    # Моноширинный (код): `text` -> <code>text</code>
-    text = re.sub(r'`([^`]+?)`', r'<code>\1</code>', text)
-    
-    # Блоки кода: ```lang ... ``` -> <pre><code>...</code></pre>
-    # Сложный момент: внутри pre код уже экранирован (шаг 2), это правильно.
+    # Блоки кода: ```lang...``` -> <pre><code>...</code></pre>
+    # Внутренности блока кода остаются экранированными, что правильно
     text = re.sub(r'```(\w+)?\n?(.*?)```', r'<pre><code>\2</code></pre>', text, flags=re.DOTALL)
     
-    # Заголовки Markdown (## Title) -> <b>Title</b>
-    text = re.sub(r'^\s*#{1,6}\s+(.*)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+    # Моноширинный текст: `text` -> <code>text</code>
+    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
 
     return text.strip()
 
@@ -323,8 +318,6 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
         if not response.candidates[0].content.parts: return "Пустой ответ."
         parts = [p.text for p in response.candidates[0].content.parts if p.text]
         text = "".join(parts)
-        
-        # Конвертация в безопасный HTML
         return convert_gemini_to_html(text)
     except Exception as e:
         logger.error(f"Format error: {e}")
@@ -333,13 +326,11 @@ def format_gemini_response(response: types.GenerateContentResponse) -> str:
 async def send_reply(msg: Message, text: str, hint: bool = False):
     if hint: text += "\n\n<i>💡 Ответьте на это сообщение, чтобы задать вопрос по файлу.</i>"
     
-    # Текст уже безопасный HTML после convert_gemini_to_html
     for chunk in html_safe_chunker(text):
         try:
             await msg.reply_html(chunk)
         except BadRequest as e:
-            # Если всё же парсер упал (крайне редко), шлем без форматирования
-            logger.error(f"HTML Parse Error: {e}")
+            logger.error(f"HTML Parse Error: {e}. Отправляю как обычный текст.")
             clean_text = re.sub(r'<[^>]*>', '', chunk)
             await msg.reply_text(clean_text)
     return msg 
@@ -413,7 +404,9 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     
     if sent:
         await add_to_history(context, "user", content_parts, msg.from_user.id, msg.from_user.first_name)
-        await add_to_history(context, "model", [types.Part(text=reply)])
+        # Для истории сохраняем "сырой" ответ, без HTML-тегов
+        raw_reply_text = re.sub(r'<[^>]*>', '', reply)
+        await add_to_history(context, "model", [types.Part(text=raw_reply_text)])
         
         context.chat_data.setdefault('reply_map', {})[sent.message_id] = msg.message_id
         if is_media:
@@ -560,6 +553,7 @@ async def handle_text(u: Update, c: ContextTypes.DEFAULT_TYPE):
             
     await process_request(u, c, parts)
 
+# --- SERVER ---
 async def health_check(req): return aiohttp.web.Response(text="OK", status=200)
 
 async def webhook_handler(req):
