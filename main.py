@@ -1,4 +1,4 @@
-# Версия 33 (Stats & Signature: Добавлен счетчик запросов и подпись модели)
+# Версия 34 (Clean Signature: Temp 0.7, Robot Emoji, Simple Footer)
 
 import logging
 import os
@@ -327,7 +327,7 @@ async def generate(client, contents, context, tools_override=None):
         "safety_settings": SAFETY_SETTINGS,
         "tools": tools_override if tools_override else TEXT_TOOLS, 
         "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-        "temperature": 1,
+        "temperature": 0.7, # ИЗМЕНЕНО С 1 НА 0.7
         "thinking_config": types.ThinkingConfig(thinking_budget=24576)
     }
 
@@ -440,7 +440,8 @@ async def process_request(update, context, parts):
         if not isinstance(res_obj, str):
             model_full = context.chat_data.get('model', DEFAULT_MODEL)
             model_short = next((k for k, v in AVAILABLE_MODELS.items() if v == model_full), model_full)
-            reply += f"\n\n<blockquote expandable>⚙️ <b>Model:</b> {model_short}</blockquote>"
+            # ИЗМЕНЕНО: Простой формат без кавычек и жирного шрифта
+            reply += f"\n\n🤖 model: {model_short}"
 
         sent = await send_smart(msg, reply, hint=is_media_request)
         
@@ -580,7 +581,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v33)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v34)") 
         except: pass
 
     stop = asyncio.Event()
