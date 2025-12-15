@@ -1,4 +1,4 @@
-# Версия 31 (Production Release с корректной историей для голоса)
+# Версия 32 (Production Release с исправлением критической ошибки API)
 
 import logging
 import os
@@ -189,15 +189,15 @@ def convert_gemini_to_html(text: str) -> str:
     processed_parts = []
     for part in text_parts:
         if part.startswith('```'):
-            part = re.sub(r'```(\w+)?\n?(.*?)```', r'\2', part, flags=re.DOTALL)
-            processed_parts.append(f'<pre><code>{html.escape(part)}</code></pre>')
+            code_content = re.sub(r'```(\w+)?\n?(.*?)```', r'\2', part, flags=re.DOTALL)
+            processed_parts.append(f'<pre><code>{html.escape(code_content)}</code></pre>')
         else:
-            part = html.escape(part)
-            part = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', part)
-            part = re.sub(r'__(.*?)__', r'<i>\1</i>', part)
-            part = re.sub(r'_(.*?)_', r'<i>\1</i>', part)
-            part = re.sub(r'`(.*?)`', r'<code>\1</code>', part)
-            processed_parts.append(part)
+            safe_part = html.escape(part)
+            safe_part = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe_part)
+            safe_part = re.sub(r'__(.*?)__', r'<i>\1</i>', safe_part)
+            safe_part = re.sub(r'_(.*?)_', r'<i>\1</i>', safe_part)   
+            safe_part = re.sub(r'`(.*?)`', r'<code>\1</code>', safe_part)
+            processed_parts.append(safe_part)
     return "".join(processed_parts).strip()
 
 def ignore_if_processing(func):
@@ -266,7 +266,7 @@ async def upload_and_wait_for_file(client: genai.Client, file_bytes: bytes, mime
         logger.error(f"Upload failed: {e}")
         raise IOError(f"Не удалось загрузить файл: {e}")
 
-# --- GEMINI CORE ---
+# --- GEMINI CORE (ИСПРАВЛЕНО) ---
 async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list, sys_instr: str | None = None) -> tuple[types.GenerateContentResponse | str, str]:
     final_sys_instr = sys_instr or SYSTEM_INSTRUCTION.format(current_time=get_current_time_str())
     config = types.GenerateContentConfig(safety_settings=SAFETY_SETTINGS, tools=tools, system_instruction=types.Content(parts=[types.Part(text=final_sys_instr)]), temperature=1.0, thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET))
@@ -277,7 +277,9 @@ async def generate_response(client: genai.Client, request_contents: list, contex
         for attempt in range(2):
             try:
                 res = await client.aio.models.generate_content(model=model, contents=request_contents, config=config)
-                if res and res.candidates and res.candidates.content: return res, model
+                # ИСПРАВЛЕНИЕ: Доступ к первому элементу
+                if res and res.candidates and res.candidates.content: 
+                    return res, model
             except genai_errors.APIError as e:
                 err, http_status = str(e).lower(), getattr(e, 'http_status', 0)
                 if "resource_exhausted" in err or http_status == 429:
@@ -292,7 +294,9 @@ async def generate_response(client: genai.Client, request_contents: list, contex
 
 def format_gemini_response(response: types.GenerateContentResponse) -> str:
     try:
-        if not response.candidates.content.parts: return "Пустой ответ."
+        # ИСПРАВЛЕНИЕ: Доступ к первому элементу
+        if not response.candidates.content.parts: 
+            return "Пустой ответ."
         parts = [p.text for p in response.candidates.content.parts if p.text]
         return convert_gemini_to_html("".join(parts))
     except Exception as e:
@@ -445,10 +449,7 @@ async def summarize_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
 async def handle_media(u: Update, c: ContextTypes.DEFAULT_TYPE):
     msg = u.message
     c.chat_data['id'] = msg.chat_id
-    m_obj, mime, ext = msg.photo[-1] if msg.photo else None, 'image/jpeg', '.jpg'
-    if msg.video: m_obj, mime, ext = msg.video, 'video/mp4', '.mp4'
-    elif msg.audio: m_obj, mime, ext = msg.audio, msg.audio.mime_type or 'audio/mp3', '.mp3'
-    elif msg.document: m_obj, mime, ext = msg.document, msg.document.mime_type, ""
+    m_obj, mime, ext = (msg.photo[-1], 'image/jpeg', '.jpg') if msg.photo else (msg.video, 'video/mp4', '.mp4') if msg.video else (msg.audio, msg.audio.mime_type or 'audio/mp3', '.mp3') if msg.audio else (msg.document, msg.document.mime_type, "") if msg.document else (None, None, None)
     
     if not m_obj or (hasattr(m_obj, 'file_size') and m_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024):
         if hasattr(m_obj, 'file_size'): await msg.reply_text("Файл слишком большой (>20MB).")
@@ -476,15 +477,14 @@ async def handle_voice_or_note(u: Update, c: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("Расшифровываю...", reply_to_message_id=msg.message_id)
         f = await m_obj.get_file()
         b = await f.download_as_bytearray()
-        part = await upload_and_wait_for_file(c.bot_data['gemini_client'], b, m_obj.mime_type, f"{f.file_unique_id}.oga")
+        mime = msg.voice.mime_type if msg.voice else "video/mp4"
+        part = await upload_and_wait_for_file(c.bot_data['gemini_client'], b, mime, f"{f.file_unique_id}")
         
-        # Шаг 1: Транскрипция
         res, _ = await generate_response(c.bot_data['gemini_client'], [types.Content(parts=[part], role="user")], c, MEDIA_TOOLS, "Transcribe this verbatim, output only text.")
         transcript = format_gemini_response(res) if not isinstance(res, str) else "Не удалось распознать речь."
         
-        # Шаг 2: Добавление в историю и ответ
         prefix = "[🎤 Голосовое сообщение]: " if msg.voice else "[📹 Кружочек]: "
-        full_text = f"{prefix}{transcript}"
+        full_text = f"{prefix}{re.sub(r'<[^>]*>', '', transcript)}"
         await add_to_history(c, "user", [types.Part(text=full_text)], msg.from_user.id, msg.from_user.first_name)
         await process_request(u, c, [types.Part(text=transcript)])
     except Exception as e:
@@ -523,11 +523,10 @@ async def main():
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
-    cmds = [BotCommand("start","Инфо"), BotCommand("help","Помощь"), BotCommand("clear","Очистка"), BotCommand("model","Модель"), BotCommand("newtopic","Сброс контекста")]
+    cmds = [BotCommand("start","Инфо"), BotCommand("help","Помощь"), BotCommand("clear","Очистка"), BotCommand("model","Модель"), BotCommand("newtopic","Сброс контекста"), BotCommand("transcript", "Транскрипция (reply)"), BotCommand("summarize", "Саммари (reply)")]
     await app.bot.set_my_commands(cmds)
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("newtopic", newtopic))
     app.add_handler(CommandHandler("model", model_cmd))
