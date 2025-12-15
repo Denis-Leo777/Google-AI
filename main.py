@@ -1,4 +1,4 @@
-# Версия 36 (Robust Retry: Fix Double Limit Hit, Clean Logs, Auto-wait)
+# Версия 37 (More Retries: Range(5), Smart Waits 10s/30s, Silence AFC)
 
 import logging
 import os
@@ -32,12 +32,9 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
 
-# Отключаем шумные логи библиотек и GRPC
-logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
-logging.getLogger('httpx').setLevel(logging.WARNING)
-logging.getLogger('telegram').setLevel(logging.WARNING)
-logging.getLogger('grpc').setLevel(logging.WARNING)        # Убирает AFC логи
-logging.getLogger('google.genai').setLevel(logging.WARNING) # Убирает внутренние логи GenAI
+# Агрессивное отключение лишних логов
+for log_name in ['aiohttp.access', 'httpx', 'telegram', 'grpc', 'google.api_core', 'google.auth', 'google.genai']:
+    logging.getLogger(log_name).setLevel(logging.WARNING)
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_SECRET_TOKEN = os.getenv('TELEGRAM_SECRET_TOKEN', 'my-secret-token-change-me') 
@@ -58,7 +55,7 @@ AVAILABLE_MODELS = {
 }
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
-# Карта отката (если ключ перегружен -> использовать значение)
+# Карта отката
 FALLBACK_MAP = {
     AVAILABLE_MODELS['flash']: AVAILABLE_MODELS['lite']
 }
@@ -342,8 +339,10 @@ async def generate(client, contents, context, tools_override=None):
     logger.info(f"👉 Requesting: {current_model}")
     MODEL_REQUEST_COUNTS[current_model] += 1
     
-    # Попытки (3 раза)
-    for att in range(3):
+    # УВЕЛИЧЕНО КОЛИЧЕСТВО ПОПЫТОК ДО 5
+    attempts_max = 5
+    
+    for att in range(attempts_max):
         try:
             config = types.GenerateContentConfig(**gen_config_args)
             res = await client.aio.models.generate_content(model=current_model, contents=contents, config=config)
@@ -352,7 +351,7 @@ async def generate(client, contents, context, tools_override=None):
                 logger.info(f"✅ Success: {current_model} (Att: {att+1})")
                 return res, current_model
             
-            if att < 2: await asyncio.sleep(2)
+            if att < attempts_max - 1: await asyncio.sleep(2)
 
         except genai_errors.APIError as e:
             if "resource_exhausted" in str(e).lower():
@@ -365,14 +364,15 @@ async def generate(client, contents, context, tools_override=None):
                     logger.info(f"🔄 Switching to Fallback: {fallback_model}")
                     current_model = fallback_model 
                     MODEL_REQUEST_COUNTS[current_model] += 1
-                    continue # Переход к следующей итерации (попытка с новой моделью)
+                    continue # Переход к следующей итерации СРАЗУ (попытка с новой моделью)
                 
-                # 2. Если мы УЖЕ на Fallback (Lite) и она тоже перегружена
-                # Вместо того чтобы сдаваться, ждем подольше и пробуем её же ещё раз, если есть попытки.
-                elif att < 2:
-                    logger.warning(f"⏳ Double Limit Hit (Lite). Sleeping 15s before retry...")
-                    await asyncio.sleep(15) 
-                    continue # Пробуем Lite снова
+                # 2. Если уже Lite и ошибка повторяется
+                elif att < attempts_max - 1:
+                    # Увеличиваем время ожидания при повторных ошибках (10с, потом 30с)
+                    wait_time = 10 if att < 3 else 30
+                    logger.warning(f"⏳ Double Limit Hit (Lite). Sleeping {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time) 
+                    continue
                 else:
                     return "⏳ Перегрузка API (Quota Exceeded).", current_model
             
@@ -381,7 +381,7 @@ async def generate(client, contents, context, tools_override=None):
                 gen_config_args.pop("thinking_config")
                 continue
             
-            if att == 2: return f"❌ API Error: {html.escape(str(e))}", current_model
+            if att == attempts_max - 1: return f"❌ API Error: {html.escape(str(e))}", current_model
             await asyncio.sleep(5)
         except Exception as e:
             return f"❌ Error: {html.escape(str(e))}", current_model
@@ -618,7 +618,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v36)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v37)") 
         except: pass
 
     stop = asyncio.Event()
