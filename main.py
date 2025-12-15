@@ -1,4 +1,4 @@
-# Версия 34 (Clean Signature: Temp 0.7, Robot Emoji, Simple Footer)
+# Версия 35 (Fallback Logic: Auto-switch Flash->Lite, Clean Logs & Signature)
 
 import logging
 import os
@@ -29,9 +29,13 @@ from google.genai import errors as genai_errors
 
 # --- КОНФИГУРАЦИЯ ---
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=log_level)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
+
+# Отключаем шумные логи вебхука и библиотек
 logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('telegram').setLevel(logging.WARNING)
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_SECRET_TOKEN = os.getenv('TELEGRAM_SECRET_TOKEN', 'my-secret-token-change-me') 
@@ -52,7 +56,11 @@ AVAILABLE_MODELS = {
 }
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
-# Глобальный счетчик запросов к моделям
+# Карта отката (если ключ перегружен -> использовать значение)
+FALLBACK_MAP = {
+    AVAILABLE_MODELS['flash']: AVAILABLE_MODELS['lite']
+}
+
 MODEL_REQUEST_COUNTS = defaultdict(int)
 
 # Regex
@@ -129,7 +137,7 @@ class PostgresPersistence(BasePersistence):
             try:
                 self._connect()
                 self._initialize_db()
-                logger.info("DB Connected.")
+                logger.info("✅ DB Connected.")
                 return
             except psycopg2.Error as e:
                 logger.error(f"DB Connect Error ({attempt+1}): {e}")
@@ -299,7 +307,7 @@ def build_history(history):
     return valid[::-1]
 
 async def upload_file(client, b, mime, name):
-    logger.info(f"Upload: {name}")
+    logger.info(f"⬆️ Uploading: {name}")
     try:
         up = await client.aio.files.upload(file=io.BytesIO(b), config=types.UploadFileConfig(mime_type=mime, display_name=name))
         for _ in range(15):
@@ -317,44 +325,59 @@ async def generate(client, contents, context, tools_override=None):
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
-    model = context.chat_data.get('model', DEFAULT_MODEL)
+    current_model = context.chat_data.get('model', DEFAULT_MODEL)
     
-    # СЧЕТЧИК ЗАПРОСОВ
-    MODEL_REQUEST_COUNTS[model] += 1
-    logger.info(f"Model: {model} | Req Count: {MODEL_REQUEST_COUNTS[model]}")
-    
+    # Конфигурация
     gen_config_args = {
         "safety_settings": SAFETY_SETTINGS,
         "tools": tools_override if tools_override else TEXT_TOOLS, 
         "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-        "temperature": 0.7, # ИЗМЕНЕНО С 1 НА 0.7
+        "temperature": 0.7,
         "thinking_config": types.ThinkingConfig(thinking_budget=24576)
     }
 
-    config = types.GenerateContentConfig(**gen_config_args)
+    # Логируем начало
+    logger.info(f"👉 Requesting: {current_model}")
+    MODEL_REQUEST_COUNTS[current_model] += 1
     
+    # Попытки (3 раза)
     for att in range(3):
         try:
-            res = await client.aio.models.generate_content(model=model, contents=contents, config=config)
-            if res and res.candidates and res.candidates[0].content: return res
+            config = types.GenerateContentConfig(**gen_config_args)
+            res = await client.aio.models.generate_content(model=current_model, contents=contents, config=config)
+            
+            if res and res.candidates and res.candidates[0].content:
+                logger.info(f"✅ Success: {current_model} (Att: {att+1})")
+                return res, current_model # Возвращаем результат и модель
+            
             if att < 2: await asyncio.sleep(2)
+
         except genai_errors.APIError as e:
             if "resource_exhausted" in str(e).lower():
-                # ОБНУЛЕНИЕ СЧЕТЧИКА ПРИ ЛИМИТАХ
-                MODEL_REQUEST_COUNTS[model] = 0
-                logger.warning(f"Resource exhausted for {model}. Counter reset.")
-                return "⏳ Перегрузка API (Quota Exceeded)."
+                logger.warning(f"⚠️ Limit Hit: {current_model}. Resetting counter.")
+                MODEL_REQUEST_COUNTS[current_model] = 0
+                
+                # ЛОГИКА FALLBACK (Откат на Lite)
+                if current_model in FALLBACK_MAP:
+                    fallback_model = FALLBACK_MAP[current_model]
+                    logger.info(f"🔄 Switching to Fallback: {fallback_model}")
+                    current_model = fallback_model # меняем модель для следующей итерации цикла
+                    MODEL_REQUEST_COUNTS[current_model] += 1
+                    continue # Пробуем снова с новой моделью
+                else:
+                    return "⏳ Перегрузка API (Quota Exceeded).", current_model
             
             if "invalid argument" in str(e).lower() and "thinking_config" in gen_config_args:
+                logger.info("ℹ️ Removing Thinking Config (not supported for this model?)")
                 gen_config_args.pop("thinking_config")
-                config = types.GenerateContentConfig(**gen_config_args)
                 continue
             
-            if att == 2: return f"❌ API Error: {html.escape(str(e))}"
+            if att == 2: return f"❌ API Error: {html.escape(str(e))}", current_model
             await asyncio.sleep(5)
         except Exception as e:
-            return f"❌ Error: {html.escape(str(e))}"
-    return "Нет ответа."
+            return f"❌ Error: {html.escape(str(e))}", current_model
+
+    return "Нет ответа.", current_model
 
 def format_response(response):
     try:
@@ -432,16 +455,22 @@ async def process_request(update, context, parts):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
-        res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
+        # ВЫЗОВ GENERATE (Возвращает кортеж)
+        res_obj, used_model = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
         
         reply = format_response(res_obj) if not isinstance(res_obj, str) else res_obj
         
-        # ДОБАВЛЕНИЕ ПОДПИСИ МОДЕЛИ
+        # ПОДПИСЬ МОДЕЛИ
         if not isinstance(res_obj, str):
-            model_full = context.chat_data.get('model', DEFAULT_MODEL)
-            model_short = next((k for k, v in AVAILABLE_MODELS.items() if v == model_full), model_full)
-            # ИЗМЕНЕНО: Простой формат без кавычек и жирного шрифта
-            reply += f"\n\n🤖 model: {model_short}"
+            # Определяем короткое имя для подписи
+            if used_model == AVAILABLE_MODELS['flash']:
+                display_name = "flash"
+            elif used_model == AVAILABLE_MODELS['lite']:
+                display_name = "flash-lite"
+            else:
+                display_name = "gemini" # Fallback display
+            
+            reply += f"\n\n🤖 {display_name}"
 
         sent = await send_smart(msg, reply, hint=is_media_request)
         
@@ -581,7 +610,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v34)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v35)") 
         except: pass
 
     stop = asyncio.Event()
@@ -608,7 +637,7 @@ async def main():
     await runner.setup()
     await aiohttp.web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 10000))).start()
     
-    logger.info("Ready.")
+    logger.info("🚀 Ready.")
     await stop.wait()
     await runner.cleanup()
     pers.close()
