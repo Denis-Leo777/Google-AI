@@ -1,4 +1,4 @@
-# Версия 32 (Stable Robust: Исправлена ошибка чтения ответа, возвращены проверки из v24)
+# Версия 33 (Stats & Signature: Добавлен счетчик запросов и подпись модели)
 
 import logging
 import os
@@ -52,11 +52,14 @@ AVAILABLE_MODELS = {
 }
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
 
+# Глобальный счетчик запросов к моделям
+MODEL_REQUEST_COUNTS = defaultdict(int)
+
 # Regex
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
-HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br)>', re.IGNORECASE)
+HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br|blockquote)>', re.IGNORECASE)
 
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
@@ -316,6 +319,10 @@ async def generate(client, contents, context, tools_override=None):
 
     model = context.chat_data.get('model', DEFAULT_MODEL)
     
+    # СЧЕТЧИК ЗАПРОСОВ
+    MODEL_REQUEST_COUNTS[model] += 1
+    logger.info(f"Model: {model} | Req Count: {MODEL_REQUEST_COUNTS[model]}")
+    
     gen_config_args = {
         "safety_settings": SAFETY_SETTINGS,
         "tools": tools_override if tools_override else TEXT_TOOLS, 
@@ -332,7 +339,11 @@ async def generate(client, contents, context, tools_override=None):
             if res and res.candidates and res.candidates[0].content: return res
             if att < 2: await asyncio.sleep(2)
         except genai_errors.APIError as e:
-            if "resource_exhausted" in str(e).lower(): return "⏳ Перегрузка API."
+            if "resource_exhausted" in str(e).lower():
+                # ОБНУЛЕНИЕ СЧЕТЧИКА ПРИ ЛИМИТАХ
+                MODEL_REQUEST_COUNTS[model] = 0
+                logger.warning(f"Resource exhausted for {model}. Counter reset.")
+                return "⏳ Перегрузка API (Quota Exceeded)."
             
             if "invalid argument" in str(e).lower() and "thinking_config" in gen_config_args:
                 gen_config_args.pop("thinking_config")
@@ -346,13 +357,11 @@ async def generate(client, contents, context, tools_override=None):
     return "Нет ответа."
 
 def format_response(response):
-    # ИСПРАВЛЕННАЯ ЛОГИКА ИЗ v24 (Проверки на пустоту)
     try:
         if not response:
             return "Получен пустой ответ от API."
             
         if not response.candidates:
-            # Такое бывает, если ответ полностью заблокирован фильтрами
             return "Ответ не получен (возможно, заблокирован фильтрами безопасности)."
             
         cand = response.candidates[0]
@@ -400,7 +409,6 @@ async def process_request(update, context, parts):
 
         is_media_request = any(p.file_data for p in parts)
         
-        # ИЗОЛЯЦИЯ: Сбрасываем историю только для НОВЫХ файлов (чтобы избежать путаницы).
         if is_media_request:
             history = [] 
         else:
@@ -425,8 +433,15 @@ async def process_request(update, context, parts):
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
         res_obj = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
+        
         reply = format_response(res_obj) if not isinstance(res_obj, str) else res_obj
         
+        # ДОБАВЛЕНИЕ ПОДПИСИ МОДЕЛИ
+        if not isinstance(res_obj, str):
+            model_full = context.chat_data.get('model', DEFAULT_MODEL)
+            model_short = next((k for k, v in AVAILABLE_MODELS.items() if v == model_full), model_full)
+            reply += f"\n\n<blockquote expandable>⚙️ <b>Model:</b> {model_short}</blockquote>"
+
         sent = await send_smart(msg, reply, hint=is_media_request)
         
         if sent:
@@ -565,7 +580,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v32)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v33)") 
         except: pass
 
     stop = asyncio.Event()
