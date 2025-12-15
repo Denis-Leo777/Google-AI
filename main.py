@@ -1,4 +1,4 @@
-# Версия 35 (Fallback Logic: Auto-switch Flash->Lite, Clean Logs & Signature)
+# Версия 36 (Robust Retry: Fix Double Limit Hit, Clean Logs, Auto-wait)
 
 import logging
 import os
@@ -32,10 +32,12 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
 
-# Отключаем шумные логи вебхука и библиотек
+# Отключаем шумные логи библиотек и GRPC
 logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('telegram').setLevel(logging.WARNING)
+logging.getLogger('grpc').setLevel(logging.WARNING)        # Убирает AFC логи
+logging.getLogger('google.genai').setLevel(logging.WARNING) # Убирает внутренние логи GenAI
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_SECRET_TOKEN = os.getenv('TELEGRAM_SECRET_TOKEN', 'my-secret-token-change-me') 
@@ -348,7 +350,7 @@ async def generate(client, contents, context, tools_override=None):
             
             if res and res.candidates and res.candidates[0].content:
                 logger.info(f"✅ Success: {current_model} (Att: {att+1})")
-                return res, current_model # Возвращаем результат и модель
+                return res, current_model
             
             if att < 2: await asyncio.sleep(2)
 
@@ -357,18 +359,25 @@ async def generate(client, contents, context, tools_override=None):
                 logger.warning(f"⚠️ Limit Hit: {current_model}. Resetting counter.")
                 MODEL_REQUEST_COUNTS[current_model] = 0
                 
-                # ЛОГИКА FALLBACK (Откат на Lite)
+                # 1. Попытка переключиться на Fallback (Flash -> Lite)
                 if current_model in FALLBACK_MAP:
                     fallback_model = FALLBACK_MAP[current_model]
                     logger.info(f"🔄 Switching to Fallback: {fallback_model}")
-                    current_model = fallback_model # меняем модель для следующей итерации цикла
+                    current_model = fallback_model 
                     MODEL_REQUEST_COUNTS[current_model] += 1
-                    continue # Пробуем снова с новой моделью
+                    continue # Переход к следующей итерации (попытка с новой моделью)
+                
+                # 2. Если мы УЖЕ на Fallback (Lite) и она тоже перегружена
+                # Вместо того чтобы сдаваться, ждем подольше и пробуем её же ещё раз, если есть попытки.
+                elif att < 2:
+                    logger.warning(f"⏳ Double Limit Hit (Lite). Sleeping 15s before retry...")
+                    await asyncio.sleep(15) 
+                    continue # Пробуем Lite снова
                 else:
                     return "⏳ Перегрузка API (Quota Exceeded).", current_model
             
             if "invalid argument" in str(e).lower() and "thinking_config" in gen_config_args:
-                logger.info("ℹ️ Removing Thinking Config (not supported for this model?)")
+                logger.info("ℹ️ Removing Thinking Config")
                 gen_config_args.pop("thinking_config")
                 continue
             
@@ -455,20 +464,19 @@ async def process_request(update, context, parts):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
         
-        # ВЫЗОВ GENERATE (Возвращает кортеж)
+        # ВЫЗОВ GENERATE
         res_obj, used_model = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
         
         reply = format_response(res_obj) if not isinstance(res_obj, str) else res_obj
         
         # ПОДПИСЬ МОДЕЛИ
         if not isinstance(res_obj, str):
-            # Определяем короткое имя для подписи
             if used_model == AVAILABLE_MODELS['flash']:
                 display_name = "flash"
             elif used_model == AVAILABLE_MODELS['lite']:
                 display_name = "flash-lite"
             else:
-                display_name = "gemini" # Fallback display
+                display_name = "gemini"
             
             reply += f"\n\n🤖 {display_name}"
 
@@ -610,7 +618,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v35)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v36)") 
         except: pass
 
     stop = asyncio.Event()
