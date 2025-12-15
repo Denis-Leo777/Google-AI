@@ -1,4 +1,4 @@
-# Версия 32 (Production Release с исправлением критической ошибки API)
+# Версия 33 (Исправлена критическая ошибка 'list' object has no attribute 'content')
 
 import logging
 import os
@@ -266,7 +266,7 @@ async def upload_and_wait_for_file(client: genai.Client, file_bytes: bytes, mime
         logger.error(f"Upload failed: {e}")
         raise IOError(f"Не удалось загрузить файл: {e}")
 
-# --- GEMINI CORE (ИСПРАВЛЕНО) ---
+# --- GEMINI CORE ---
 async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list, sys_instr: str | None = None) -> tuple[types.GenerateContentResponse | str, str]:
     final_sys_instr = sys_instr or SYSTEM_INSTRUCTION.format(current_time=get_current_time_str())
     config = types.GenerateContentConfig(safety_settings=SAFETY_SETTINGS, tools=tools, system_instruction=types.Content(parts=[types.Part(text=final_sys_instr)]), temperature=1.0, thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET))
@@ -277,8 +277,8 @@ async def generate_response(client: genai.Client, request_contents: list, contex
         for attempt in range(2):
             try:
                 res = await client.aio.models.generate_content(model=model, contents=request_contents, config=config)
-                # ИСПРАВЛЕНИЕ: Доступ к первому элементу
-                if res and res.candidates and res.candidates.content: 
+                # ИСПРАВЛЕНО: Обращаемся к candidates
+                if res and res.candidates and res.candidates.content:
                     return res, model
             except genai_errors.APIError as e:
                 err, http_status = str(e).lower(), getattr(e, 'http_status', 0)
@@ -294,8 +294,8 @@ async def generate_response(client: genai.Client, request_contents: list, contex
 
 def format_gemini_response(response: types.GenerateContentResponse) -> str:
     try:
-        # ИСПРАВЛЕНИЕ: Доступ к первому элементу
-        if not response.candidates.content.parts: 
+        # ИСПРАВЛЕНО: Обращаемся к candidates
+        if not response.candidates.content.parts:
             return "Пустой ответ."
         parts = [p.text for p in response.candidates.content.parts if p.text]
         return convert_gemini_to_html("".join(parts))
