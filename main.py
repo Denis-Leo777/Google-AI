@@ -1,4 +1,4 @@
-# Версия 37 (More Retries: Range(5), Smart Waits 10s/30s, Silence AFC)
+# Версия 38 (Ping-Pong Retry: Flash<->Lite, Nuclear Log Silence)
 
 import logging
 import os
@@ -32,9 +32,14 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
 
-# Агрессивное отключение лишних логов
-for log_name in ['aiohttp.access', 'httpx', 'telegram', 'grpc', 'google.api_core', 'google.auth', 'google.genai']:
-    logging.getLogger(log_name).setLevel(logging.WARNING)
+# --- ЯДЕРНОЕ ГЛУШЕНИЕ ЛОГОВ (Fix AFC spam) ---
+SILENCED_MODULES = [
+    'aiohttp.access', 'httpx', 'telegram', 
+    'grpc', 'google', 'google.auth', 'google.api_core', 
+    'urllib3', 'httpcore', 'google.genai'
+]
+for mod in SILENCED_MODULES:
+    logging.getLogger(mod).setLevel(logging.WARNING)
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_SECRET_TOKEN = os.getenv('TELEGRAM_SECRET_TOKEN', 'my-secret-token-change-me') 
@@ -54,11 +59,6 @@ AVAILABLE_MODELS = {
     'flash': 'gemini-2.5-flash-preview-09-2025'
 }
 DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
-
-# Карта отката
-FALLBACK_MAP = {
-    AVAILABLE_MODELS['flash']: AVAILABLE_MODELS['lite']
-}
 
 MODEL_REQUEST_COUNTS = defaultdict(int)
 
@@ -324,7 +324,9 @@ async def generate(client, contents, context, tools_override=None):
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
-    current_model = context.chat_data.get('model', DEFAULT_MODEL)
+    # Начальная модель (выбранная пользователем)
+    initial_model = context.chat_data.get('model', DEFAULT_MODEL)
+    current_model = initial_model
     
     # Конфигурация
     gen_config_args = {
@@ -339,7 +341,6 @@ async def generate(client, contents, context, tools_override=None):
     logger.info(f"👉 Requesting: {current_model}")
     MODEL_REQUEST_COUNTS[current_model] += 1
     
-    # УВЕЛИЧЕНО КОЛИЧЕСТВО ПОПЫТОК ДО 5
     attempts_max = 5
     
     for att in range(attempts_max):
@@ -358,23 +359,24 @@ async def generate(client, contents, context, tools_override=None):
                 logger.warning(f"⚠️ Limit Hit: {current_model}. Resetting counter.")
                 MODEL_REQUEST_COUNTS[current_model] = 0
                 
-                # 1. Попытка переключиться на Fallback (Flash -> Lite)
-                if current_model in FALLBACK_MAP:
-                    fallback_model = FALLBACK_MAP[current_model]
-                    logger.info(f"🔄 Switching to Fallback: {fallback_model}")
-                    current_model = fallback_model 
-                    MODEL_REQUEST_COUNTS[current_model] += 1
-                    continue # Переход к следующей итерации СРАЗУ (попытка с новой моделью)
+                # ЛОГИКА PING-PONG (Чередование моделей)
+                # Если была Flash -> ставим Lite. Если была Lite -> ставим Flash.
+                if current_model == AVAILABLE_MODELS['flash']:
+                    new_model = AVAILABLE_MODELS['lite']
+                else:
+                    new_model = AVAILABLE_MODELS['flash']
                 
-                # 2. Если уже Lite и ошибка повторяется
-                elif att < attempts_max - 1:
-                    # Увеличиваем время ожидания при повторных ошибках (10с, потом 30с)
-                    wait_time = 10 if att < 3 else 30
-                    logger.warning(f"⏳ Double Limit Hit (Lite). Sleeping {wait_time}s before retry...")
-                    await asyncio.sleep(wait_time) 
+                if att < attempts_max - 1:
+                    # Умная пауза: увеличиваем время ожидания (4 сек, 8 сек, 12 сек, 16 сек...)
+                    wait_time = 4 * (att + 1)
+                    logger.info(f"🔄 Switching {current_model} -> {new_model}. Sleeping {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    
+                    current_model = new_model
+                    MODEL_REQUEST_COUNTS[current_model] += 1
                     continue
                 else:
-                    return "⏳ Перегрузка API (Quota Exceeded).", current_model
+                    return "⏳ Перегрузка API (All quotas exceeded).", current_model
             
             if "invalid argument" in str(e).lower() and "thinking_config" in gen_config_args:
                 logger.info("ℹ️ Removing Thinking Config")
@@ -618,7 +620,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v37)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v38)") 
         except: pass
 
     stop = asyncio.Event()
