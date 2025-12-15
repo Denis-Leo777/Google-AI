@@ -1,4 +1,4 @@
-# Версия 29 (Final Production Release с исправленным HTML-парсером)
+# Версия 31 (Production Release с корректной историей для голоса)
 
 import logging
 import os
@@ -112,17 +112,12 @@ class PostgresPersistence(BasePersistence):
                     try: self.db_pool.putconn(conn, close=True)
                     except: pass
                     conn = None
-                logger.warning(f"Сбой БД, ретрай {attempt+1}...")
                 if attempt < retries - 1:
                     time.sleep(0.5)
                     continue
                 else:
                     logger.error(f"Критическая ошибка БД: {e}")
                     return None
-            except Exception as e:
-                logger.error(f"SQL Ошибка: {e}")
-                if conn: self.db_pool.putconn(conn)
-                return None
             finally:
                 if conn: self.db_pool.putconn(conn)
 
@@ -188,31 +183,22 @@ def html_safe_chunker(text: str, chunk_size: int = 4096) -> list[str]:
     chunks.append(remaining_text)
     return chunks
 
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ ФОРМАТИРОВАНИЯ
 def convert_gemini_to_html(text: str) -> str:
-    # 1. Убираем "мысли" модели, чтобы они не мешали
     text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL)
-    
-    # 2. Экранируем основные HTML-символы, чтобы избежать ошибок парсинга в Telegram
-    # Это сделает текст безопасным, но сохранит Markdown-разметку для следующего шага
-    text = html.escape(text)
-    
-    # 3. Преобразуем Markdown в HTML-теги.
-    # Так как `*` и `_` были заэкранированы, ищем их в исходном виде
-    # Жирный: **text** -> <b>text</b>
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    # Курсив: __text__ или _text_ -> <i>text</i>
-    text = re.sub(r'__(.*?)__', r'<i>\1</i>', text)
-    text = re.sub(r'_(.*?)_', r'<i>\1</i>', text)
-    
-    # Блоки кода: ```lang...``` -> <pre><code>...</code></pre>
-    # Внутренности блока кода остаются экранированными, что правильно
-    text = re.sub(r'```(\w+)?\n?(.*?)```', r'<pre><code>\2</code></pre>', text, flags=re.DOTALL)
-    
-    # Моноширинный текст: `text` -> <code>text</code>
-    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
-
-    return text.strip()
+    text_parts = re.split(r'(```.*?\n?.*?```)', text, flags=re.DOTALL)
+    processed_parts = []
+    for part in text_parts:
+        if part.startswith('```'):
+            part = re.sub(r'```(\w+)?\n?(.*?)```', r'\2', part, flags=re.DOTALL)
+            processed_parts.append(f'<pre><code>{html.escape(part)}</code></pre>')
+        else:
+            part = html.escape(part)
+            part = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', part)
+            part = re.sub(r'__(.*?)__', r'<i>\1</i>', part)
+            part = re.sub(r'_(.*?)_', r'<i>\1</i>', part)
+            part = re.sub(r'`(.*?)`', r'<code>\1</code>', part)
+            processed_parts.append(part)
+    return "".join(processed_parts).strip()
 
 def ignore_if_processing(func):
     @wraps(func)
@@ -283,15 +269,7 @@ async def upload_and_wait_for_file(client: genai.Client, file_bytes: bytes, mime
 # --- GEMINI CORE ---
 async def generate_response(client: genai.Client, request_contents: list, context: ContextTypes.DEFAULT_TYPE, tools: list, sys_instr: str | None = None) -> tuple[types.GenerateContentResponse | str, str]:
     final_sys_instr = sys_instr or SYSTEM_INSTRUCTION.format(current_time=get_current_time_str())
-    
-    config = types.GenerateContentConfig(
-        safety_settings=SAFETY_SETTINGS, 
-        tools=tools,
-        system_instruction=types.Content(parts=[types.Part(text=final_sys_instr)]),
-        temperature=1.0,
-        thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET) 
-    )
-    
+    config = types.GenerateContentConfig(safety_settings=SAFETY_SETTINGS, tools=tools, system_instruction=types.Content(parts=[types.Part(text=final_sys_instr)]), temperature=1.0, thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET))
     user_pref = context.chat_data.get('model', DEFAULT_MODEL)
     models = [DEFAULT_MODEL, FALLBACK_MODEL] if user_pref == DEFAULT_MODEL else [user_pref]
 
@@ -299,10 +277,9 @@ async def generate_response(client: genai.Client, request_contents: list, contex
         for attempt in range(2):
             try:
                 res = await client.aio.models.generate_content(model=model, contents=request_contents, config=config)
-                if res and res.candidates and res.candidates[0].content: return res, model
+                if res and res.candidates and res.candidates.content: return res, model
             except genai_errors.APIError as e:
-                err = str(e).lower()
-                http_status = getattr(e, 'http_status', 0)
+                err, http_status = str(e).lower(), getattr(e, 'http_status', 0)
                 if "resource_exhausted" in err or http_status == 429:
                     logger.warning(f"Model {model} exhausted.")
                     break 
@@ -315,24 +292,20 @@ async def generate_response(client: genai.Client, request_contents: list, contex
 
 def format_gemini_response(response: types.GenerateContentResponse) -> str:
     try:
-        if not response.candidates[0].content.parts: return "Пустой ответ."
-        parts = [p.text for p in response.candidates[0].content.parts if p.text]
-        text = "".join(parts)
-        return convert_gemini_to_html(text)
+        if not response.candidates.content.parts: return "Пустой ответ."
+        parts = [p.text for p in response.candidates.content.parts if p.text]
+        return convert_gemini_to_html("".join(parts))
     except Exception as e:
         logger.error(f"Format error: {e}")
         return "Ошибка обработки ответа."
 
 async def send_reply(msg: Message, text: str, hint: bool = False):
     if hint: text += "\n\n<i>💡 Ответьте на это сообщение, чтобы задать вопрос по файлу.</i>"
-    
     for chunk in html_safe_chunker(text):
-        try:
-            await msg.reply_html(chunk)
+        try: await msg.reply_html(chunk)
         except BadRequest as e:
             logger.error(f"HTML Parse Error: {e}. Отправляю как обычный текст.")
-            clean_text = re.sub(r'<[^>]*>', '', chunk)
-            await msg.reply_text(clean_text)
+            await msg.reply_text(re.sub(r'<[^>]*>', '', chunk))
     return msg 
 
 async def add_to_history(context: ContextTypes.DEFAULT_TYPE, role: str, parts: list[types.Part], user_id=None, user_name=None, **kwargs):
@@ -349,15 +322,12 @@ async def process_media_group_delayed(context: ContextTypes.DEFAULT_TYPE, mg_id:
     await asyncio.sleep(MEDIA_GROUP_BUFFER_SECONDS)
     data = context.bot_data.get('media_group_buffer', {}).pop(mg_id, None)
     if not data: return
-
     captions = [c for c in data['captions'] if c and c.strip()]
     unique_text = "\n".join(OrderedDict.fromkeys(captions))
-    
     parts = data['parts']
     if unique_text: parts.append(types.Part(text=unique_text))
     elif not any(p.text for p in parts): parts.append(types.Part(text="Проанализируй эти файлы."))
-
-    base_msg = data['messages'][0]
+    base_msg = data['messages']
     await process_request(Update(0, base_msg), context, parts, reply_to_msg=base_msg)
 
 async def buffer_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE, file_part: types.Part, caption: str):
@@ -374,18 +344,14 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
     msg = reply_to_msg or update.message
     client = context.bot_data['gemini_client']
     await context.bot.send_chat_action(msg.chat_id, ChatAction.TYPING)
-
     txt = next((p.text for p in content_parts if p.text), None)
     if txt and re.search(DATE_TIME_REGEX, txt, re.IGNORECASE):
         await send_reply(msg, get_current_time_str())
         return
-
     hist = build_history_for_request(context.chat_data.get("history", []))
     is_media = any(p.file_data for p in content_parts)
-    
     user_info = f"[{msg.from_user.id}; Name: {msg.from_user.first_name}]: "
     grounding = "" if is_media or (txt and re.search(URL_REGEX, txt)) else f"ИЩИ актуальные данные на {get_current_time_str()} через Google Search.\n"
-    
     final_parts = [p for p in content_parts if p.file_data]
     text_found = False
     for p in content_parts:
@@ -394,20 +360,14 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
             text_found = True
             break
     if not text_found: final_parts.append(types.Part(text=f"{grounding}{user_info}"))
-
     res_obj, model = await generate_response(client, hist + [types.Content(parts=final_parts, role="user")], context, MEDIA_TOOLS if is_media else TEXT_TOOLS)
-    
     reply = res_obj if isinstance(res_obj, str) else format_gemini_response(res_obj)
     if model != "None": reply += f"\n\n🤖 <i>Model: {model}</i>"
-    
     sent = await send_reply(msg, reply, hint=is_media)
-    
     if sent:
         await add_to_history(context, "user", content_parts, msg.from_user.id, msg.from_user.first_name)
-        # Для истории сохраняем "сырой" ответ, без HTML-тегов
         raw_reply_text = re.sub(r'<[^>]*>', '', reply)
         await add_to_history(context, "model", [types.Part(text=raw_reply_text)])
-        
         context.chat_data.setdefault('reply_map', {})[sent.message_id] = msg.message_id
         if is_media:
              media_p = next((p for p in content_parts if p.file_data), None)
@@ -417,22 +377,9 @@ async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, co
                  if len(mc) > MAX_MEDIA_CONTEXTS: mc.popitem(last=False)
         await context.application.persistence.update_chat_data(msg.chat_id, context.chat_data)
 
-# --- COMMANDS ---
-async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    text = """👋 <b>Привет! Я бот на базе Gemini 2.5.</b>
-
-🧠 <b>Модели:</b> Flash Preview + Lite (резерв).
-🔥 <b>Thinking:</b> Включено глубокое мышление.
-
-📤 <b>Принимаю:</b> Текст, Фото, Видео, Аудио, Файлы, Ссылки, Альбомы.
-
-⚙️ <b>Команды:</b>
-/clear - Очистить историю
-/model - Выбор модели
-/transcript - Расшифровка (ответ на файл)
-/summarize - Саммари (ответ на файл)"""
-    await u.message.reply_html(text)
-
+# --- COMMANDS & HANDLERS ---
+async def start(u: Update, c: ContextTypes.DEFAULT_TYPE): await u.message.reply_html("👋 <b>Привет! Я бот на базе Gemini 2.5.</b>\n\n/help для списка команд.")
+async def help_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE): await u.message.reply_html("<b>Команды:</b>\n/clear - Очистка истории\n/model - Выбор модели\n/newtopic - Сброс контекста файлов\n/transcript - Транскрипция (в ответ на файл)\n/summarize - Краткий пересказ (в ответ на файл)")
 @ignore_if_processing
 async def clear(u: Update, c: ContextTypes.DEFAULT_TYPE): 
     c.chat_data.clear()
@@ -448,16 +395,13 @@ async def newtopic(u: Update, c: ContextTypes.DEFAULT_TYPE):
 @ignore_if_processing
 async def model_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
     cur = c.chat_data.get('model', DEFAULT_MODEL)
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🚀 Auto (Default)", callback_data=f"model_{DEFAULT_MODEL}"),
-        InlineKeyboardButton("⚠️ Force Lite", callback_data=f"model_{FALLBACK_MODEL}")
-    ]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Auto (Default)", callback_data=f"model_{DEFAULT_MODEL}"), InlineKeyboardButton("⚠️ Force Lite", callback_data=f"model_{FALLBACK_MODEL}")]])
     await u.message.reply_html(f"Текущая: <b>{cur}</b>", reply_markup=kb)
 
 async def model_cb(u: Update, c: ContextTypes.DEFAULT_TYPE):
     q = u.callback_query
     await q.answer()
-    new = q.data.split('_', 1)[1]
+    new = q.data.split('_', 1)
     c.chat_data['model'] = new
     await c.application.persistence.update_chat_data(q.effective_chat.id, c.chat_data)
     await q.edit_message_text(f"✅ Модель: {new}")
@@ -467,14 +411,12 @@ async def _get_reply_media_part(u: Update, c: ContextTypes.DEFAULT_TYPE):
         await u.message.reply_text("Ответьте командой на сообщение с файлом.")
         return None
     replied = u.message.reply_to_message
-    
     if replied.from_user.id == c.bot.id:
         orig_id = c.chat_data.get('reply_map', {}).get(replied.message_id)
         if orig_id:
             ctx = c.application.bot_data.get('media_contexts', {}).get(u.effective_chat.id, {}).get(orig_id)
             p, s = dict_to_part(ctx) if ctx else (None, False)
             if not s and p: return p
-
     m_obj = replied.audio or replied.voice or replied.video or replied.video_note or replied.photo or replied.document
     if m_obj:
         if isinstance(m_obj, list): m_obj = m_obj[-1]
@@ -482,10 +424,8 @@ async def _get_reply_media_part(u: Update, c: ContextTypes.DEFAULT_TYPE):
         b = await f.download_as_bytearray()
         mime = getattr(m_obj, 'mime_type', 'image/jpeg' if replied.photo else 'application/octet-stream')
         return await upload_and_wait_for_file(c.bot_data['gemini_client'], b, mime, f"{f.file_unique_id}")
-    
     yt_match = re.search(YOUTUBE_REGEX, replied.text or "")
     if yt_match: return types.Part(text=f"Analyze YouTube video: {yt_match.group(0)}")
-    
     await u.message.reply_text("Медиа не найдено.")
     return None
 
@@ -501,31 +441,23 @@ async def summarize_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
         res, m = await generate_response(c.bot_data['gemini_client'], [types.Content(parts=[p, types.Part(text="Make a summary.")], role="user")], c, MEDIA_TOOLS)
         await send_reply(u.message, (format_gemini_response(res) if not isinstance(res, str) else res) + f"\n\n🤖 {m}")
 
-# --- HANDLERS ---
 @ignore_if_processing
 async def handle_media(u: Update, c: ContextTypes.DEFAULT_TYPE):
     msg = u.message
     c.chat_data['id'] = msg.chat_id
-    m_obj, mime, ext = None, "", ""
-    
-    if msg.photo: m_obj, mime, ext = msg.photo[-1], 'image/jpeg', '.jpg'
-    elif msg.video: m_obj, mime, ext = msg.video, 'video/mp4', '.mp4'
-    elif msg.voice: m_obj, mime, ext = msg.voice, 'audio/ogg', '.ogg'
+    m_obj, mime, ext = msg.photo[-1] if msg.photo else None, 'image/jpeg', '.jpg'
+    if msg.video: m_obj, mime, ext = msg.video, 'video/mp4', '.mp4'
     elif msg.audio: m_obj, mime, ext = msg.audio, msg.audio.mime_type or 'audio/mp3', '.mp3'
-    elif msg.video_note: m_obj, mime, ext = msg.video_note, 'video/mp4', '.mp4'
     elif msg.document: m_obj, mime, ext = msg.document, msg.document.mime_type, ""
-
-    if not m_obj: return
-    if hasattr(m_obj, 'file_size') and m_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-        await msg.reply_text("Файл слишком большой (>20MB).")
+    
+    if not m_obj or (hasattr(m_obj, 'file_size') and m_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024):
+        if hasattr(m_obj, 'file_size'): await msg.reply_text("Файл слишком большой (>20MB).")
         return
-
     try:
         if not msg.media_group_id: await msg.reply_text("Загружаю...", reply_to_message_id=msg.message_id)
         f = await m_obj.get_file()
         b = await f.download_as_bytearray()
         part = await upload_and_wait_for_file(c.bot_data['gemini_client'], b, mime, f"{f.file_unique_id}{ext}")
-        
         if msg.media_group_id: await buffer_media_group(u, c, part, msg.caption)
         else: await process_request(u, c, [part, types.Part(text=msg.caption or "")])
     except Exception as e:
@@ -533,24 +465,47 @@ async def handle_media(u: Update, c: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(f"Ошибка: {e}")
 
 @ignore_if_processing
-async def handle_text(u: Update, c: ContextTypes.DEFAULT_TYPE):
+async def handle_voice_or_note(u: Update, c: ContextTypes.DEFAULT_TYPE):
     msg = u.message
-    txt = msg.text or ""
+    c.chat_data['id'] = msg.chat_id
+    m_obj = msg.voice or msg.video_note
+    if not m_obj or (m_obj.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024):
+        if m_obj: await msg.reply_text("Файл слишком большой (>20MB).")
+        return
+    try:
+        await msg.reply_text("Расшифровываю...", reply_to_message_id=msg.message_id)
+        f = await m_obj.get_file()
+        b = await f.download_as_bytearray()
+        part = await upload_and_wait_for_file(c.bot_data['gemini_client'], b, m_obj.mime_type, f"{f.file_unique_id}.oga")
+        
+        # Шаг 1: Транскрипция
+        res, _ = await generate_response(c.bot_data['gemini_client'], [types.Content(parts=[part], role="user")], c, MEDIA_TOOLS, "Transcribe this verbatim, output only text.")
+        transcript = format_gemini_response(res) if not isinstance(res, str) else "Не удалось распознать речь."
+        
+        # Шаг 2: Добавление в историю и ответ
+        prefix = "[🎤 Голосовое сообщение]: " if msg.voice else "[📹 Кружочек]: "
+        full_text = f"{prefix}{transcript}"
+        await add_to_history(c, "user", [types.Part(text=full_text)], msg.from_user.id, msg.from_user.first_name)
+        await process_request(u, c, [types.Part(text=transcript)])
+    except Exception as e:
+        logger.error(f"Voice/note error: {e}")
+        await msg.reply_text(f"Ошибка: {e}")
+
+@ignore_if_processing
+async def handle_text(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    msg, txt = u.message, u.message.text or ""
     if not txt: return
     c.chat_data['id'] = msg.chat_id
     parts = []
-
     yt_match = re.search(YOUTUBE_REGEX, txt)
-    if yt_match: parts.append(types.Part(text=f"Analyze YouTube video: {txt}"))
+    if yt_match: parts.append(types.Part(text=f"Проанализируй видео с YouTube: {txt}"))
     else: parts.append(types.Part(text=txt))
-    
     if msg.reply_to_message and not yt_match:
         orig_id = c.chat_data.get('reply_map', {}).get(msg.reply_to_message.message_id)
         if orig_id:
             ctx = c.application.bot_data.get('media_contexts', {}).get(msg.chat_id, {}).get(orig_id)
             p, s = dict_to_part(ctx) if ctx else (None, False)
             if not s and p: parts.insert(0, p)
-            
     await process_request(u, c, parts)
 
 # --- SERVER ---
@@ -558,10 +513,9 @@ async def health_check(req): return aiohttp.web.Response(text="OK", status=200)
 
 async def webhook_handler(req):
     app = req.app['bot_app']
-    try:
-        await app.process_update(Update.de_json(await req.json(), app.bot))
-        return aiohttp.web.Response(text="OK")
-    except: return aiohttp.web.Response(status=500)
+    try: await app.process_update(Update.de_json(await req.json(), app.bot))
+    except Exception as e: logger.error(f"Webhook error: {e}")
+    return aiohttp.web.Response(text="OK")
 
 async def main():
     persistence = PostgresPersistence(DATABASE_URL) if DATABASE_URL else None
@@ -569,10 +523,11 @@ async def main():
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
-    cmds = [BotCommand("start","Инфо"), BotCommand("clear","Очистка"), BotCommand("model","Модель"), BotCommand("newtopic","Сброс контекста")]
+    cmds = [BotCommand("start","Инфо"), BotCommand("help","Помощь"), BotCommand("clear","Очистка"), BotCommand("model","Модель"), BotCommand("newtopic","Сброс контекста")]
     await app.bot.set_my_commands(cmds)
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("newtopic", newtopic))
     app.add_handler(CommandHandler("model", model_cmd))
@@ -580,7 +535,8 @@ async def main():
     app.add_handler(CommandHandler("summarize", summarize_cmd))
     app.add_handler(CallbackQueryHandler(model_cb, pattern='^model_'))
     
-    app.add_handler(MessageHandler((filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO | filters.VIDEO_NOTE | filters.Document.ALL) & ~filters.COMMAND, handle_media))
+    app.add_handler(MessageHandler(filters.VOICE | filters.VIDEO_NOTE, handle_voice_or_note))
+    app.add_handler(MessageHandler((filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL) & ~filters.COMMAND, handle_media))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     stop = asyncio.Event()
