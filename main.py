@@ -56,9 +56,9 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 # --- МОДЕЛИ И REGEX ---
 AVAILABLE_MODELS = {
     'lite': 'gemini-2.5-flash-lite-preview-09-2025', 
-    'flash': 'gemini-2.5-flash-preview-09-2025'
+    'flash': 'gemini-3-flash-preview'
 }
-DEFAULT_MODEL = 'gemini-2.5-flash-preview-09-2025'
+DEFAULT_MODEL = 'gemini-3-flash-preview'
 
 MODEL_REQUEST_COUNTS = defaultdict(int)
 
