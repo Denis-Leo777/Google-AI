@@ -1,4 +1,4 @@
-# Версия 45 (Gemini 3.0: High Level & 2.5: Auto Budget | Fixed TPM)
+# Версия 46 (Smart Failover: Instant Switch on 429 Limit)
 
 import logging
 import os
@@ -55,19 +55,21 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
-# Gemini 3 использует 'thinking_level', а Gemini 2.5 использует 'thinking_budget'.
-# Для Free Tier критически важно не спамить, так как мышление расходует TPM моментально.
+# Логика:
+# 1. 3-flash (High Thinking) - самое умное, но дорогое по TPM.
+# 2. 2.5-flash (Auto Thinking) - жесткий лимит 20-50 запросов в день на Preview.
+# 3. 2.5-lite (Auto Thinking) - "рабочая лошадка" для failover.
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
         "display": "3 flash (High)",
-        "config_type": "level",   # Gemini 3 требует level, а не budget
-        "thinking_value": "HIGH", # Максимальное качество мышления
+        "config_type": "level",
+        "thinking_value": "HIGH", 
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
         "display": "2.5 flash (Auto)",
-        "config_type": "auto",    # Автоматический бюджет (пропускаем параметр budget)
+        "config_type": "auto",
         "thinking_value": None,
     },
     {
@@ -82,9 +84,7 @@ MODEL_CASCADE = [
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-# УВЕЛИЧЕНО до 35 сек: Thinking 'High' генерирует тысячи токенов. 
-# В Free Tier лимит TPM (Tokens Per Minute) быстро исчерпывается. 
-# Частые запросы приведут к бану на 24 часа.
+# Оставляем 35 сек, чтобы не ловить бан TPM, когда лимиты еще есть.
 REQUEST_DELAY = 35 
 
 # --- REGEX ---
@@ -92,6 +92,7 @@ YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:w
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
 HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br|blockquote)>', re.IGNORECASE)
+RE_RETRY_DELAY = re.compile(r'retry in (\d+(\.\d+)?)s', re.IGNORECASE) # Парсинг времени из ошибки
 
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
@@ -374,34 +375,22 @@ async def generate(client, contents, context, current_tools):
                     await asyncio.sleep(wait_time)
                 LAST_REQUEST_TIME = time.time()
             
-            # 2. Настройка Thinking Config в зависимости от типа модели
-            # Важно: Gemini 3 использует level (string), Gemini 2.5 использует budget (int)
+            # 2. Настройка Thinking
             t_config = None
             cfg_type = model_config.get('config_type')
             
             if cfg_type == 'level':
-                # Для Gemini 3.0 (используем level="HIGH")
-                t_config = types.ThinkingConfig(
-                    include_thoughts=True,
-                    thinking_level=model_config['thinking_value'] # HIGH/LOW и т.д.
-                )
+                t_config = types.ThinkingConfig(include_thoughts=True, thinking_level=model_config['thinking_value'])
             elif cfg_type == 'auto':
-                # Для Gemini 2.5 (просто включаем, без бюджета = Авто)
-                t_config = types.ThinkingConfig(
-                    include_thoughts=True
-                )
+                t_config = types.ThinkingConfig(include_thoughts=True)
             elif cfg_type == 'budget':
-                # Для Gemini 2.5 (явный бюджет)
-                t_config = types.ThinkingConfig(
-                    include_thoughts=True,
-                    thinking_budget_token_limit=model_config['thinking_value']
-                )
+                t_config = types.ThinkingConfig(include_thoughts=True, thinking_budget_token_limit=model_config['thinking_value'])
 
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
                 "tools": current_tools,
                 "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-                "temperature": 0.7,
+                "temperature": 1,
             }
             if t_config:
                 gen_config_args["thinking_config"] = t_config
@@ -420,22 +409,38 @@ async def generate(client, contents, context, current_tools):
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
                 
-                # Лимиты (429) или Перегрузка (503)
-                if "resource_exhausted" in err_str or "429" in err_str or "503" in err_str or "overloaded" in err_str:
-                    logger.warning(f"⚠️ Limit/Overload Hit on {model_config['display']}: {e}")
+                # ЛОГИКА SMART FAILOVER
+                if "429" in err_str or "resource_exhausted" in err_str:
+                    logger.warning(f"⚠️ Limit Hit on {model_config['display']}.")
                     
-                    # Если перегрузка (503), ждем чуть дольше
-                    retry_wait = 20 if "503" in err_str else 10
+                    # Пытаемся вытащить время ожидания из ошибки
+                    wait_match = RE_RETRY_DELAY.search(err_str)
+                    wait_seconds = float(wait_match.group(1)) if wait_match else 0
                     
+                    # Если Google просит ждать больше 5 секунд -> МЫ НЕ ЖДЕМ.
+                    # Мы сразу переключаемся на следующую модель, так как пользователь не хочет ждать.
+                    # Это решает проблему "limit: 20", так как модель просто будет пропущена.
+                    if wait_seconds > 5.0 or "quota" in err_str:
+                        logger.warning(f"⏭️ Too long wait ({wait_seconds}s) or Hard Limit. Skipping model instantly.")
+                        break # Выход из внутреннего цикла попыток -> переход к следующей модели в CASCADE
+                    
+                    # Если ждать мало (вдруг баг сети), можно попробовать еще раз
                     if attempt < max_attempts_per_model - 1:
-                        logger.info(f"🔄 Retrying same model in {retry_wait}s...")
-                        await asyncio.sleep(retry_wait)
-                        continue 
+                        logger.info(f"🔄 Short wait retry in 5s...")
+                        await asyncio.sleep(5)
+                        continue
                     else:
-                        logger.warning(f"⏭️ Switching to next tier.")
-                        break 
+                        break
+
+                elif "503" in err_str or "overloaded" in err_str:
+                    logger.warning(f"⚠️ Model Overloaded: {model_config['display']}")
+                    if attempt < max_attempts_per_model - 1:
+                        await asyncio.sleep(10)
+                        continue
+                    else:
+                        break
                 
-                # Ошибка аргументов (например, если модель не поддерживает thinking_level)
+                # Обработка ошибки конфига (на всякий случай)
                 if "invalid argument" in err_str:
                     logger.error(f"❌ Config Error on {model_id}. Retrying without thinking...")
                     try:
@@ -447,6 +452,7 @@ async def generate(client, contents, context, current_tools):
                             return res, model_config['display']
                     except Exception:
                         pass
+                    break 
 
                 logger.error(f"❌ API Error on {model_id}: {e}")
                 break 
@@ -455,7 +461,7 @@ async def generate(client, contents, context, current_tools):
                 logger.error(f"❌ General Error on {model_id}: {e}")
                 break
 
-    return "🚫 Все модели исчерпали лимиты или недоступны (TPM Limit).", "none"
+    return "🚫 Все модели исчерпали лимиты или недоступны.", "none"
 
 def format_response(response):
     try:
@@ -662,7 +668,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v45 - High Level / Auto Budget)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v46 - Smart Failover)") 
         except: pass
 
     stop = asyncio.Event()
