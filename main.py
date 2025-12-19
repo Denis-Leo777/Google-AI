@@ -58,21 +58,21 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
-        "display": "3 flash",
+        "display": "3 flash (Medium)",
         "config_type": "budget", # Используем числовой бюджет для точного контроля
         "thinking_value": 24000, # ~Medium budget (High обычно >24k). Экономит TPM.
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
-        "display": "2.5 flash",
-        "config_type": "budget", # Используем числовой бюджет для точного контроля
-        "thinking_value": 24000,
+        "display": "2.5 flash (Auto)",
+        "config_type": "auto",
+        "thinking_value": None,
     },
     {
         "id": "gemini-2.5-flash-lite-preview-09-2025",
-        "display": "2.5 lite",
-        "config_type": "budget", # Используем числовой бюджет для точного контроля
-        "thinking_value": 24000,
+        "display": "2.5 lite (Auto)",
+        "config_type": "auto",
+        "thinking_value": None,
     }
 ]
 
