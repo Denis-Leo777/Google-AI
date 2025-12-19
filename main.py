@@ -1,4 +1,4 @@
-# Версия 38 (Ping-Pong Retry: Flash<->Lite, Nuclear Log Silence)
+# Версия 40 (Gemini 3.0 Flash, 55k Thinking Budget, Safety Checks)
 
 import logging
 import os
@@ -27,12 +27,12 @@ from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
 
-# --- КОНФИГУРАЦИЯ ---
+# --- КОНФИГУРАЦИЯ ЛОГОВ ---
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
 
-# --- ЯДЕРНОЕ ГЛУШЕНИЕ ЛОГОВ (Fix AFC spam) ---
+# Глушим лишний шум от библиотек
 SILENCED_MODULES = [
     'aiohttp.access', 'httpx', 'telegram', 
     'grpc', 'google', 'google.auth', 'google.api_core', 
@@ -41,6 +41,7 @@ SILENCED_MODULES = [
 for mod in SILENCED_MODULES:
     logging.getLogger(mod).setLevel(logging.WARNING)
 
+# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_SECRET_TOKEN = os.getenv('TELEGRAM_SECRET_TOKEN', 'my-secret-token-change-me') 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
@@ -53,16 +54,40 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- МОДЕЛИ И REGEX ---
-AVAILABLE_MODELS = {
-    'lite': 'gemini-2.5-flash-lite-preview-09-2025', 
-    'flash': 'gemini-3-flash-preview'
-}
-DEFAULT_MODEL = 'gemini-3-flash-preview'
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
+# Настройка каскада (порядок важен: сверху вниз)
+MODEL_CASCADE = [
+    {
+        "id": "gemini-3-flash-preview", 
+        "display": "3 flash",
+        # 55000 токенов ~ высокий уровень, оставляет место для ответа (max out 64k)
+        "thinking_budget": 55000, 
+        "daily_limit": 20,
+        "is_fallback": False
+    },
+    {
+        "id": "gemini-2.5-flash-preview-09-2025",
+        "display": "2.5 flash",
+        "thinking_budget": 24000,
+        "daily_limit": 20,
+        "is_fallback": True
+    },
+    {
+        "id": "gemini-2.5-flash-lite-preview-09-2025",
+        "display": "2.5 lite",
+        "thinking_budget": 24000,
+        "daily_limit": 999999, # Практически безлимит (последний рубеж)
+        "is_fallback": True
+    }
+]
 
-MODEL_REQUEST_COUNTS = defaultdict(int)
+# Глобальные переменные состояния
+DAILY_REQUEST_COUNTS = defaultdict(int) # {model_id: count}
+GLOBAL_LOCK = asyncio.Lock()
+LAST_REQUEST_TIME = 0
+REQUEST_DELAY = 15 # 15 секунд задержки (для соблюдения 5 RPM и восстановления токенов)
 
-# Regex
+# --- REGEX ---
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
@@ -72,7 +97,6 @@ RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
-RE_HEADER = re.compile(r'^#{1,6}\s+(.*?)$', re.MULTILINE)
 RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
@@ -84,8 +108,12 @@ MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ ---
-TEXT_TOOLS = [types.Tool(google_search=types.GoogleSearch(), code_execution=types.ToolCodeExecution(), url_context=types.UrlContext())]
-MEDIA_TOOLS = [types.Tool(google_search=types.GoogleSearch(), url_context=types.UrlContext())]
+# Google Search доступен для всех моделей
+COMMON_TOOLS = [types.Tool(
+    google_search=types.GoogleSearch(), 
+    code_execution=types.ToolCodeExecution(), 
+    url_context=types.UrlContext()
+)]
 
 SAFETY_SETTINGS = [
     types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
@@ -238,7 +266,6 @@ def convert_markdown_to_html(text: str) -> str:
     text = RE_INLINE_CODE.sub(store_code, text)
     text = RE_BOLD.sub(r'<b>\1</b>', text)
     text = RE_ITALIC.sub(r'<i>\1</i>', text)
-    text = RE_HEADER.sub(r'<b>\1</b>', text)
 
     for key, val in code_blocks.items(): text = text.replace(key, val)
     return text
@@ -319,91 +346,97 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
+# --- ЯДРО ГЕНЕРАЦИИ (CASCADE & QUEUE) ---
 async def generate(client, contents, context, tools_override=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
-    # Начальная модель (выбранная пользователем)
-    initial_model = context.chat_data.get('model', DEFAULT_MODEL)
-    current_model = initial_model
+    global LAST_REQUEST_TIME
     
-    # Конфигурация
-    gen_config_args = {
-        "safety_settings": SAFETY_SETTINGS,
-        "tools": tools_override if tools_override else TEXT_TOOLS, 
-        "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-        "temperature": 0.7,
-        "thinking_config": types.ThinkingConfig(thinking_budget=24576)
-    }
+    # Каскад: пытаемся от самой умной к самой простой
+    for model_config in MODEL_CASCADE:
+        model_id = model_config['id']
+        daily_limit = model_config['daily_limit']
+        
+        # 1. Проверка суточного лимита
+        if DAILY_REQUEST_COUNTS[model_id] >= daily_limit:
+            logger.info(f"⏭️ Skipping {model_config['display']} (Daily limit {daily_limit} reached)")
+            continue
 
-    # Логируем начало
-    logger.info(f"👉 Requesting: {current_model}")
-    MODEL_REQUEST_COUNTS[current_model] += 1
-    
-    attempts_max = 5
-    
-    for att in range(attempts_max):
-        try:
-            config = types.GenerateContentConfig(**gen_config_args)
-            res = await client.aio.models.generate_content(model=current_model, contents=contents, config=config)
+        # 2. Очередь (15 секунд задержки перед ЛЮБЫМ запросом)
+        async with GLOBAL_LOCK:
+            now = time.time()
+            elapsed = now - LAST_REQUEST_TIME
+            if elapsed < REQUEST_DELAY:
+                wait_time = REQUEST_DELAY - elapsed
+                logger.info(f"⏳ Queue: Waiting {wait_time:.1f}s before sending to {model_config['display']}...")
+                await asyncio.sleep(wait_time)
             
-            if res and res.candidates and res.candidates[0].content:
-                logger.info(f"✅ Success: {current_model} (Att: {att+1})")
-                return res, current_model
+            LAST_REQUEST_TIME = time.time()
             
-            if att < attempts_max - 1: await asyncio.sleep(2)
+            # 3. Настройка конфигурации
+            gen_config_args = {
+                "safety_settings": SAFETY_SETTINGS,
+                "tools": tools_override if tools_override else COMMON_TOOLS,
+                "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
+                "temperature": 0.7,
+                "thinking_config": types.ThinkingConfig(thinking_budget=model_config['thinking_budget'])
+            }
 
-        except genai_errors.APIError as e:
-            if "resource_exhausted" in str(e).lower():
-                logger.warning(f"⚠️ Limit Hit: {current_model}. Resetting counter.")
-                MODEL_REQUEST_COUNTS[current_model] = 0
+            logger.info(f"👉 Sending to: {model_id} (Count: {DAILY_REQUEST_COUNTS[model_id]}/{daily_limit})")
+
+            # 4. Попытка запроса
+            try:
+                config = types.GenerateContentConfig(**gen_config_args)
+                res = await client.aio.models.generate_content(model=model_id, contents=contents, config=config)
                 
-                # ЛОГИКА PING-PONG (Чередование моделей)
-                # Если была Flash -> ставим Lite. Если была Lite -> ставим Flash.
-                if current_model == AVAILABLE_MODELS['flash']:
-                    new_model = AVAILABLE_MODELS['lite']
-                else:
-                    new_model = AVAILABLE_MODELS['flash']
-                
-                if att < attempts_max - 1:
-                    # Умная пауза: увеличиваем время ожидания (4 сек, 8 сек, 12 сек, 16 сек...)
-                    wait_time = 4 * (att + 1)
-                    logger.info(f"🔄 Switching {current_model} -> {new_model}. Sleeping {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-                    
-                    current_model = new_model
-                    MODEL_REQUEST_COUNTS[current_model] += 1
-                    continue
-                else:
-                    return "⏳ Перегрузка API (All quotas exceeded).", current_model
+                if res and res.candidates and res.candidates[0].content:
+                    # Успех!
+                    DAILY_REQUEST_COUNTS[model_id] += 1
+                    logger.info(f"✅ Success: {model_config['display']}")
+                    return res, model_config['display']
             
-            if "invalid argument" in str(e).lower() and "thinking_config" in gen_config_args:
-                logger.info("ℹ️ Removing Thinking Config")
-                gen_config_args.pop("thinking_config")
+            except genai_errors.APIError as e:
+                err_str = str(e).lower()
+                # Обработка лимитов
+                if "resource_exhausted" in err_str or "429" in err_str:
+                    logger.warning(f"⚠️ Limit Exhausted for {model_config['display']}. Switching to next...")
+                    # Счетчик НЕ сбрасываем, чтобы сегодня больше не стучаться в эту модель
+                    # (или можно сбросить, если хотите пробовать позже, но по условию лучше идти вниз по каскаду)
+                    # В данном коде мы просто идем к следующей модели в списке.
+                    # Т.к. DAILY_REQUEST_COUNTS считается только для успешных, лимит не тратится.
+                    continue 
+                
+                if "invalid argument" in err_str and "thinking_config" in err_str:
+                    # Fallback для моделей без поддержки thinking (на всякий случай)
+                    try:
+                        gen_config_args.pop("thinking_config")
+                        config = types.GenerateContentConfig(**gen_config_args)
+                        res = await client.aio.models.generate_content(model=model_id, contents=contents, config=config)
+                        if res:
+                            DAILY_REQUEST_COUNTS[model_id] += 1
+                            return res, model_config['display']
+                    except Exception:
+                        pass
+                
+                logger.error(f"❌ API Error on {model_id}: {e}")
+                continue # При любой ошибке пробуем следующую модель
+            
+            except Exception as e:
+                logger.error(f"❌ General Error on {model_id}: {e}")
                 continue
-            
-            if att == attempts_max - 1: return f"❌ API Error: {html.escape(str(e))}", current_model
-            await asyncio.sleep(5)
-        except Exception as e:
-            return f"❌ Error: {html.escape(str(e))}", current_model
 
-    return "Нет ответа.", current_model
+    return "🚫 Все модели исчерпали лимиты или недоступны.", "none"
 
 def format_response(response):
     try:
-        if not response:
-            return "Получен пустой ответ от API."
-            
-        if not response.candidates:
-            return "Ответ не получен (возможно, заблокирован фильтрами безопасности)."
-            
+        if not response: return "Получен пустой ответ."
+        if isinstance(response, str): return response
+        
         cand = response.candidates[0]
-        if cand.finish_reason.name == "SAFETY": 
-            return "Скрыто фильтром безопасности."
-            
-        if not cand.content or not cand.content.parts:
-             return "Модель прислала пустой ответ."
+        if cand.finish_reason.name == "SAFETY": return "Скрыто фильтром безопасности."
+        if not cand.content or not cand.content.parts: return "Пустой ответ."
 
         text = "".join([p.text for p in cand.content.parts if p.text])
         text = RE_CLEAN_THOUGHTS.sub('', text)
@@ -411,7 +444,7 @@ def format_response(response):
         return convert_markdown_to_html(text.strip())
     except Exception as e:
         logger.error(f"Format Error: {e}", exc_info=True)
-        return f"Ошибка обработки формата: {e}"
+        return f"Ошибка форматирования: {e}"
 
 async def send_smart(msg, text, hint=False):
     text = re.sub(r'<br\s*/?>', '\n', text)
@@ -442,11 +475,7 @@ async def process_request(update, context, parts):
             return
 
         is_media_request = any(p.file_data for p in parts)
-        
-        if is_media_request:
-            history = [] 
-        else:
-            history = build_history(context.chat_data.get("history", []))
+        history = [] if is_media_request else build_history(context.chat_data.get("history", []))
         
         user_name = msg.from_user.first_name
         if msg.forward_origin:
@@ -464,23 +493,14 @@ async def process_request(update, context, parts):
 
         parts_final.append(types.Part(text=final_prompt))
         
-        current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
+        # Запрос через каскад моделей
+        res_obj, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=COMMON_TOOLS)
         
-        # ВЫЗОВ GENERATE
-        res_obj, used_model = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=current_tools)
+        reply = format_response(res_obj)
         
-        reply = format_response(res_obj) if not isinstance(res_obj, str) else res_obj
-        
-        # ПОДПИСЬ МОДЕЛИ
-        if not isinstance(res_obj, str):
-            if used_model == AVAILABLE_MODELS['flash']:
-                display_name = "flash"
-            elif used_model == AVAILABLE_MODELS['lite']:
-                display_name = "flash-lite"
-            else:
-                display_name = "gemini"
-            
-            reply += f"\n\n🤖 {display_name}"
+        # Добавление подписи (текстовая, без эмодзи)
+        if used_model_display != "none":
+            reply += f"\n\n{used_model_display}"
 
         sent = await send_smart(msg, reply, hint=is_media_request)
         
@@ -594,14 +614,9 @@ async def clear_c(u, c):
     c.application.bot_data.get('media_contexts', {}).pop(u.effective_chat.id, None)
     await u.message.reply_text("🧹 Память очищена.")
 @ignore_if_processing
-async def model_c(u, c): 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Flash", callback_data="m_flash"), InlineKeyboardButton("Lite", callback_data="m_lite")]])
-    await u.message.reply_html(f"Текущая модель: <b>{c.chat_data.get('model', DEFAULT_MODEL)}</b>", reply_markup=kb)
-async def model_cb(u, c): 
-    key = 'flash' if 'flash' in u.callback_query.data else 'lite'
-    c.chat_data['model'] = AVAILABLE_MODELS.get(key, DEFAULT_MODEL)
-    await c.application.persistence.update_chat_data(u.effective_chat.id, c.chat_data)
-    await u.callback_query.edit_message_text(f"✅ Установлена модель: {c.chat_data['model']}")
+async def status_c(u, c):
+    stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}/{m['daily_limit']}" for m in MODEL_CASCADE])
+    await u.message.reply_html(f"📊 <b>Статистика за сутки (с перезапуска):</b>\n{stats}")
 
 # --- MAIN ---
 async def main():
@@ -610,17 +625,16 @@ async def main():
 
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("clear", clear_c))
-    app.add_handler(CommandHandler("model", model_c))
+    app.add_handler(CommandHandler("status", status_c))
     app.add_handler(CommandHandler("summarize", lambda u, c: util_cmd(u, c, "Сделай подробный конспект (summary) этого материала.")))
     app.add_handler(CommandHandler("transcript", lambda u, c: util_cmd(u, c, "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words.")))
-    app.add_handler(CallbackQueryHandler(model_cb, pattern='^m_'))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
 
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v38)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v40 - Cascade Mode)") 
         except: pass
 
     stop = asyncio.Event()
