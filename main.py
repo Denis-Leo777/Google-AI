@@ -1,4 +1,6 @@
-# Версия 44 (Gemini 3.0: Switch to Integer Budget 24k to fix TPM Limit)
+--- START OF FILE main.txt ---
+
+# Версия 45 (Gemini 3.0: High Level & 2.5: Auto Budget | Fixed TPM)
 
 import logging
 import os
@@ -55,25 +57,26 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
-# Переводим 3-flash на числовой бюджет, чтобы влезть в лимиты Free Tier
+# Gemini 3 использует 'thinking_level', а Gemini 2.5 использует 'thinking_budget'.
+# Для Free Tier критически важно не спамить, так как мышление расходует TPM моментально.
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
-        "display": "3 flash",
-        "config_type": "budget", 
-        "thinking_value": 24000, 
+        "display": "3 flash (High)",
+        "config_type": "level",   # Gemini 3 требует level, а не budget
+        "thinking_value": "HIGH", # Максимальное качество мышления
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
-        "display": "2.5 flash",
-        "config_type": "budget",
-        "thinking_value": 24000,
+        "display": "2.5 flash (Auto)",
+        "config_type": "auto",    # Автоматический бюджет (пропускаем параметр budget)
+        "thinking_value": None,
     },
     {
         "id": "gemini-2.5-flash-lite-preview-09-2025",
-        "display": "2.5 lite",
-        "config_type": "budget",
-        "thinking_value": 24000,
+        "display": "2.5 lite (Auto)",
+        "config_type": "auto",
+        "thinking_value": None,
     }
 ]
 
@@ -81,7 +84,10 @@ MODEL_CASCADE = [
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-REQUEST_DELAY = 15 # Задержка очереди
+# УВЕЛИЧЕНО до 35 сек: Thinking 'High' генерирует тысячи токенов. 
+# В Free Tier лимит TPM (Tokens Per Minute) быстро исчерпывается. 
+# Частые запросы приведут к бану на 24 часа.
+REQUEST_DELAY = 35 
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
@@ -191,7 +197,6 @@ class PostgresPersistence(BasePersistence):
                     conn.commit()
                     return res
             except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
-                # Глушим логи о разрыве SSL, так как это штатная ситуация для пула
                 if "SSL connection has been closed" not in str(e):
                      logger.warning(f"DB Error ({attempt+1}): {e}")
                 last_ex = e
@@ -371,14 +376,28 @@ async def generate(client, contents, context, current_tools):
                     await asyncio.sleep(wait_time)
                 LAST_REQUEST_TIME = time.time()
             
-            # 2. Настройка Thinking (унифицированная: budget / integer)
+            # 2. Настройка Thinking Config в зависимости от типа модели
+            # Важно: Gemini 3 использует level (string), Gemini 2.5 использует budget (int)
             t_config = None
-            if model_config.get('thinking_value'):
-                if model_config['config_type'] == 'level':
-                    # Fallback для совместимости, но мы используем 'budget' в конфиге
-                    t_config = types.ThinkingConfig(thinking_level=model_config['thinking_value'])
-                elif model_config['config_type'] == 'budget':
-                    t_config = types.ThinkingConfig(thinking_budget=model_config['thinking_value'])
+            cfg_type = model_config.get('config_type')
+            
+            if cfg_type == 'level':
+                # Для Gemini 3.0 (используем level="HIGH")
+                t_config = types.ThinkingConfig(
+                    include_thoughts=True,
+                    thinking_level=model_config['thinking_value'] # HIGH/LOW и т.д.
+                )
+            elif cfg_type == 'auto':
+                # Для Gemini 2.5 (просто включаем, без бюджета = Авто)
+                t_config = types.ThinkingConfig(
+                    include_thoughts=True
+                )
+            elif cfg_type == 'budget':
+                # Для Gemini 2.5 (явный бюджет)
+                t_config = types.ThinkingConfig(
+                    include_thoughts=True,
+                    thinking_budget_token_limit=model_config['thinking_value']
+                )
 
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
@@ -389,7 +408,7 @@ async def generate(client, contents, context, current_tools):
             if t_config:
                 gen_config_args["thinking_config"] = t_config
 
-            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1}/{max_attempts_per_model}) [Thinking: {model_config.get('thinking_value')}]")
+            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1}) [Type: {cfg_type}]")
 
             try:
                 config = types.GenerateContentConfig(**gen_config_args)
@@ -403,21 +422,24 @@ async def generate(client, contents, context, current_tools):
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
                 
-                # Лимиты
-                if "resource_exhausted" in err_str or "429" in err_str:
-                    logger.warning(f"⚠️ Limit Hit on {model_config['display']}.")
+                # Лимиты (429) или Перегрузка (503)
+                if "resource_exhausted" in err_str or "429" in err_str or "503" in err_str or "overloaded" in err_str:
+                    logger.warning(f"⚠️ Limit/Overload Hit on {model_config['display']}: {e}")
+                    
+                    # Если перегрузка (503), ждем чуть дольше
+                    retry_wait = 20 if "503" in err_str else 10
+                    
                     if attempt < max_attempts_per_model - 1:
-                        logger.info(f"🔄 Retrying same model in 10s...")
-                        await asyncio.sleep(10)
+                        logger.info(f"🔄 Retrying same model in {retry_wait}s...")
+                        await asyncio.sleep(retry_wait)
                         continue 
                     else:
                         logger.warning(f"⏭️ Switching to next tier.")
                         break 
                 
-                # Если вдруг модель 3.0 откажется принимать integer (вернет 400),
-                # мы ловим это и пробуем отправить без thinking_config.
-                if "invalid argument" in err_str and "thinking" in err_str:
-                    logger.warning(f"ℹ️ Invalid Thinking Config for {model_id}. Retrying without thinking...")
+                # Ошибка аргументов (например, если модель не поддерживает thinking_level)
+                if "invalid argument" in err_str:
+                    logger.error(f"❌ Config Error on {model_id}. Retrying without thinking...")
                     try:
                         gen_config_args.pop("thinking_config", None)
                         config = types.GenerateContentConfig(**gen_config_args)
@@ -435,7 +457,7 @@ async def generate(client, contents, context, current_tools):
                 logger.error(f"❌ General Error on {model_id}: {e}")
                 break
 
-    return "🚫 Все модели исчерпали лимиты или недоступны.", "none"
+    return "🚫 Все модели исчерпали лимиты или недоступны (TPM Limit).", "none"
 
 def format_response(response):
     try:
@@ -642,7 +664,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v44 - Integer Budget)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v45 - High Level / Auto Budget)") 
         except: pass
 
     stop = asyncio.Event()
