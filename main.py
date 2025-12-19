@@ -1,5 +1,3 @@
---- START OF FILE main.txt ---
-
 # Версия 45 (Gemini 3.0: High Level & 2.5: Auto Budget | Fixed TPM)
 
 import logging
