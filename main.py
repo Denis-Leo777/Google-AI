@@ -1,4 +1,4 @@
-# Версия 41 (Fix: Split Tools for Media, 24k Budget for All, No Daily Block)
+# Версия 43 (Correct Thinking Config: Level for v3, Budget for v2.5)
 
 import logging
 import os
@@ -55,30 +55,30 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
+# config_type: 'level' (для Gemini 3) или 'budget' (для Gemini 2.5)
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
         "display": "3 flash",
-        # Установлено 24k для стабильности (как и у других)
-        "thinking_budget": 24000, 
-        "daily_limit": 20
+        "config_type": "level", 
+        "thinking_value": "HIGH", # Для Gemini 3 используем уровень
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
         "display": "2.5 flash",
-        "thinking_budget": 24000,
-        "daily_limit": 20
+        "config_type": "budget",
+        "thinking_value": 24000, # Для Gemini 2.5 используем число токенов
     },
     {
         "id": "gemini-2.5-flash-lite-preview-09-2025",
         "display": "2.5 lite",
-        "thinking_budget": 24000,
-        "daily_limit": 999999
+        "config_type": "budget",
+        "thinking_value": 24000,
     }
 ]
 
 # Глобальные переменные
-DAILY_REQUEST_COUNTS = defaultdict(int) # {model_id: count}
+DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
 REQUEST_DELAY = 15 # Задержка очереди
@@ -104,16 +104,13 @@ MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ ---
-# Разделяем инструменты, чтобы избежать ошибки MIME type при загрузке файлов
-
-# 1. Инструменты для ТЕКСТА (включают Code Execution)
+# Разделяем инструменты во избежание ошибки 400 (Invalid Argument для файлов)
 TEXT_TOOLS = [types.Tool(
     google_search=types.GoogleSearch(), 
     code_execution=types.ToolCodeExecution(), 
     url_context=types.UrlContext()
 )]
 
-# 2. Инструменты для МЕДИА (БЕЗ Code Execution, только поиск)
 MEDIA_TOOLS = [types.Tool(
     google_search=types.GoogleSearch(), 
     url_context=types.UrlContext()
@@ -350,7 +347,7 @@ async def upload_file(client, b, mime, name):
         logger.error(f"Upload Fail: {e}")
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
-# --- ЯДРО ГЕНЕРАЦИИ (CASCADE & QUEUE) ---
+# --- ЯДРО ГЕНЕРАЦИИ ---
 async def generate(client, contents, context, current_tools):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
@@ -360,32 +357,39 @@ async def generate(client, contents, context, current_tools):
     
     for model_config in MODEL_CASCADE:
         model_id = model_config['id']
-        daily_limit = model_config['daily_limit']
+        max_attempts_per_model = 2 # Пробуем дважды перед переключением на следующую модель
         
-        # Мы НЕ блокируем модель на весь день при превышении лимита,
-        # но мы продолжаем вести статистику.
-        # Бот попробует отправить запрос.
+        for attempt in range(max_attempts_per_model):
+            # 1. Глобальная очередь
+            async with GLOBAL_LOCK:
+                now = time.time()
+                elapsed = now - LAST_REQUEST_TIME
+                if elapsed < REQUEST_DELAY:
+                    wait_time = REQUEST_DELAY - elapsed
+                    logger.info(f"⏳ Queue: Waiting {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+                LAST_REQUEST_TIME = time.time()
+            
+            # 2. Настройка Thinking (динамическая: уровень или бюджет)
+            t_config = None
+            if model_config.get('thinking_value'):
+                if model_config['config_type'] == 'level':
+                    # Для Gemini 3 используем thinking_level
+                    t_config = types.ThinkingConfig(thinking_level=model_config['thinking_value'])
+                elif model_config['config_type'] == 'budget':
+                    # Для Gemini 2.5 используем thinking_budget
+                    t_config = types.ThinkingConfig(thinking_budget=model_config['thinking_value'])
 
-        # Очередь (15 секунд задержки)
-        async with GLOBAL_LOCK:
-            now = time.time()
-            elapsed = now - LAST_REQUEST_TIME
-            if elapsed < REQUEST_DELAY:
-                wait_time = REQUEST_DELAY - elapsed
-                logger.info(f"⏳ Queue: Waiting {wait_time:.1f}s before sending to {model_config['display']}...")
-                await asyncio.sleep(wait_time)
-            
-            LAST_REQUEST_TIME = time.time()
-            
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
-                "tools": current_tools, # Используем переданный правильный набор инструментов
+                "tools": current_tools,
                 "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
                 "temperature": 0.7,
-                "thinking_config": types.ThinkingConfig(thinking_budget=model_config['thinking_budget'])
             }
+            if t_config:
+                gen_config_args["thinking_config"] = t_config
 
-            logger.info(f"👉 Sending to: {model_id} (Count: {DAILY_REQUEST_COUNTS[model_id]}/{daily_limit})")
+            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1}/{max_attempts_per_model}) [Thinking: {model_config.get('thinking_value')}]")
 
             try:
                 config = types.GenerateContentConfig(**gen_config_args)
@@ -399,13 +403,22 @@ async def generate(client, contents, context, current_tools):
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
                 
+                # Обработка лимитов
                 if "resource_exhausted" in err_str or "429" in err_str:
-                    logger.warning(f"⚠️ Limit Exhausted for {model_config['display']}. Switching to next...")
-                    continue 
+                    logger.warning(f"⚠️ Limit Hit on {model_config['display']}.")
+                    if attempt < max_attempts_per_model - 1:
+                        logger.info(f"🔄 Retrying same model in 10s...")
+                        await asyncio.sleep(10)
+                        continue 
+                    else:
+                        logger.warning(f"⏭️ Switching to next tier.")
+                        break 
                 
-                if "invalid argument" in err_str and "thinking_config" in err_str:
+                # Fallback при ошибке конфигурации (например, если уровень HIGH недоступен)
+                if "invalid argument" in err_str and "thinking" in err_str:
+                    logger.warning(f"ℹ️ Invalid Thinking Config for {model_id}. Retrying without thinking...")
                     try:
-                        gen_config_args.pop("thinking_config")
+                        gen_config_args.pop("thinking_config", None)
                         config = types.GenerateContentConfig(**gen_config_args)
                         res = await client.aio.models.generate_content(model=model_id, contents=contents, config=config)
                         if res:
@@ -413,13 +426,13 @@ async def generate(client, contents, context, current_tools):
                             return res, model_config['display']
                     except Exception:
                         pass
-                
+
                 logger.error(f"❌ API Error on {model_id}: {e}")
-                continue 
+                break 
             
             except Exception as e:
                 logger.error(f"❌ General Error on {model_id}: {e}")
-                continue
+                break
 
     return "🚫 Все модели исчерпали лимиты или недоступны.", "none"
 
@@ -487,8 +500,7 @@ async def process_request(update, context, parts):
 
         parts_final.append(types.Part(text=final_prompt))
         
-        # ВЫБОР ИНСТРУМЕНТОВ
-        # Если есть файл (фото/аудио), мы НЕ включаем выполнение кода, чтобы избежать ошибки 400.
+        # Выбор инструментов (Media = no code execution)
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
 
         res_obj, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools)
@@ -611,8 +623,8 @@ async def clear_c(u, c):
     await u.message.reply_text("🧹 Память очищена.")
 @ignore_if_processing
 async def status_c(u, c):
-    stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}/{m['daily_limit']}" for m in MODEL_CASCADE])
-    await u.message.reply_html(f"📊 <b>Статистика за сутки:</b>\n{stats}")
+    stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE])
+    await u.message.reply_html(f"📊 <b>Статистика успешных запросов:</b>\n{stats}")
 
 # --- MAIN ---
 async def main():
@@ -630,7 +642,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v41 - Fix Media Tools)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v43 - Correct Thinking Config)") 
         except: pass
 
     stop = asyncio.Event()
