@@ -1,4 +1,4 @@
-# Версия 49 (Fix Pydantic Error: thinking_budget | Gemini 3 Medium 12k)
+# Версия 51 (Clean Code: No Regex Filters, API handles thoughts)
 
 import logging
 import os
@@ -58,10 +58,10 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
-        "display": "3 flash (Medium)",
-        # Используем budget, так как thinking_level (HIGH) слишком дорог для Free Tier
-        "config_type": "budget", 
-        "thinking_value": 12000, 
+        "display": "3 flash (Low)",
+        # Используем стандартный LEVEL LOW - это работает на Free Tier
+        "config_type": "level", 
+        "thinking_value": "LOW", 
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
@@ -81,7 +81,6 @@ MODEL_CASCADE = [
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-# Задержка 35 сек только между запросами юзера. Переключение моделей мгновенное.
 REQUEST_DELAY = 35 
 
 # --- REGEX ---
@@ -91,16 +90,13 @@ DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число
 HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br|blockquote)>', re.IGNORECASE)
 RE_RETRY_DELAY = re.compile(r'retry in (\d+(\.\d+)?)s', re.IGNORECASE)
 
-# Очистка
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
-# Фильтры мыслей
-RE_CLEAN_THOUGHTS_OLD = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
-RE_XML_THOUGHTS = re.compile(r'<thought>.*?</thought>', re.DOTALL) 
+# Удалены регулярки для мыслей, так как include_thoughts=False
 
 MAX_CONTEXT_CHARS = 90000
 MAX_HISTORY_RESPONSE_LEN = 4000
@@ -380,13 +376,13 @@ async def generate(client, contents, context, current_tools):
             t_config = None
             cfg_type = model_config.get('config_type')
             
+            # ВАЖНО: include_thoughts=False скрывает мысли от API, но мышление все равно работает!
             if cfg_type == 'level':
-                t_config = types.ThinkingConfig(include_thoughts=True, thinking_level=model_config['thinking_value'])
+                t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_value'])
             elif cfg_type == 'auto':
-                t_config = types.ThinkingConfig(include_thoughts=True)
+                t_config = types.ThinkingConfig(include_thoughts=False)
             elif cfg_type == 'budget':
-                # FIXED: thinking_budget instead of thinking_budget_token_limit
-                t_config = types.ThinkingConfig(include_thoughts=True, thinking_budget=model_config['thinking_value'])
+                t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_value'])
 
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
@@ -469,9 +465,6 @@ def format_response(response):
         if not cand.content or not cand.content.parts: return "Пустой ответ."
 
         text = "".join([p.text for p in cand.content.parts if p.text])
-        # Очистка мыслей
-        text = RE_CLEAN_THOUGHTS_OLD.sub('', text)
-        text = RE_XML_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
         return convert_markdown_to_html(text.strip())
     except Exception as e:
@@ -666,7 +659,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v49 - Fixed Pydantic)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v51 - Clean Code)") 
         except: pass
 
     stop = asyncio.Event()
