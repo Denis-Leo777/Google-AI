@@ -1,4 +1,4 @@
-# Версия 47 (Fix: Instant Model Switch + Temperature 1.0)
+# Версия 48 (Filter Thoughts Fix + Gemini 3 Medium Budget)
 
 import logging
 import os
@@ -58,21 +58,21 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
-        "display": "3 flash (Medium)",
-        "config_type": "level",
-        "thinking_value": "Medium", 
+        "display": "3 flash",
+        "config_type": "budget", # Используем числовой бюджет для точного контроля
+        "thinking_value": 24000, # ~Medium budget (High обычно >24k). Экономит TPM.
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
-        "display": "2.5 flash (Auto)",
-        "config_type": "auto",
-        "thinking_value": None,
+        "display": "2.5 flash",
+        "config_type": "budget", # Используем числовой бюджет для точного контроля
+        "thinking_value": 24000,
     },
     {
         "id": "gemini-2.5-flash-lite-preview-09-2025",
-        "display": "2.5 lite (Auto)",
-        "config_type": "auto",
-        "thinking_value": None,
+        "display": "2.5 lite",
+        "config_type": "budget", # Используем числовой бюджет для точного контроля
+        "thinking_value": 24000,
     }
 ]
 
@@ -80,8 +80,6 @@ MODEL_CASCADE = [
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-# Задержка теперь работает ТОЛЬКО между запросами пользователей, 
-# а не между моделями. 35 сек - безопасно для Free Tier.
 REQUEST_DELAY = 35 
 
 # --- REGEX ---
@@ -91,12 +89,16 @@ DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число
 HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br|blockquote)>', re.IGNORECASE)
 RE_RETRY_DELAY = re.compile(r'retry in (\d+(\.\d+)?)s', re.IGNORECASE)
 
+# Очистка ответа
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
-RE_CLEAN_THOUGHTS = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
+
+# Фильтры для мыслей модели
+RE_CLEAN_THOUGHTS_OLD = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
+RE_XML_THOUGHTS = re.compile(r'<thought>.*?</thought>', re.DOTALL) # Новый жесткий фильтр
 
 MAX_CONTEXT_CHARS = 90000
 MAX_HISTORY_RESPONSE_LEN = 4000
@@ -357,7 +359,7 @@ async def generate(client, contents, context, current_tools):
 
     global LAST_REQUEST_TIME
     
-    # 1. Глобальная очередь (теперь вне цикла моделей)
+    # 1. Глобальная очередь
     async with GLOBAL_LOCK:
         now = time.time()
         elapsed = now - LAST_REQUEST_TIME
@@ -387,7 +389,7 @@ async def generate(client, contents, context, current_tools):
                 "safety_settings": SAFETY_SETTINGS,
                 "tools": current_tools,
                 "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-                "temperature": 1.0, # Обновлено по просьбе пользователя
+                "temperature": 1.0, 
             }
             if t_config:
                 gen_config_args["thinking_config"] = t_config
@@ -415,7 +417,7 @@ async def generate(client, contents, context, current_tools):
                     
                     if wait_seconds > 5.0 or "quota" in err_str:
                         logger.warning(f"⏭️ Skipping model instantly (Instant Failover).")
-                        break # Сразу следующая модель, без паузы!
+                        break 
                     
                     if attempt < max_attempts_per_model - 1:
                         logger.info(f"🔄 Short wait retry in 5s...")
@@ -464,7 +466,9 @@ def format_response(response):
         if not cand.content or not cand.content.parts: return "Пустой ответ."
 
         text = "".join([p.text for p in cand.content.parts if p.text])
-        text = RE_CLEAN_THOUGHTS.sub('', text)
+        # Очистка мыслей
+        text = RE_CLEAN_THOUGHTS_OLD.sub('', text)
+        text = RE_XML_THOUGHTS.sub('', text)
         text = RE_CLEAN_NAMES.sub('', text)
         return convert_markdown_to_html(text.strip())
     except Exception as e:
@@ -659,7 +663,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v47 - Instant Failover)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v48 - Filter Thoughts)") 
         except: pass
 
     stop = asyncio.Event()
