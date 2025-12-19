@@ -1,4 +1,4 @@
-# Версия 46 (Smart Failover: Instant Switch on 429 Limit)
+# Версия 47 (Fix: Instant Model Switch + Temperature 1.0)
 
 import logging
 import os
@@ -55,10 +55,6 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
-# Логика:
-# 1. 3-flash (High Thinking) - самое умное, но дорогое по TPM.
-# 2. 2.5-flash (Auto Thinking) - жесткий лимит 20-50 запросов в день на Preview.
-# 3. 2.5-lite (Auto Thinking) - "рабочая лошадка" для failover.
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
@@ -84,7 +80,8 @@ MODEL_CASCADE = [
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-# Оставляем 35 сек, чтобы не ловить бан TPM, когда лимиты еще есть.
+# Задержка теперь работает ТОЛЬКО между запросами пользователей, 
+# а не между моделями. 35 сек - безопасно для Free Tier.
 REQUEST_DELAY = 35 
 
 # --- REGEX ---
@@ -92,7 +89,7 @@ YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:w
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
 HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br|blockquote)>', re.IGNORECASE)
-RE_RETRY_DELAY = re.compile(r'retry in (\d+(\.\d+)?)s', re.IGNORECASE) # Парсинг времени из ошибки
+RE_RETRY_DELAY = re.compile(r'retry in (\d+(\.\d+)?)s', re.IGNORECASE)
 
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
@@ -360,21 +357,21 @@ async def generate(client, contents, context, current_tools):
 
     global LAST_REQUEST_TIME
     
+    # 1. Глобальная очередь (теперь вне цикла моделей)
+    async with GLOBAL_LOCK:
+        now = time.time()
+        elapsed = now - LAST_REQUEST_TIME
+        if elapsed < REQUEST_DELAY:
+            wait_time = REQUEST_DELAY - elapsed
+            logger.info(f"⏳ Queue: Waiting {wait_time:.1f}s...")
+            await asyncio.sleep(wait_time)
+        LAST_REQUEST_TIME = time.time()
+
     for model_config in MODEL_CASCADE:
         model_id = model_config['id']
         max_attempts_per_model = 2 
         
         for attempt in range(max_attempts_per_model):
-            # 1. Глобальная очередь
-            async with GLOBAL_LOCK:
-                now = time.time()
-                elapsed = now - LAST_REQUEST_TIME
-                if elapsed < REQUEST_DELAY:
-                    wait_time = REQUEST_DELAY - elapsed
-                    logger.info(f"⏳ Queue: Waiting {wait_time:.1f}s...")
-                    await asyncio.sleep(wait_time)
-                LAST_REQUEST_TIME = time.time()
-            
             # 2. Настройка Thinking
             t_config = None
             cfg_type = model_config.get('config_type')
@@ -390,7 +387,7 @@ async def generate(client, contents, context, current_tools):
                 "safety_settings": SAFETY_SETTINGS,
                 "tools": current_tools,
                 "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
-                "temperature": 1,
+                "temperature": 1.0, # Обновлено по просьбе пользователя
             }
             if t_config:
                 gen_config_args["thinking_config"] = t_config
@@ -413,18 +410,13 @@ async def generate(client, contents, context, current_tools):
                 if "429" in err_str or "resource_exhausted" in err_str:
                     logger.warning(f"⚠️ Limit Hit on {model_config['display']}.")
                     
-                    # Пытаемся вытащить время ожидания из ошибки
                     wait_match = RE_RETRY_DELAY.search(err_str)
                     wait_seconds = float(wait_match.group(1)) if wait_match else 0
                     
-                    # Если Google просит ждать больше 5 секунд -> МЫ НЕ ЖДЕМ.
-                    # Мы сразу переключаемся на следующую модель, так как пользователь не хочет ждать.
-                    # Это решает проблему "limit: 20", так как модель просто будет пропущена.
                     if wait_seconds > 5.0 or "quota" in err_str:
-                        logger.warning(f"⏭️ Too long wait ({wait_seconds}s) or Hard Limit. Skipping model instantly.")
-                        break # Выход из внутреннего цикла попыток -> переход к следующей модели в CASCADE
+                        logger.warning(f"⏭️ Skipping model instantly (Instant Failover).")
+                        break # Сразу следующая модель, без паузы!
                     
-                    # Если ждать мало (вдруг баг сети), можно попробовать еще раз
                     if attempt < max_attempts_per_model - 1:
                         logger.info(f"🔄 Short wait retry in 5s...")
                         await asyncio.sleep(5)
@@ -440,7 +432,6 @@ async def generate(client, contents, context, current_tools):
                     else:
                         break
                 
-                # Обработка ошибки конфига (на всякий случай)
                 if "invalid argument" in err_str:
                     logger.error(f"❌ Config Error on {model_id}. Retrying without thinking...")
                     try:
@@ -668,7 +659,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v46 - Smart Failover)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v47 - Instant Failover)") 
         except: pass
 
     stop = asyncio.Event()
