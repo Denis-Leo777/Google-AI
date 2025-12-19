@@ -1,4 +1,4 @@
-# Версия 43 (Correct Thinking Config: Level for v3, Budget for v2.5)
+# Версия 44 (Gemini 3.0: Switch to Integer Budget 24k to fix TPM Limit)
 
 import logging
 import os
@@ -55,19 +55,19 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
-# config_type: 'level' (для Gemini 3) или 'budget' (для Gemini 2.5)
+# Переводим 3-flash на числовой бюджет, чтобы влезть в лимиты Free Tier
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
         "display": "3 flash",
-        "config_type": "level", 
-        "thinking_value": "HIGH", # Для Gemini 3 используем уровень
+        "config_type": "budget", 
+        "thinking_value": 24000, 
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
         "display": "2.5 flash",
         "config_type": "budget",
-        "thinking_value": 24000, # Для Gemini 2.5 используем число токенов
+        "thinking_value": 24000,
     },
     {
         "id": "gemini-2.5-flash-lite-preview-09-2025",
@@ -104,7 +104,6 @@ MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ ---
-# Разделяем инструменты во избежание ошибки 400 (Invalid Argument для файлов)
 TEXT_TOOLS = [types.Tool(
     google_search=types.GoogleSearch(), 
     code_execution=types.ToolCodeExecution(), 
@@ -192,7 +191,9 @@ class PostgresPersistence(BasePersistence):
                     conn.commit()
                     return res
             except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
-                logger.warning(f"DB Error ({attempt+1}): {e}")
+                # Глушим логи о разрыве SSL, так как это штатная ситуация для пула
+                if "SSL connection has been closed" not in str(e):
+                     logger.warning(f"DB Error ({attempt+1}): {e}")
                 last_ex = e
                 if conn:
                     try: conn.rollback()
@@ -357,7 +358,7 @@ async def generate(client, contents, context, current_tools):
     
     for model_config in MODEL_CASCADE:
         model_id = model_config['id']
-        max_attempts_per_model = 2 # Пробуем дважды перед переключением на следующую модель
+        max_attempts_per_model = 2 
         
         for attempt in range(max_attempts_per_model):
             # 1. Глобальная очередь
@@ -370,14 +371,13 @@ async def generate(client, contents, context, current_tools):
                     await asyncio.sleep(wait_time)
                 LAST_REQUEST_TIME = time.time()
             
-            # 2. Настройка Thinking (динамическая: уровень или бюджет)
+            # 2. Настройка Thinking (унифицированная: budget / integer)
             t_config = None
             if model_config.get('thinking_value'):
                 if model_config['config_type'] == 'level':
-                    # Для Gemini 3 используем thinking_level
+                    # Fallback для совместимости, но мы используем 'budget' в конфиге
                     t_config = types.ThinkingConfig(thinking_level=model_config['thinking_value'])
                 elif model_config['config_type'] == 'budget':
-                    # Для Gemini 2.5 используем thinking_budget
                     t_config = types.ThinkingConfig(thinking_budget=model_config['thinking_value'])
 
             gen_config_args = {
@@ -403,7 +403,7 @@ async def generate(client, contents, context, current_tools):
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
                 
-                # Обработка лимитов
+                # Лимиты
                 if "resource_exhausted" in err_str or "429" in err_str:
                     logger.warning(f"⚠️ Limit Hit on {model_config['display']}.")
                     if attempt < max_attempts_per_model - 1:
@@ -414,7 +414,8 @@ async def generate(client, contents, context, current_tools):
                         logger.warning(f"⏭️ Switching to next tier.")
                         break 
                 
-                # Fallback при ошибке конфигурации (например, если уровень HIGH недоступен)
+                # Если вдруг модель 3.0 откажется принимать integer (вернет 400),
+                # мы ловим это и пробуем отправить без thinking_config.
                 if "invalid argument" in err_str and "thinking" in err_str:
                     logger.warning(f"ℹ️ Invalid Thinking Config for {model_id}. Retrying without thinking...")
                     try:
@@ -500,7 +501,6 @@ async def process_request(update, context, parts):
 
         parts_final.append(types.Part(text=final_prompt))
         
-        # Выбор инструментов (Media = no code execution)
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
 
         res_obj, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools)
@@ -642,7 +642,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v43 - Correct Thinking Config)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v44 - Integer Budget)") 
         except: pass
 
     stop = asyncio.Event()
