@@ -58,9 +58,9 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
-        "display": "3 flash (High)",
+        "display": "3 flash (Medium)",
         "config_type": "level",
-        "thinking_value": "HIGH", 
+        "thinking_value": "Medium", 
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
