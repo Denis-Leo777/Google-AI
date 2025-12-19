@@ -1,4 +1,4 @@
-# Версия 40 (Gemini 3.0 Flash, 55k Thinking Budget, Safety Checks)
+# Версия 41 (Fix: Split Tools for Media, 24k Budget for All, No Daily Block)
 
 import logging
 import os
@@ -32,7 +32,7 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
 
-# Глушим лишний шум от библиотек
+# Глушим лишний шум
 SILENCED_MODULES = [
     'aiohttp.access', 'httpx', 'telegram', 
     'grpc', 'google', 'google.auth', 'google.api_core', 
@@ -55,37 +55,33 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
-# Настройка каскада (порядок важен: сверху вниз)
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
         "display": "3 flash",
-        # 55000 токенов ~ высокий уровень, оставляет место для ответа (max out 64k)
-        "thinking_budget": 55000, 
-        "daily_limit": 20,
-        "is_fallback": False
+        # Установлено 24k для стабильности (как и у других)
+        "thinking_budget": 24000, 
+        "daily_limit": 20
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
         "display": "2.5 flash",
         "thinking_budget": 24000,
-        "daily_limit": 20,
-        "is_fallback": True
+        "daily_limit": 20
     },
     {
         "id": "gemini-2.5-flash-lite-preview-09-2025",
         "display": "2.5 lite",
         "thinking_budget": 24000,
-        "daily_limit": 999999, # Практически безлимит (последний рубеж)
-        "is_fallback": True
+        "daily_limit": 999999
     }
 ]
 
-# Глобальные переменные состояния
+# Глобальные переменные
 DAILY_REQUEST_COUNTS = defaultdict(int) # {model_id: count}
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-REQUEST_DELAY = 15 # 15 секунд задержки (для соблюдения 5 RPM и восстановления токенов)
+REQUEST_DELAY = 15 # Задержка очереди
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
@@ -108,10 +104,18 @@ MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ ---
-# Google Search доступен для всех моделей
-COMMON_TOOLS = [types.Tool(
+# Разделяем инструменты, чтобы избежать ошибки MIME type при загрузке файлов
+
+# 1. Инструменты для ТЕКСТА (включают Code Execution)
+TEXT_TOOLS = [types.Tool(
     google_search=types.GoogleSearch(), 
     code_execution=types.ToolCodeExecution(), 
+    url_context=types.UrlContext()
+)]
+
+# 2. Инструменты для МЕДИА (БЕЗ Code Execution, только поиск)
+MEDIA_TOOLS = [types.Tool(
+    google_search=types.GoogleSearch(), 
     url_context=types.UrlContext()
 )]
 
@@ -347,24 +351,22 @@ async def upload_file(client, b, mime, name):
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
 # --- ЯДРО ГЕНЕРАЦИИ (CASCADE & QUEUE) ---
-async def generate(client, contents, context, tools_override=None):
+async def generate(client, contents, context, current_tools):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
     global LAST_REQUEST_TIME
     
-    # Каскад: пытаемся от самой умной к самой простой
     for model_config in MODEL_CASCADE:
         model_id = model_config['id']
         daily_limit = model_config['daily_limit']
         
-        # 1. Проверка суточного лимита
-        if DAILY_REQUEST_COUNTS[model_id] >= daily_limit:
-            logger.info(f"⏭️ Skipping {model_config['display']} (Daily limit {daily_limit} reached)")
-            continue
+        # Мы НЕ блокируем модель на весь день при превышении лимита,
+        # но мы продолжаем вести статистику.
+        # Бот попробует отправить запрос.
 
-        # 2. Очередь (15 секунд задержки перед ЛЮБЫМ запросом)
+        # Очередь (15 секунд задержки)
         async with GLOBAL_LOCK:
             now = time.time()
             elapsed = now - LAST_REQUEST_TIME
@@ -375,10 +377,9 @@ async def generate(client, contents, context, tools_override=None):
             
             LAST_REQUEST_TIME = time.time()
             
-            # 3. Настройка конфигурации
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
-                "tools": tools_override if tools_override else COMMON_TOOLS,
+                "tools": current_tools, # Используем переданный правильный набор инструментов
                 "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
                 "temperature": 0.7,
                 "thinking_config": types.ThinkingConfig(thinking_budget=model_config['thinking_budget'])
@@ -386,30 +387,23 @@ async def generate(client, contents, context, tools_override=None):
 
             logger.info(f"👉 Sending to: {model_id} (Count: {DAILY_REQUEST_COUNTS[model_id]}/{daily_limit})")
 
-            # 4. Попытка запроса
             try:
                 config = types.GenerateContentConfig(**gen_config_args)
                 res = await client.aio.models.generate_content(model=model_id, contents=contents, config=config)
                 
                 if res and res.candidates and res.candidates[0].content:
-                    # Успех!
                     DAILY_REQUEST_COUNTS[model_id] += 1
                     logger.info(f"✅ Success: {model_config['display']}")
                     return res, model_config['display']
             
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
-                # Обработка лимитов
+                
                 if "resource_exhausted" in err_str or "429" in err_str:
                     logger.warning(f"⚠️ Limit Exhausted for {model_config['display']}. Switching to next...")
-                    # Счетчик НЕ сбрасываем, чтобы сегодня больше не стучаться в эту модель
-                    # (или можно сбросить, если хотите пробовать позже, но по условию лучше идти вниз по каскаду)
-                    # В данном коде мы просто идем к следующей модели в списке.
-                    # Т.к. DAILY_REQUEST_COUNTS считается только для успешных, лимит не тратится.
                     continue 
                 
                 if "invalid argument" in err_str and "thinking_config" in err_str:
-                    # Fallback для моделей без поддержки thinking (на всякий случай)
                     try:
                         gen_config_args.pop("thinking_config")
                         config = types.GenerateContentConfig(**gen_config_args)
@@ -421,7 +415,7 @@ async def generate(client, contents, context, tools_override=None):
                         pass
                 
                 logger.error(f"❌ API Error on {model_id}: {e}")
-                continue # При любой ошибке пробуем следующую модель
+                continue 
             
             except Exception as e:
                 logger.error(f"❌ General Error on {model_id}: {e}")
@@ -493,12 +487,14 @@ async def process_request(update, context, parts):
 
         parts_final.append(types.Part(text=final_prompt))
         
-        # Запрос через каскад моделей
-        res_obj, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, tools_override=COMMON_TOOLS)
+        # ВЫБОР ИНСТРУМЕНТОВ
+        # Если есть файл (фото/аудио), мы НЕ включаем выполнение кода, чтобы избежать ошибки 400.
+        current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
+
+        res_obj, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools)
         
         reply = format_response(res_obj)
         
-        # Добавление подписи (текстовая, без эмодзи)
         if used_model_display != "none":
             reply += f"\n\n{used_model_display}"
 
@@ -616,7 +612,7 @@ async def clear_c(u, c):
 @ignore_if_processing
 async def status_c(u, c):
     stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}/{m['daily_limit']}" for m in MODEL_CASCADE])
-    await u.message.reply_html(f"📊 <b>Статистика за сутки (с перезапуска):</b>\n{stats}")
+    await u.message.reply_html(f"📊 <b>Статистика за сутки:</b>\n{stats}")
 
 # --- MAIN ---
 async def main():
@@ -634,7 +630,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v40 - Cascade Mode)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v41 - Fix Media Tools)") 
         except: pass
 
     stop = asyncio.Event()
