@@ -1,4 +1,4 @@
-# Версия 48 (Filter Thoughts Fix + Gemini 3 Medium Budget)
+# Версия 49 (Fix Pydantic Error: thinking_budget | Gemini 3 Medium 12k)
 
 import logging
 import os
@@ -59,8 +59,9 @@ MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
         "display": "3 flash (Medium)",
-        "config_type": "budget", # Используем числовой бюджет для точного контроля
-        "thinking_value": 24000, # ~Medium budget (High обычно >24k). Экономит TPM.
+        # Используем budget, так как thinking_level (HIGH) слишком дорог для Free Tier
+        "config_type": "budget", 
+        "thinking_value": 12000, 
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
@@ -80,6 +81,7 @@ MODEL_CASCADE = [
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
+# Задержка 35 сек только между запросами юзера. Переключение моделей мгновенное.
 REQUEST_DELAY = 35 
 
 # --- REGEX ---
@@ -89,16 +91,16 @@ DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число
 HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|code|pre|a|tg-spoiler|br|blockquote)>', re.IGNORECASE)
 RE_RETRY_DELAY = re.compile(r'retry in (\d+(\.\d+)?)s', re.IGNORECASE)
 
-# Очистка ответа
+# Очистка
 RE_CODE_BLOCK = re.compile(r'```(\w+)?\n?(.*?)```', re.DOTALL)
 RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
-# Фильтры для мыслей модели
+# Фильтры мыслей
 RE_CLEAN_THOUGHTS_OLD = re.compile(r'tool_code\n.*?thought\n', re.DOTALL)
-RE_XML_THOUGHTS = re.compile(r'<thought>.*?</thought>', re.DOTALL) # Новый жесткий фильтр
+RE_XML_THOUGHTS = re.compile(r'<thought>.*?</thought>', re.DOTALL) 
 
 MAX_CONTEXT_CHARS = 90000
 MAX_HISTORY_RESPONSE_LEN = 4000
@@ -383,7 +385,8 @@ async def generate(client, contents, context, current_tools):
             elif cfg_type == 'auto':
                 t_config = types.ThinkingConfig(include_thoughts=True)
             elif cfg_type == 'budget':
-                t_config = types.ThinkingConfig(include_thoughts=True, thinking_budget_token_limit=model_config['thinking_value'])
+                # FIXED: thinking_budget instead of thinking_budget_token_limit
+                t_config = types.ThinkingConfig(include_thoughts=True, thinking_budget=model_config['thinking_value'])
 
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
@@ -663,7 +666,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v48 - Filter Thoughts)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v49 - Fixed Pydantic)") 
         except: pass
 
     stop = asyncio.Event()
