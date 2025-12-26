@@ -1,4 +1,4 @@
-# Версия 53 (Fix: Gemini 3 Minimal Level & Gemini 2.5 Integer Budget)
+# Версия 54 (Fix: KeyError thinking_value & Logic Update)
 
 import logging
 import os
@@ -55,19 +55,19 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
+# ВАЖНО: Не менять порядок и ID моделей. Исправлены ключи доступа.
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
         "display": "3 flash (minimal)",
-        # Gemini 3.0 официально требует thinking_level (String). 
-        # MINIMAL - единственный шанс пролезть в Free Tier Preview лимиты.
+        # Gemini 3.0 требует thinking_level (String).
         "config_type": "thinking_level", 
         "thinking_level": "MINIMAL", 
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
         "display": "2.5 flash (24k)",
-        # Gemini 2.5 официально требует thinking_budget (Integer).
+        # Gemini 2.5 требует thinking_budget (Integer).
         "config_type": "thinking_budget",
         "thinking_budget": 24000,
     },
@@ -372,19 +372,18 @@ async def generate(client, contents, context, current_tools):
         max_attempts_per_model = 2 
         
         for attempt in range(max_attempts_per_model):
-            # 2. Настройка Thinking
+            # 2. Настройка Thinking (Fix v54: правильное извлечение параметров)
             t_config = None
             cfg_type = model_config.get('config_type')
             
-            # ВАЖНО: include_thoughts=False скрывает мысли от API (решает проблему дублей)
-            if cfg_type == 'level':
-                # Для Gemini 3.0 используем thinking_level (string)
-                t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_value'])
+            if cfg_type == 'thinking_level':
+                # Для Gemini 3.0 берем thinking_level (String)
+                t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_level'])
+            elif cfg_type == 'thinking_budget':
+                # Для Gemini 2.5 берем thinking_budget (Integer)
+                t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_budget'])
             elif cfg_type == 'auto':
                 t_config = types.ThinkingConfig(include_thoughts=False)
-            elif cfg_type == 'budget':
-                # Для Gemini 2.5 используем thinking_budget (int)
-                t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_value'])
 
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
@@ -663,7 +662,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v53 - Minimal Level Fix)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v54 - Key Fix)") 
         except: pass
 
     stop = asyncio.Event()
