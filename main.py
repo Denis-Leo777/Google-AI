@@ -1,4 +1,4 @@
-# Версия 51 (Clean Code: No Regex Filters, API handles thoughts)
+# Версия 53 (Fix: Gemini 3 Minimal Level & Gemini 2.5 Integer Budget)
 
 import logging
 import os
@@ -58,22 +58,24 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
-        "display": "3 flash (Low)",
-        # Используем стандартный LEVEL LOW - это работает на Free Tier
+        "display": "3 flash (minimal)",
+        # Gemini 3.0 официально требует thinking_level (String). 
+        # MINIMAL - единственный шанс пролезть в Free Tier Preview лимиты.
         "config_type": "level", 
-        "thinking_value": "LOW", 
+        "thinking_value": "MINIMAL", 
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
-        "display": "2.5 flash (Auto)",
-        "config_type": "auto",
-        "thinking_value": None,
+        "display": "2.5 flash (24k)",
+        # Gemini 2.5 официально требует thinking_budget (Integer).
+        "config_type": "budget",
+        "thinking_value": 24000,
     },
     {
         "id": "gemini-2.5-flash-lite-preview-09-2025",
-        "display": "2.5 lite (Auto)",
-        "config_type": "auto",
-        "thinking_value": None,
+        "display": "2.5 lite (24k)",
+        "config_type": "budget",
+        "thinking_value": 24000,
     }
 ]
 
@@ -95,8 +97,6 @@ RE_INLINE_CODE = re.compile(r'`([^`]+)`')
 RE_BOLD = re.compile(r'(?:\*\*|__)(.*?)(?:\*\*|__)')
 RE_ITALIC = re.compile(r'(?<!\*)\*(?!\s)(.*?)(?<!\s)\*(?!\*)')
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
-
-# Удалены регулярки для мыслей, так как include_thoughts=False
 
 MAX_CONTEXT_CHARS = 90000
 MAX_HISTORY_RESPONSE_LEN = 4000
@@ -376,12 +376,14 @@ async def generate(client, contents, context, current_tools):
             t_config = None
             cfg_type = model_config.get('config_type')
             
-            # ВАЖНО: include_thoughts=False скрывает мысли от API, но мышление все равно работает!
+            # ВАЖНО: include_thoughts=False скрывает мысли от API (решает проблему дублей)
             if cfg_type == 'level':
+                # Для Gemini 3.0 используем thinking_level (string)
                 t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_value'])
             elif cfg_type == 'auto':
                 t_config = types.ThinkingConfig(include_thoughts=False)
             elif cfg_type == 'budget':
+                # Для Gemini 2.5 используем thinking_budget (int)
                 t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_value'])
 
             gen_config_args = {
@@ -522,18 +524,20 @@ async def process_request(update, context, parts):
 
         res_obj, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools)
         
-        reply = format_response(res_obj)
+        clean_reply = format_response(res_obj)
         
+        reply_to_send = clean_reply
         if used_model_display != "none":
-            reply += f"\n\n{used_model_display}"
+            reply_to_send += f"\n\n{used_model_display}"
 
-        sent = await send_smart(msg, reply, hint=is_media_request)
+        sent = await send_smart(msg, reply_to_send, hint=is_media_request)
         
         if sent:
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             context.chat_data.setdefault("history", []).append(hist_item)
             
-            bot_item = {"role": "model", "parts": [{'type': 'text', 'content': reply[:MAX_HISTORY_RESPONSE_LEN]}]}
+            # Сохраняем в историю ТОЛЬКО чистый ответ
+            bot_item = {"role": "model", "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]}
             context.chat_data["history"].append(bot_item)
             
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
@@ -659,7 +663,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v51 - Clean Code)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v53 - Minimal Level Fix)") 
         except: pass
 
     stop = asyncio.Event()
