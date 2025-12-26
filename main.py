@@ -61,21 +61,21 @@ MODEL_CASCADE = [
         "display": "3 flash (minimal)",
         # Gemini 3.0 официально требует thinking_level (String). 
         # MINIMAL - единственный шанс пролезть в Free Tier Preview лимиты.
-        "config_type": "level", 
-        "thinking_value": "MINIMAL", 
+        "config_type": "thinking_level", 
+        "thinking_level": "MINIMAL", 
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
         "display": "2.5 flash (24k)",
         # Gemini 2.5 официально требует thinking_budget (Integer).
-        "config_type": "budget",
-        "thinking_value": 24000,
+        "config_type": "thinking_budget",
+        "thinking_budget": 24000,
     },
     {
         "id": "gemini-2.5-flash-lite-preview-09-2025",
         "display": "2.5 lite (24k)",
-        "config_type": "budget",
-        "thinking_value": 24000,
+        "config_type": "thinking_budget",
+        "thinking_budget": 24000,
     }
 ]
 
