@@ -1,4 +1,4 @@
-# Версия 54 (Fix: KeyError thinking_value & Logic Update)
+# Версия 56 (Feature: Nano Banana 🍌 Image Gen)
 
 import logging
 import os
@@ -6,6 +6,7 @@ import asyncio
 import signal
 import re
 import pickle
+import base64
 from collections import defaultdict, OrderedDict
 import psycopg2
 from psycopg2 import pool, extensions
@@ -54,20 +55,18 @@ if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, WEBHOOK_HOST, GEMINI_WEBHOOK_PAT
     logger.critical("Не заданы переменные окружения!")
     exit(1)
 
-# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (CASCADE) ---
-# ВАЖНО: Не менять порядок и ID моделей. Исправлены ключи доступа.
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (TEXT CASCADE) ---
+# Для обычного чата используем текстовые модели
 MODEL_CASCADE = [
     {
         "id": "gemini-3-flash-preview", 
-        "display": "3 flash (minimal)",
-        # Gemini 3.0 требует thinking_level (String).
+        "display": "3 flash", 
         "config_type": "thinking_level", 
-        "thinking_level": "MINIMAL", 
+        "thinking_level": "MINIMAL",
     },
     {
         "id": "gemini-2.5-flash-preview-09-2025",
         "display": "2.5 flash (24k)",
-        # Gemini 2.5 требует thinking_budget (Integer).
         "config_type": "thinking_budget",
         "thinking_budget": 24000,
     },
@@ -78,6 +77,14 @@ MODEL_CASCADE = [
         "thinking_budget": 24000,
     }
 ]
+
+# --- КОНФИГУРАЦИЯ IMAGE MODEL ---
+# Модель для генерации картинок (Nano Banana)
+IMAGE_MODEL_CONFIG = {
+    "id": "gemini-2.5-flash-image", # Если не сработает, пробуй 'imagen-3.0-generate-001'
+    "display": "Nano Banana 🍌",
+    "response_modalities": ["IMAGE"]
+}
 
 # Глобальные переменные
 DAILY_REQUEST_COUNTS = defaultdict(int)
@@ -138,12 +145,13 @@ except FileNotFoundError:
 
 # --- WORKER ---
 class TypingWorker:
-    def __init__(self, bot, chat_id):
-        self.bot, self.chat_id, self.running, self.task = bot, chat_id, False, None
+    def __init__(self, bot, chat_id, action=ChatAction.TYPING):
+        self.bot, self.chat_id, self.action = bot, chat_id, action
+        self.running, self.task = False, None
     async def _worker(self):
         while self.running:
             try:
-                await self.bot.send_chat_action(chat_id=self.chat_id, action=ChatAction.TYPING)
+                await self.bot.send_chat_action(chat_id=self.chat_id, action=self.action)
                 await asyncio.sleep(4.5)
             except Exception: break
     def start(self):
@@ -350,14 +358,13 @@ async def upload_file(client, b, mime, name):
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
 # --- ЯДРО ГЕНЕРАЦИИ ---
-async def generate(client, contents, context, current_tools):
+async def generate(client, contents, context, current_tools, force_model=None):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
     global LAST_REQUEST_TIME
     
-    # 1. Глобальная очередь
     async with GLOBAL_LOCK:
         now = time.time()
         elapsed = now - LAST_REQUEST_TIME
@@ -367,34 +374,40 @@ async def generate(client, contents, context, current_tools):
             await asyncio.sleep(wait_time)
         LAST_REQUEST_TIME = time.time()
 
-    for model_config in MODEL_CASCADE:
+    # Если задана конкретная модель (например, image model), используем только её
+    target_models = [force_model] if force_model else MODEL_CASCADE
+
+    for model_config in target_models:
         model_id = model_config['id']
         max_attempts_per_model = 2 
         
         for attempt in range(max_attempts_per_model):
-            # 2. Настройка Thinking (Fix v54: правильное извлечение параметров)
+            # Настройка Thinking / Modalities
             t_config = None
             cfg_type = model_config.get('config_type')
+            response_modalities = model_config.get('response_modalities', None)
             
-            if cfg_type == 'thinking_level':
-                # Для Gemini 3.0 берем thinking_level (String)
-                t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_level'])
-            elif cfg_type == 'thinking_budget':
-                # Для Gemini 2.5 берем thinking_budget (Integer)
-                t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_budget'])
-            elif cfg_type == 'auto':
-                t_config = types.ThinkingConfig(include_thoughts=False)
+            # Логика Thinking Config (только если не картинки)
+            if not response_modalities:
+                if model_id == "gemini-3-flash-preview":
+                    level = "LOW" if attempt == 0 else "MINIMAL"
+                    t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=level)
+                else:
+                    if cfg_type == 'thinking_level':
+                        t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_level'])
+                    elif cfg_type == 'thinking_budget':
+                        t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_budget'])
 
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
-                "tools": current_tools,
-                "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
+                "tools": current_tools if not response_modalities else None, # Убираем тулзы для генерации картинок
+                "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]) if not response_modalities else None,
                 "temperature": 1.0, 
             }
-            if t_config:
-                gen_config_args["thinking_config"] = t_config
+            if t_config: gen_config_args["thinking_config"] = t_config
+            if response_modalities: gen_config_args["response_modalities"] = response_modalities
 
-            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1}) [Type: {cfg_type}]")
+            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1}) [Img: {bool(response_modalities)}]")
 
             try:
                 config = types.GenerateContentConfig(**gen_config_args)
@@ -402,75 +415,51 @@ async def generate(client, contents, context, current_tools):
                 
                 if res and res.candidates and res.candidates[0].content:
                     DAILY_REQUEST_COUNTS[model_id] += 1
-                    logger.info(f"✅ Success: {model_config['display']}")
-                    return res, model_config['display']
+                    
+                    # Проверка на картинку
+                    parts = res.candidates[0].content.parts
+                    if parts and parts[0].inline_data:
+                        logger.info(f"✅ Success Image: {model_config['display']}")
+                        return {"type": "image", "data": parts[0].inline_data.data, "mime": parts[0].inline_data.mime_type}, model_config['display']
+                    
+                    # Текст
+                    logger.info(f"✅ Success Text: {model_config['display']}")
+                    return {"type": "text", "obj": res}, model_config['display']
             
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
-                
-                # ЛОГИКА SMART FAILOVER
                 if "429" in err_str or "resource_exhausted" in err_str:
                     logger.warning(f"⚠️ Limit Hit on {model_config['display']}.")
-                    
-                    wait_match = RE_RETRY_DELAY.search(err_str)
-                    wait_seconds = float(wait_match.group(1)) if wait_match else 0
-                    
-                    if wait_seconds > 5.0 or "quota" in err_str:
-                        logger.warning(f"⏭️ Skipping model instantly (Instant Failover).")
-                        break 
-                    
                     if attempt < max_attempts_per_model - 1:
-                        logger.info(f"🔄 Short wait retry in 5s...")
                         await asyncio.sleep(5)
                         continue
-                    else:
-                        break
-
+                    break
                 elif "503" in err_str or "overloaded" in err_str:
-                    logger.warning(f"⚠️ Model Overloaded: {model_config['display']}")
-                    if attempt < max_attempts_per_model - 1:
-                        await asyncio.sleep(10)
-                        continue
-                    else:
-                        break
+                    await asyncio.sleep(5)
+                    continue
                 
-                if "invalid argument" in err_str:
-                    logger.error(f"❌ Config Error on {model_id}. Retrying without thinking...")
-                    try:
-                        gen_config_args.pop("thinking_config", None)
-                        config = types.GenerateContentConfig(**gen_config_args)
-                        res = await client.aio.models.generate_content(model=model_id, contents=contents, config=config)
-                        if res:
-                            DAILY_REQUEST_COUNTS[model_id] += 1
-                            return res, model_config['display']
-                    except Exception:
-                        pass
-                    break 
-
                 logger.error(f"❌ API Error on {model_id}: {e}")
                 break 
-            
             except Exception as e:
                 logger.error(f"❌ General Error on {model_id}: {e}")
                 break
 
-    return "🚫 Все модели исчерпали лимиты или недоступны.", "none"
+    return {"type": "error", "msg": "🚫 Ошибка генерации или лимиты."}, "none"
 
-def format_response(response):
+def format_response(response_data):
     try:
-        if not response: return "Получен пустой ответ."
-        if isinstance(response, str): return response
+        if response_data['type'] == 'error': return response_data['msg']
+        if response_data['type'] == 'image': return "[IMAGE_DATA]" # Маркер
         
+        response = response_data['obj']
         cand = response.candidates[0]
         if cand.finish_reason.name == "SAFETY": return "Скрыто фильтром безопасности."
-        if not cand.content or not cand.content.parts: return "Пустой ответ."
-
         text = "".join([p.text for p in cand.content.parts if p.text])
         text = RE_CLEAN_NAMES.sub('', text)
         return convert_markdown_to_html(text.strip())
     except Exception as e:
-        logger.error(f"Format Error: {e}", exc_info=True)
-        return f"Ошибка форматирования: {e}"
+        logger.error(f"Format Error: {e}")
+        return f"Ошибка: {e}"
 
 async def send_smart(msg, text, hint=False):
     text = re.sub(r'<br\s*/?>', '\n', text)
@@ -489,41 +478,54 @@ async def send_smart(msg, text, hint=False):
             sent = await msg.reply_text(ch)
     return sent
 
-async def process_request(update, context, parts):
+async def process_request(update, context, parts, force_image=False):
     msg, client = update.message, context.bot_data['gemini_client']
-    typer = TypingWorker(context.bot, msg.chat_id)
+    
+    # Выбираем Worker: Drawing для картинок, Typing для текста
+    action = ChatAction.UPLOAD_PHOTO if force_image else ChatAction.TYPING
+    typer = TypingWorker(context.bot, msg.chat_id, action)
     typer.start()
     
     try:
         txt = next((p.text for p in parts if p.text), None)
-        if txt and DATE_TIME_REGEX.search(txt):
+        if txt and DATE_TIME_REGEX.search(txt) and not force_image:
             await send_smart(msg, get_current_time_str())
             return
 
         is_media_request = any(p.file_data for p in parts)
-        history = [] if is_media_request else build_history(context.chat_data.get("history", []))
+        history = [] if (is_media_request or force_image) else build_history(context.chat_data.get("history", []))
         
         user_name = msg.from_user.first_name
-        if msg.forward_origin:
-             if hasattr(msg.forward_origin, 'chat') and msg.forward_origin.chat: user_name = msg.forward_origin.chat.title
-             elif hasattr(msg.forward_origin, 'sender_user') and msg.forward_origin.sender_user: user_name = msg.forward_origin.sender_user.first_name
         
         parts_final = [p for p in parts if p.file_data]
         prompt_txt = next((p.text for p in parts if p.text), "")
         final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
         
-        if not is_media_request and not URL_REGEX.search(prompt_txt):
-            final_prompt = f"Используй Grounding with Google Search. Актуальная дата: {get_current_time_str()}.\n" + final_prompt
-        else:
-             final_prompt = f"Date: {get_current_time_str()}\n" + final_prompt
-
+        if not force_image:
+             if not is_media_request and not URL_REGEX.search(prompt_txt):
+                 final_prompt = f"Используй Grounding with Google Search. Актуальная дата: {get_current_time_str()}.\n" + final_prompt
+        
         parts_final.append(types.Part(text=final_prompt))
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
+        force_model = IMAGE_MODEL_CONFIG if force_image else None
 
-        res_obj, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools)
+        res_data, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools, force_model=force_model)
         
-        clean_reply = format_response(res_obj)
+        # Обработка картинки
+        if res_data.get('type') == 'image':
+            image_data = res_data['data']
+            # Декодируем base64 если нужно, но google sdk usually returns bytes for inline_data
+            # Но SDK может вернуть base64 string. Проверим тип.
+            if isinstance(image_data, str):
+                image_bytes = base64.b64decode(image_data)
+            else:
+                image_bytes = image_data # already bytes
+            
+            await msg.reply_photo(photo=io.BytesIO(image_bytes), caption=f"🎨 Generated by {used_model_display}")
+            return # История для картинок обычно не нужна
+
+        clean_reply = format_response(res_data)
         
         reply_to_send = clean_reply
         if used_model_display != "none":
@@ -531,11 +533,9 @@ async def process_request(update, context, parts):
 
         sent = await send_smart(msg, reply_to_send, hint=is_media_request)
         
-        if sent:
+        if sent and not force_image:
             hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             context.chat_data.setdefault("history", []).append(hist_item)
-            
-            # Сохраняем в историю ТОЛЬКО чистый ответ
             bot_item = {"role": "model", "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]}
             context.chat_data["history"].append(bot_item)
             
@@ -605,13 +605,21 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text: parts.append(types.Part(text=text))
     if parts: await process_request(update, context, parts)
 
+@ignore_if_processing
+async def draw_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    prompt = " ".join(context.args)
+    if not prompt:
+        return await msg.reply_text("🎨 Используй: /draw описание картинки")
+    
+    parts = [types.Part(text=prompt)]
+    await process_request(update, context, parts, force_image=True)
+
 async def util_cmd(update, context, prompt):
     msg = update.message
     if not msg.reply_to_message: return await msg.reply_text("⚠️ Ответьте на сообщение с файлом.")
-    
     reply = msg.reply_to_message
     media = reply.audio or reply.voice or reply.video or reply.video_note or (reply.photo[-1] if reply.photo else None) or reply.document
-    
     parts = []
     client = context.bot_data['gemini_client']
     
@@ -629,13 +637,12 @@ async def util_cmd(update, context, prompt):
         if ctx:
             p, _ = dict_to_part(ctx)
             if p: parts.append(p)
-            
     if not parts: return await msg.reply_text("❌ Нет медиа.")
     parts.append(types.Part(text=prompt))
     await process_request(update, context, parts)
 
 @ignore_if_processing
-async def start_c(u, c): await u.message.reply_html("👋 <b>Привет! Я Женя.</b>\nКидай файлы, фото, аудио или просто пиши!")
+async def start_c(u, c): await u.message.reply_html("👋 <b>Привет! Я Женя.</b>\nКидай файлы или пиши.\n🎨 Для картинок: /draw запрос")
 @ignore_if_processing
 async def clear_c(u, c): 
     c.chat_data.clear()
@@ -643,7 +650,7 @@ async def clear_c(u, c):
     await u.message.reply_text("🧹 Память очищена.")
 @ignore_if_processing
 async def status_c(u, c):
-    stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE])
+    stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE + [IMAGE_MODEL_CONFIG]])
     await u.message.reply_html(f"📊 <b>Статистика успешных запросов:</b>\n{stats}")
 
 # --- MAIN ---
@@ -654,6 +661,7 @@ async def main():
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("clear", clear_c))
     app.add_handler(CommandHandler("status", status_c))
+    app.add_handler(CommandHandler("draw", draw_c)) # Новая команда
     app.add_handler(CommandHandler("summarize", lambda u, c: util_cmd(u, c, "Сделай подробный конспект (summary) этого материала.")))
     app.add_handler(CommandHandler("transcript", lambda u, c: util_cmd(u, c, "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words.")))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
@@ -662,7 +670,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v54 - Key Fix)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v56 - Nano Banana 🍌)") 
         except: pass
 
     stop = asyncio.Event()
