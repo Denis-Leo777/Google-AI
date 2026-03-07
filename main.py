@@ -1,4 +1,4 @@
-# Версия 63 (Feature: 3-State Voice Toggle, Cleaned Image Gen & Fallback Cascade)
+# Версия 65 (Feature: UI Menu Update, 2.0 Audio Routing & Text Fallback)
 
 import logging
 import os
@@ -68,19 +68,25 @@ if missing:
     logger.critical(f"Не заданы обязательные переменные окружения: {', '.join(missing)}")
     exit(1)
 
-# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (УМНЫЙ РОУТИНГ) ---
 MODEL_CASCADE =[
     {
         "id": "gemini-2.5-flash", 
         "display": "2.5 Flash",
         "config_type": "none",
-        "supports_audio": True
+        "supports_audio": False # ❌ Как показали логи, 2.5 Flash пока отдает только текст
+    },
+    {
+        "id": "gemini-2.0-flash", 
+        "display": "2.0 Flash",
+        "config_type": "none",
+        "supports_audio": True # ✅ Используем эту модель специально для голосовых ответов
     },
     {
         "id": "gemini-2.5-flash-lite", 
         "display": "2.5 Flash Lite",
         "config_type": "none",
-        "supports_audio": False # Lite версия обычно не умеет генерировать звук
+        "supports_audio": False 
     }
 ]
 
@@ -126,6 +132,7 @@ DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
 ВАЖНОЕ ТЕХНИЧЕСКОЕ ТРЕБОВАНИЕ:
 Форматируй текст ТОЛЬКО с использованием стандартного Markdown (звездочки для жирного/курсива).
 СТРОГО ЗАПРЕЩЕНО использовать HTML теги вроде <br> или <b> напрямую.
+Если пользователь задаёт вопрос, требующий актуальных данных — используй Google Search.
 """
 
 try:
@@ -395,7 +402,6 @@ async def generate(client, contents, context, current_tools, force_voice=False):
     for model_config in MODEL_CASCADE:
         model_id = model_config['id']
         
-        # Если нужен голос, а модель его не поддерживает (например, Lite) — пропускаем её
         if force_voice and not model_config.get('supports_audio', True):
             logger.info(f"⏭ Пропуск {model_id}: нужен голос, а модель его не поддерживает.")
             continue
@@ -417,7 +423,7 @@ async def generate(client, contents, context, current_tools, force_voice=False):
             }
             if t_config: gen_config_args["thinking_config"] = t_config
             if force_voice:
-                gen_config_args["response_modalities"] = ["AUDIO"]
+                gen_config_args["response_modalities"] =["AUDIO"]
 
             logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1})[Audio: {force_voice}]")
 
@@ -450,6 +456,9 @@ async def generate(client, contents, context, current_tools, force_voice=False):
                 elif "503" in err_str or "overloaded" in err_str:
                     await asyncio.sleep(5)
                     continue
+                elif "400" in err_str and "only supports text output" in err_str:
+                    logger.warning(f"⚠️ Модель {model_id} не умеет в голос (Ошибка 400).")
+                    break 
                 elif "404" in err_str or "not found" in err_str:
                     logger.warning(f"⚠️ Модель {model_id} недоступна (404/403).")
                     break 
@@ -458,6 +467,11 @@ async def generate(client, contents, context, current_tools, force_voice=False):
             except Exception as e:
                 logger.error(f"❌ General Error on {model_id}: {e}", exc_info=True)
                 break
+
+    # ИНТЕЛЛЕКТУАЛЬНЫЙ ФОЛЛБЭК: Если хотели голос, но все аудио-модели упали — отвечаем текстом!
+    if force_voice:
+        logger.warning("⚠️ Не удалось сгенерировать голос. Переключаемся на текст.")
+        return await generate(client, contents, context, current_tools, force_voice=False)
 
     return {"type": "error", "msg": "🚫 Ошибка генерации или исчерпаны лимиты бесплатного API."}, "none"
 
@@ -496,7 +510,7 @@ async def send_smart(msg, text, hint=False):
 async def process_request(update, context, parts, text_only=False):
     msg, client = update.message, context.bot_data['gemini_client']
     
-    # ЛОГИКА АУДИО ОТВЕТОВ (3 состояния)
+    # ЛОГИКА АУДИО ОТВЕТОВ
     v_mode = context.chat_data.get('voice_mode', 'auto')
     user_sent_voice = bool(msg.voice or msg.audio)
     
@@ -505,7 +519,7 @@ async def process_request(update, context, parts, text_only=False):
     else: force_voice = user_sent_voice # auto режим
     
     if text_only: 
-        force_voice = False # Если запрошена текстовая транскрипция, отменяем голос
+        force_voice = False 
     
     action = ChatAction.RECORD_VOICE if force_voice else ChatAction.TYPING
     typer = TypingWorker(context.bot, msg.chat_id, action)
@@ -525,10 +539,6 @@ async def process_request(update, context, parts, text_only=False):
         parts_final =[p for p in parts if p.file_data]
         prompt_txt = next((p.text for p in parts if p.text), "")
         final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
-        
-        if not text_only:
-             if not is_media_request and not URL_REGEX.search(prompt_txt):
-                 final_prompt = f"Используй Grounding with Google Search. Актуальная дата: {get_current_time_str()}.\n" + final_prompt
         
         parts_final.append(types.Part(text=final_prompt))
         
@@ -709,8 +719,7 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @ignore_if_processing
 async def voice_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Трехрежимный переключатель: auto -> always -> never
-    modes = ['auto', 'always', 'never']
+    modes =['auto', 'always', 'never']
     current = context.chat_data.get('voice_mode', 'auto')
     next_mode = modes[(modes.index(current) + 1) % 3]
     context.chat_data['voice_mode'] = next_mode
@@ -761,7 +770,7 @@ async def start_c(u, c):
         "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю и проанализирую.\n"
         "🎙 <b>Умный голос:</b> Автоматически отвечаю голосом на твои голосовые сообщения! Управление режимами: <code>/voice</code>\n"
         "🔤 <b>Транскрибация:</b> Напиши <code>/text</code> в ответ на аудио/фото (или просто <code>/text</code> и кидай файл) — выдам чистый текст без лишних слов.\n\n"
-        "<i>Работаю на базе быстрого и стабильного Gemini 2.5 Flash.</i>"
+        "<i>Работаю на базе быстрого и стабильного каскада Gemini (2.5 Text / 2.0 Audio).</i>"
     )
     await u.message.reply_html(start_text)
 
@@ -794,8 +803,20 @@ async def main():
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
+    # ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ КНОПКИ "МЕНЮ" В TELEGRAM
+    commands =[
+        BotCommand("start", "Перезапуск и справка"),
+        BotCommand("text", "Расшифровать следующее аудио/фото"),
+        BotCommand("voice", "Настройка голосовых ответов (Авто/Вкл/Выкл)"),
+        BotCommand("summarize", "Сделать конспект файла (ответом)"),
+        BotCommand("clear", "Очистить память диалога"),
+        BotCommand("status", "Статистика API")
+    ]
+    await app.bot.set_my_commands(commands)
+    logger.info("✅ Меню команд Telegram обновлено.")
+
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v63 - 3-State Voice & Fallback Cascade)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v65 - UI Sync & 2.0 Voice Routing)") 
         except: pass
 
     stop = asyncio.Event()
