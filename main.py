@@ -1,4 +1,4 @@
-# Версия 66 (Feature: Switch to 2.0 Flash Experimental for Audio)
+# Версия 67 (Feature: Text Only - Max Stability & Speed, No Audio Generation)
 
 import logging
 import os
@@ -68,26 +68,18 @@ if missing:
     logger.critical(f"Не заданы обязательные переменные окружения: {', '.join(missing)}")
     exit(1)
 
-# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (UPDATED FOR AUDIO) ---
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
+# Оставляем только самые быстрые текстовые модели
 MODEL_CASCADE = [
     {
         "id": "gemini-2.5-flash", 
         "display": "2.5 Flash",
-        "config_type": "none",
-        "supports_audio": False # Только текст, но очень быстро
-    },
-    {
-        # Используем Experimental версию, так как в Stable аудио может быть отключено
-        "id": "gemini-2.0-flash-exp", 
-        "display": "2.0 Flash Exp",
-        "config_type": "none",
-        "supports_audio": True 
+        "config_type": "none"
     },
     {
         "id": "gemini-2.5-flash-lite", 
         "display": "2.5 Flash Lite",
-        "config_type": "none",
-        "supports_audio": False 
+        "config_type": "none"
     }
 ]
 
@@ -95,7 +87,7 @@ MODEL_CASCADE = [
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-REQUEST_DELAY = 15 
+REQUEST_DELAY = 10 # Минимальная задержка для текстовых моделей
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
@@ -384,7 +376,7 @@ async def upload_file(client, b, mime, name):
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
 # --- ЯДРО ГЕНЕРАЦИИ ---
-async def generate(client, contents, context, current_tools, force_voice=False):
+async def generate(client, contents, context, current_tools):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
@@ -402,11 +394,6 @@ async def generate(client, contents, context, current_tools, force_voice=False):
 
     for model_config in MODEL_CASCADE:
         model_id = model_config['id']
-        
-        if force_voice and not model_config.get('supports_audio', True):
-            logger.info(f"⏭ Пропуск {model_id}: нужен голос, а модель его не поддерживает.")
-            continue
-
         max_attempts_per_model = 2 
         
         for attempt in range(max_attempts_per_model):
@@ -423,10 +410,8 @@ async def generate(client, contents, context, current_tools, force_voice=False):
                 "temperature": 1.0, 
             }
             if t_config: gen_config_args["thinking_config"] = t_config
-            if force_voice:
-                gen_config_args["response_modalities"] = ["AUDIO"]
 
-            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1})[Audio: {force_voice}]")
+            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1})")
 
             try:
                 config = types.GenerateContentConfig(**gen_config_args)
@@ -434,15 +419,6 @@ async def generate(client, contents, context, current_tools, force_voice=False):
                 
                 if res and res.candidates and res.candidates[0].content:
                     DAILY_REQUEST_COUNTS[model_id] += 1
-                    parts = res.candidates[0].content.parts
-                    
-                    if parts:
-                        audio_part = next((p for p in parts if p.inline_data and p.inline_data.mime_type.startswith("audio/")), None)
-                        if audio_part:
-                            text_part = next((p for p in parts if p.text), None)
-                            text_content = text_part.text if text_part else "🎙 Голосовой ответ."
-                            return {"type": "audio", "data": audio_part.inline_data.data, "text": text_content}, model_config['display']
-                    
                     logger.info(f"✅ Success Text: {model_config['display']}")
                     return {"type": "text", "obj": res}, model_config['display']
             
@@ -457,13 +433,6 @@ async def generate(client, contents, context, current_tools, force_voice=False):
                 elif "503" in err_str or "overloaded" in err_str:
                     await asyncio.sleep(5)
                     continue
-                elif "400" in err_str and "only supports text output" in err_str:
-                    logger.warning(f"⚠️ Модель {model_id} не умеет в голос (Ошибка 400).")
-                    break 
-                elif "400" in err_str and "audio" in err_str:
-                     # Для экспериментальных моделей может выдать "requested response modalities: audio" если фича отключена
-                    logger.warning(f"⚠️ Модель {model_id} временно не поддерживает аудио.")
-                    break
                 elif "404" in err_str or "not found" in err_str:
                     logger.warning(f"⚠️ Модель {model_id} недоступна (404/403).")
                     break 
@@ -473,18 +442,11 @@ async def generate(client, contents, context, current_tools, force_voice=False):
                 logger.error(f"❌ General Error on {model_id}: {e}", exc_info=True)
                 break
 
-    # ИНТЕЛЛЕКТУАЛЬНЫЙ ФОЛЛБЭК
-    if force_voice:
-        logger.warning("⚠️ Не удалось сгенерировать голос. Переключаемся на текст.")
-        # Рекурсивно вызываем генерацию, но уже без требования голоса
-        return await generate(client, contents, context, current_tools, force_voice=False)
-
     return {"type": "error", "msg": "🚫 Ошибка генерации или исчерпаны лимиты бесплатного API."}, "none"
 
 def format_response(response_data):
     try:
         if response_data['type'] == 'error': return response_data['msg']
-        if response_data['type'] == 'audio': return "[MEDIA_DATA]"
         
         response = response_data['obj']
         cand = response.candidates[0]
@@ -516,19 +478,8 @@ async def send_smart(msg, text, hint=False):
 async def process_request(update, context, parts, text_only=False):
     msg, client = update.message, context.bot_data['gemini_client']
     
-    # ЛОГИКА АУДИО ОТВЕТОВ
-    v_mode = context.chat_data.get('voice_mode', 'auto')
-    user_sent_voice = bool(msg.voice or msg.audio)
-    
-    if v_mode == 'always': force_voice = True
-    elif v_mode == 'never': force_voice = False
-    else: force_voice = user_sent_voice # auto режим
-    
-    if text_only: 
-        force_voice = False 
-    
-    action = ChatAction.RECORD_VOICE if force_voice else ChatAction.TYPING
-    typer = TypingWorker(context.bot, msg.chat_id, action)
+    # Только текст, никаких голосовых
+    typer = TypingWorker(context.bot, msg.chat_id, ChatAction.TYPING)
     typer.start()
     
     try:
@@ -550,39 +501,8 @@ async def process_request(update, context, parts, text_only=False):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
 
-        res_data, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools, force_voice=force_voice)
+        res_data, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools)
             
-        # --- ОБРАБОТКА АУДИО ---
-        if res_data.get('type') == 'audio':
-            audio_bytes = res_data['data']
-            if isinstance(audio_bytes, str): audio_bytes = base64.b64decode(audio_bytes)
-            
-            sent_audio = await msg.reply_audio(
-                audio=io.BytesIO(audio_bytes), 
-                filename="voice_response.wav",
-                title="Ответ ИИ",
-                performer="Женя 🤖",
-                caption=f"🎙 <i>{used_model_display}</i>",
-                parse_mode=ParseMode.HTML
-            )
-            
-            hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
-            context.chat_data.setdefault("history", []).append(hist_item)
-            bot_item = {"role": "model", "parts": [{'type': 'text', 'content': res_data.get('text', '🎙 Голосовой ответ.')[:MAX_HISTORY_RESPONSE_LEN]}]}
-            context.chat_data["history"].append(bot_item)
-            
-            if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
-                context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
-            
-            rmap = context.chat_data.setdefault('reply_map', {})
-            rmap[sent_audio.message_id] = msg.message_id
-            if len(rmap) > MAX_HISTORY_ITEMS * 2: 
-                for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]: del rmap[k]
-                
-            await context.application.persistence.update_chat_data(msg.chat_id, context.chat_data)
-            return
-
-        # --- ОБРАБОТКА ТЕКСТА ---
         clean_reply = format_response(res_data)
         reply_to_send = clean_reply
         
@@ -723,22 +643,6 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['next_media_is_text'] = True
     await update.message.reply_text("Ок, пришли следующим сообщением аудио или картинку — расшифрую в текст.")
 
-@ignore_if_processing
-async def voice_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    modes = ['auto', 'always', 'never']
-    current = context.chat_data.get('voice_mode', 'auto')
-    next_mode = modes[(modes.index(current) + 1) % 3]
-    context.chat_data['voice_mode'] = next_mode
-    
-    if next_mode == 'auto':
-        state = "АВТО 🤖\n<i>(Голос на голосовые, текст на текстовые)</i>"
-    elif next_mode == 'always':
-        state = "ВСЕГДА 🎙\n<i>(Отвечаю голосом на всё)</i>"
-    else:
-        state = "НИКОГДА 📝\n<i>(Только текстовые ответы)</i>"
-        
-    await update.message.reply_html(f"Режим ответов: <b>{state}</b>")
-
 async def util_cmd(update, context, prompt):
     msg = update.message
     if not msg.reply_to_message:
@@ -773,10 +677,9 @@ async def start_c(u, c):
     start_text = (
         "👋 <b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\n\n"
         "<b>Что я умею:</b>\n"
-        "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю и проанализирую.\n"
-        "🎙 <b>Умный голос:</b> Автоматически отвечаю голосом на твои голосовые сообщения! Управление режимами: <code>/voice</code>\n"
+        "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю, проанализирую и отвечу текстом.\n"
         "🔤 <b>Транскрибация:</b> Напиши <code>/text</code> в ответ на аудио/фото (или просто <code>/text</code> и кидай файл) — выдам чистый текст без лишних слов.\n\n"
-        "<i>Работаю на базе быстрого и стабильного каскада Gemini (2.5 Text / 2.0 Audio).</i>"
+        "<i>Работаю на базе быстрого и стабильного Gemini 2.5 Flash.</i>"
     )
     await u.message.reply_html(start_text)
 
@@ -799,7 +702,6 @@ async def main():
 
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("text", text_cmd)) 
-    app.add_handler(CommandHandler("voice", voice_c)) 
     app.add_handler(CommandHandler("summarize", lambda u, c: util_cmd(u, c, "Сделай подробный конспект (summary) этого материала.")))
     app.add_handler(CommandHandler("clear", clear_c))
     app.add_handler(CommandHandler("status", status_c))
@@ -809,20 +711,19 @@ async def main():
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
-    # ОБНОВЛЕНИЕ МЕНЮ
+    # ОБНОВЛЕНИЕ МЕНЮ (Чистое, без Voice)
     commands = [
         BotCommand("start", "Справка"),
         BotCommand("text", "Расшифровать следующее"),
-        BotCommand("voice", "Режим голоса (Авто/Вкл/Выкл)"),
         BotCommand("summarize", "Конспект"),
         BotCommand("clear", "Сброс памяти"),
         BotCommand("status", "Статистика")
     ]
     await app.bot.set_my_commands(commands)
-    logger.info("✅ Меню команд Telegram обновлено.")
+    logger.info("✅ Меню команд Telegram обновлено (Voice removed).")
 
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v66 - Audio Fix via Experimental)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v67 - Text Only Stable)") 
         except: pass
 
     stop = asyncio.Event()
