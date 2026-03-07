@@ -1,4 +1,4 @@
-# Версия 61 (Feature: Perfect Markdown-to-HTML formatting, Safe Parsing & Audio Fixes)
+# Версия 62 (Feature: Auto-Voice for Voice Notes, Smart /text Command & Clean Cascade)
 
 import logging
 import os
@@ -68,32 +68,25 @@ if missing:
     logger.critical(f"Не заданы обязательные переменные окружения: {', '.join(missing)}")
     exit(1)
 
-# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (ОЧИЩЕНА НА БАЗЕ ЛОГОВ) ---
+# Оставили только те, которые реально работают без 404 и 429 ошибок, чтобы бот не "тупил"
 MODEL_CASCADE =[
-    {
-        "id": "gemini-3.1-flash-lite-preview",
-        "display": "3.1 Flash Lite",
-        "config_type": "none",
-        "supports_audio": False 
-    },
-    {
-        "id": "gemini-3.0-flash",
-        "display": "3.0 Flash",
-        "config_type": "thinking_level",
-        "thinking_level": "MINIMAL",
-        "supports_audio": True
-    },
     {
         "id": "gemini-2.5-flash", 
         "display": "2.5 Flash",
-        "config_type": "thinking_budget",
-        "thinking_budget": 24000,
+        "config_type": "none",
+        "supports_audio": True
+    },
+    {
+        "id": "gemini-2.0-flash", 
+        "display": "2.0 Flash",
+        "config_type": "none",
         "supports_audio": True
     }
 ]
 
 IMAGE_MODEL_CONFIG = {
-    "id": "gemini-2.5-flash-image", 
+    "id": "gemini-2.5-flash-image", # Если лимиты исчерпаны, бот напишет об этом
     "display": "Nano Banana 🍌",
     "response_modalities":["IMAGE"]
 }
@@ -102,14 +95,12 @@ IMAGE_MODEL_CONFIG = {
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-REQUEST_DELAY = 35 
+REQUEST_DELAY = 15 # Задержка уменьшена, так как мы используем стабильные модели
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
 URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
-
-# Обновлено: поддерживаем теги <s> и <u>
 HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler|blockquote)>', re.IGNORECASE)
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
@@ -138,7 +129,6 @@ SAFETY_SETTINGS =[
               types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT)
 ]
 
-# Обновленный промпт: теперь мы просим Markdown, а переводим в HTML сами. Это безопаснее.
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
 ВАЖНОЕ ТЕХНИЧЕСКОЕ ТРЕБОВАНИЕ:
 Форматируй текст ТОЛЬКО с использованием стандартного Markdown (звездочки для жирного/курсива).
@@ -271,7 +261,6 @@ def get_current_time_str(timezone="Europe/Moscow"):
     return f"Сегодня {days[now.weekday()]}, {now.day} {months[now.month-1]} {now.year} года, время {now.strftime('%H:%M')} (MSK)."
 
 def convert_markdown_to_html(text: str) -> str:
-    """Умный, безопасный парсер Markdown -> Telegram HTML"""
     if not text: return text
     
     code_blocks = {}
@@ -282,11 +271,9 @@ def convert_markdown_to_html(text: str) -> str:
         code_blocks[key] = f"<{tag}>{content}</{tag}>"
         return key
 
-    # 1. Извлекаем блоки кода и инлайн-код
     text = re.sub(r'```[ \w-]*\n?(.*?)```', store_code, text, flags=re.DOTALL)
     text = re.sub(r'`([^`]+)`', store_code, text)
 
-    # 2. Извлекаем ссылки[текст](url)
     links = {}
     def store_link(match):
         key = f"__LINK_{len(links)}__"
@@ -296,27 +283,15 @@ def convert_markdown_to_html(text: str) -> str:
         return key
     text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', store_link, text)
 
-    # 3. Экранируем весь оставшийся текст (защита от крашей Telegram из-за < и &)
     text = html.escape(text, quote=False)
 
-    # 4. Преобразуем Markdown в HTML
-    # Заголовки: ### Текст -> <b>Текст</b>
     text = re.sub(r'^(#{1,6})\s+(.+)$', r'<b>\2</b>', text, flags=re.MULTILINE)
-    
-    # Жирный: **текст** или __текст__
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
-    
-    # Курсив: *текст* (одиночные _ убраны, чтобы не ломать ссылки/переменные)
     text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
-    
-    # Зачеркнутый: ~~текст~~
     text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
-    
-    # Спойлеры: ||текст||
     text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL)
 
-    # 5. Возвращаем защищенные куски на место
     for key, val in links.items(): text = text.replace(key, val)
     for key, val in code_blocks.items(): text = text.replace(key, val)
         
@@ -430,7 +405,6 @@ async def generate(client, contents, context, current_tools, force_model=None, f
         model_id = model_config['id']
         
         if force_voice and not model_config.get('supports_audio', True):
-            logger.info(f"⏭ Пропуск модели {model_id}: не поддерживает аудио-ответы.")
             continue
 
         max_attempts_per_model = 2 
@@ -493,15 +467,16 @@ async def generate(client, contents, context, current_tools, force_model=None, f
                 elif "503" in err_str or "overloaded" in err_str:
                     await asyncio.sleep(5)
                     continue
-                elif "404" in err_str or "not found" in err_str or "403" in err_str or "permission" in err_str:
+                elif "404" in err_str or "not found" in err_str:
                     logger.warning(f"⚠️ Модель {model_id} недоступна (404/403).")
+                    break # Не пытаемся снова, если модели нет
                 logger.error(f"❌ API Error on {model_id}: {e}")
                 break
             except Exception as e:
                 logger.error(f"❌ General Error on {model_id}: {e}", exc_info=True)
                 break
 
-    return {"type": "error", "msg": "🚫 Ошибка генерации или лимиты."}, "none"
+    return {"type": "error", "msg": "🚫 Ошибка генерации или исчерпаны лимиты бесплатного API."}, "none"
 
 def format_response(response_data):
     try:
@@ -538,7 +513,10 @@ async def send_smart(msg, text, hint=False):
 async def process_request(update, context, parts, force_image=False, text_only=False):
     msg, client = update.message, context.bot_data['gemini_client']
     
-    force_voice = context.chat_data.get('voice_mode', False) and not force_image and not text_only
+    # АВТО-ГОЛОС: Включается, если включен режим /voice ИЛИ если пользователь сам прислал аудио/голосовое
+    user_sent_voice = bool(msg.voice or msg.audio)
+    force_voice = (context.chat_data.get('voice_mode', False) or user_sent_voice) and not force_image and not text_only
+    
     action = ChatAction.UPLOAD_PHOTO if force_image else (ChatAction.RECORD_VOICE if force_voice else ChatAction.TYPING)
     typer = TypingWorker(context.bot, msg.chat_id, action)
     typer.start()
@@ -713,6 +691,43 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text: parts.append(types.Part(text=text))
     if parts: await process_request(update, context, parts)
 
+# Умная команда /text (работает и как флаг, и как мгновенный ответ на реплай)
+@ignore_if_processing
+async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    # Если ответили на сообщение с файлом/аудио — расшифровываем моментально
+    if msg.reply_to_message:
+        reply = msg.reply_to_message
+        media = reply.audio or reply.voice or reply.video or reply.video_note or (reply.photo[-1] if reply.photo else None) or reply.document
+        if media:
+            if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+                return await msg.reply_text("❌ Файл слишком велик.")
+            try:
+                st = await msg.reply_text("📥")
+                client = context.bot_data['gemini_client']
+                f = await media.get_file()
+                b = await f.download_as_bytearray()
+                mime = 'image/jpeg' if reply.photo else 'audio/ogg' if reply.voice else 'video/mp4' if reply.video_note else getattr(media, 'mime_type', 'application/octet-stream')
+                media_part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
+                await st.delete()
+                
+                if reply.voice or reply.audio or reply.video or reply.video_note or (reply.document and 'audio' in mime):
+                    prompt_text = "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words."
+                else:
+                    prompt_text = "Опиши это изображение подробно и извлеки весь видимый текст (OCR). Выведи только результат, без вступлений."
+                
+                parts = [media_part, types.Part(text=prompt_text)]
+                await process_request(update, context, parts, text_only=True)
+                return
+            except Exception as e:
+                return await msg.reply_text(f"❌ Ошибка: {e}")
+        else:
+            return await msg.reply_text("⚠️ Ответьте этой командой на сообщение с аудио или картинкой.")
+            
+    # Если реплая нет — ставим флаг для следующего сообщения
+    context.chat_data['next_media_is_text'] = True
+    await update.message.reply_text("Ок, пришли следующим сообщением аудио или картинку — расшифрую в текст.")
+
 @ignore_if_processing
 async def draw_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -727,8 +742,8 @@ async def draw_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def voice_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current = context.chat_data.get('voice_mode', False)
     context.chat_data['voice_mode'] = not current
-    state = "ВКЛЮЧЕНЫ 🎙\n<i>(Теперь бот будет отвечать голосом)</i>" if not current else "ВЫКЛЮЧЕНЫ 📝\n<i>(Обычный текстовый режим)</i>"
-    await update.message.reply_html(f"Голосовые ответы {state}")
+    state = "ВКЛЮЧЕНЫ 🎙\n<i>(Бот будет отвечать голосом на всё)</i>" if not current else "ВЫКЛЮЧЕНЫ 📝\n<i>(Голос только в ответ на твои голосовые)</i>"
+    await update.message.reply_html(f"Принудительные голосовые ответы {state}")
 
 async def util_cmd(update, context, prompt):
     msg = update.message
@@ -760,20 +775,15 @@ async def util_cmd(update, context, prompt):
     await process_request(update, context, parts)
 
 @ignore_if_processing
-async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.chat_data['next_media_is_text'] = True
-    await update.message.reply_text("Ок, пришли следующим сообщением аудио или картинку — расшифрую в текст.")
-
-@ignore_if_processing
 async def start_c(u, c): 
     start_text = (
         "👋 <b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\n\n"
         "<b>Что я умею:</b>\n"
         "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю и проанализирую.\n"
-        "🎨 <b>Картинки (Nano Banana 🍌):</b> <code>/draw описание</code> — генерирую до 500 картинок в день бесплатно!\n"
-        "🎙 <b>Голос:</b> <code>/voice</code> — переключает меня в режим нативных голосовых ответов.\n"
-        "🔤 <b>Транскрибация:</b> <code>/text</code>, а затем аудио/фото — выдам только чистый текст без лишних слов.\n\n"
-        "<i>Работаю на базе новейших моделей: Gemini 3.1 Flash Lite (для скорости) и 2.5 / 3.0 Flash (для голоса и глубокого анализа).</i>"
+        "🎨 <b>Картинки (Nano Banana 🍌):</b> <code>/draw описание</code>\n"
+        "🎙 <b>Умный голос:</b> Просто отправь мне голосовое, и я отвечу тебе голосом! (Или используй <code>/voice</code> чтобы я всегда так делал).\n"
+        "🔤 <b>Транскрибация:</b> Напиши <code>/text</code> в ответ на аудио/фото (или просто <code>/text</code> и кидай файл) — выдам чистый текст без лишних слов.\n\n"
+        "<i>Работаю на базе быстрого и стабильного Gemini 2.5 Flash.</i>"
     )
     await u.message.reply_html(start_text)
 
@@ -794,21 +804,22 @@ async def main():
     pers = PostgresPersistence(DATABASE_URL)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
 
+    # Команды расставлены в логичном порядке (на первом месте самые частые)
     app.add_handler(CommandHandler("start", start_c))
-    app.add_handler(CommandHandler("clear", clear_c))
-    app.add_handler(CommandHandler("status", status_c))
+    app.add_handler(CommandHandler("text", text_cmd)) 
     app.add_handler(CommandHandler("draw", draw_c)) 
     app.add_handler(CommandHandler("voice", voice_c)) 
     app.add_handler(CommandHandler("summarize", lambda u, c: util_cmd(u, c, "Сделай подробный конспект (summary) этого материала.")))
-    app.add_handler(CommandHandler("transcript", lambda u, c: util_cmd(u, c, "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words.")))
-    app.add_handler(CommandHandler("text", text_cmd))
+    app.add_handler(CommandHandler("clear", clear_c))
+    app.add_handler(CommandHandler("status", status_c))
+    
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
 
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v61 - Perfect HTML Formatting)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v62 - AutoVoice & Smart /text & Clean Models)") 
         except: pass
 
     stop = asyncio.Event()
