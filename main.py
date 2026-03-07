@@ -1,4 +1,4 @@
-# Версия 65 (Feature: UI Menu Update, 2.0 Audio Routing & Text Fallback)
+# Версия 66 (Feature: Switch to 2.0 Flash Experimental for Audio)
 
 import logging
 import os
@@ -33,7 +33,7 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
 logger = logging.getLogger(__name__)
 
-SILENCED_MODULES =[
+SILENCED_MODULES = [
     'aiohttp.access', 'httpx', 'telegram', 
     'grpc', 'google', 'google.auth', 'google.api_core', 
     'urllib3', 'httpcore', 'google.genai'
@@ -63,24 +63,25 @@ required_env = {
     "DATABASE_URL": DATABASE_URL,
 }
 
-missing =[k for k, v in required_env.items() if not v]
+missing = [k for k, v in required_env.items() if not v]
 if missing:
     logger.critical(f"Не заданы обязательные переменные окружения: {', '.join(missing)}")
     exit(1)
 
-# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (УМНЫЙ РОУТИНГ) ---
-MODEL_CASCADE =[
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (UPDATED FOR AUDIO) ---
+MODEL_CASCADE = [
     {
         "id": "gemini-2.5-flash", 
         "display": "2.5 Flash",
         "config_type": "none",
-        "supports_audio": False # ❌ Как показали логи, 2.5 Flash пока отдает только текст
+        "supports_audio": False # Только текст, но очень быстро
     },
     {
-        "id": "gemini-2.0-flash", 
-        "display": "2.0 Flash",
+        # Используем Experimental версию, так как в Stable аудио может быть отключено
+        "id": "gemini-2.0-flash-exp", 
+        "display": "2.0 Flash Exp",
         "config_type": "none",
-        "supports_audio": True # ✅ Используем эту модель специально для голосовых ответов
+        "supports_audio": True 
     },
     {
         "id": "gemini-2.5-flash-lite", 
@@ -111,18 +112,18 @@ MEDIA_CONTEXT_TTL_SECONDS = 47 * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
 
 # --- ИНСТРУМЕНТЫ ---
-TEXT_TOOLS =[types.Tool(
+TEXT_TOOLS = [types.Tool(
     google_search=types.GoogleSearch(), 
     code_execution=types.ToolCodeExecution(), 
     url_context=types.UrlContext()
 )]
 
-MEDIA_TOOLS =[types.Tool(
+MEDIA_TOOLS = [types.Tool(
     google_search=types.GoogleSearch(), 
     url_context=types.UrlContext()
 )]
 
-SAFETY_SETTINGS =[
+SAFETY_SETTINGS = [
     types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
     for c in (types.HarmCategory.HARM_CATEGORY_HARASSMENT, types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
               types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT)
@@ -256,8 +257,8 @@ class PostgresPersistence(BasePersistence):
 # --- UTILS ---
 def get_current_time_str(timezone="Europe/Moscow"):
     now = datetime.datetime.now(pytz.timezone(timezone))
-    days =["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-    months =["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+    days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
     return f"Сегодня {days[now.weekday()]}, {now.day} {months[now.month-1]} {now.year} года, время {now.strftime('%H:%M')} (MSK)."
 
 def convert_markdown_to_html(text: str) -> str:
@@ -298,7 +299,7 @@ def convert_markdown_to_html(text: str) -> str:
     return text
 
 def html_safe_chunker(text: str, size=4096):
-    chunks, stack = [],[]
+    chunks, stack = [], []
     while len(text) > size:
         split = text.rfind('\n', 0, size)
         if split == -1: split = size
@@ -339,10 +340,10 @@ def dict_to_part(d):
     return None, False
 
 def build_history(history):
-    valid, chars =[], 0
+    valid, chars = [], 0
     for entry in reversed(history):
         if not entry.get("parts"): continue
-        api_parts, text_len =[], 0
+        api_parts, text_len = [], 0
         
         prefix = f"[{entry.get('user_id', 'Unknown')}; Name: {entry.get('user_name', 'User')}]: " if entry['role'] == 'user' else ""
         
@@ -423,7 +424,7 @@ async def generate(client, contents, context, current_tools, force_voice=False):
             }
             if t_config: gen_config_args["thinking_config"] = t_config
             if force_voice:
-                gen_config_args["response_modalities"] =["AUDIO"]
+                gen_config_args["response_modalities"] = ["AUDIO"]
 
             logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1})[Audio: {force_voice}]")
 
@@ -459,6 +460,10 @@ async def generate(client, contents, context, current_tools, force_voice=False):
                 elif "400" in err_str and "only supports text output" in err_str:
                     logger.warning(f"⚠️ Модель {model_id} не умеет в голос (Ошибка 400).")
                     break 
+                elif "400" in err_str and "audio" in err_str:
+                     # Для экспериментальных моделей может выдать "requested response modalities: audio" если фича отключена
+                    logger.warning(f"⚠️ Модель {model_id} временно не поддерживает аудио.")
+                    break
                 elif "404" in err_str or "not found" in err_str:
                     logger.warning(f"⚠️ Модель {model_id} недоступна (404/403).")
                     break 
@@ -468,9 +473,10 @@ async def generate(client, contents, context, current_tools, force_voice=False):
                 logger.error(f"❌ General Error on {model_id}: {e}", exc_info=True)
                 break
 
-    # ИНТЕЛЛЕКТУАЛЬНЫЙ ФОЛЛБЭК: Если хотели голос, но все аудио-модели упали — отвечаем текстом!
+    # ИНТЕЛЛЕКТУАЛЬНЫЙ ФОЛЛБЭК
     if force_voice:
         logger.warning("⚠️ Не удалось сгенерировать голос. Переключаемся на текст.")
+        # Рекурсивно вызываем генерацию, но уже без требования голоса
         return await generate(client, contents, context, current_tools, force_voice=False)
 
     return {"type": "error", "msg": "🚫 Ошибка генерации или исчерпаны лимиты бесплатного API."}, "none"
@@ -503,7 +509,7 @@ async def send_smart(msg, text, hint=False):
     except BadRequest as e:
         logger.error(f"Ошибка ParseMode.HTML: {e}. Отправка в чистом тексте.")
         plain = re.sub(r'<[^>]*>', '', text)
-        for ch in[plain[i:i+4096] for i in range(0, len(plain), 4096)]:
+        for ch in [plain[i:i+4096] for i in range(0, len(plain), 4096)]:
             sent = await msg.reply_text(ch)
     return sent
 
@@ -532,11 +538,11 @@ async def process_request(update, context, parts, text_only=False):
             return
 
         is_media_request = any(p.file_data for p in parts)
-        history =[] if text_only else build_history(context.chat_data.get("history",[]))
+        history = [] if text_only else build_history(context.chat_data.get("history", []))
         
         user_name = msg.from_user.first_name
         
-        parts_final =[p for p in parts if p.file_data]
+        parts_final = [p for p in parts if p.file_data]
         prompt_txt = next((p.text for p in parts if p.text), "")
         final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
         
@@ -544,7 +550,7 @@ async def process_request(update, context, parts, text_only=False):
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
 
-        res_data, used_model_display = await generate(client, history +[types.Content(parts=parts_final, role="user")], context, current_tools, force_voice=force_voice)
+        res_data, used_model_display = await generate(client, history + [types.Content(parts=parts_final, role="user")], context, current_tools, force_voice=force_voice)
             
         # --- ОБРАБОТКА АУДИО ---
         if res_data.get('type') == 'audio':
@@ -560,9 +566,9 @@ async def process_request(update, context, parts, text_only=False):
                 parse_mode=ParseMode.HTML
             )
             
-            hist_item = {"role": "user", "parts":[part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
-            context.chat_data.setdefault("history",[]).append(hist_item)
-            bot_item = {"role": "model", "parts":[{'type': 'text', 'content': res_data.get('text', '🎙 Голосовой ответ.')[:MAX_HISTORY_RESPONSE_LEN]}]}
+            hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
+            context.chat_data.setdefault("history", []).append(hist_item)
+            bot_item = {"role": "model", "parts": [{'type': 'text', 'content': res_data.get('text', '🎙 Голосовой ответ.')[:MAX_HISTORY_RESPONSE_LEN]}]}
             context.chat_data["history"].append(bot_item)
             
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
@@ -586,9 +592,9 @@ async def process_request(update, context, parts, text_only=False):
         sent = await send_smart(msg, reply_to_send, hint=(is_media_request and not text_only))
         
         if sent and not text_only:
-            hist_item = {"role": "user", "parts":[part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
-            context.chat_data.setdefault("history",[]).append(hist_item)
-            bot_item = {"role": "model", "parts":[{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]}
+            hist_item = {"role": "user", "parts": [part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
+            context.chat_data.setdefault("history", []).append(hist_item)
+            bot_item = {"role": "model", "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]}
             context.chat_data["history"].append(bot_item)
             
             if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
@@ -621,7 +627,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg: return
     context.chat_data['id'] = msg.chat_id
     
-    parts =[]
+    parts = []
     client = context.bot_data['gemini_client']
     text = msg.caption or msg.text or ""
 
@@ -644,7 +650,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     prompt_text = "Опиши это изображение подробно и извлеки весь видимый текст (OCR). Выведи только результат, без вступлений."
                 
-                parts =[media_part, types.Part(text=prompt_text)]
+                parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return 
                 
@@ -706,7 +712,7 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     prompt_text = "Опиши это изображение подробно и извлеки весь видимый текст (OCR). Выведи только результат, без вступлений."
                 
-                parts =[media_part, types.Part(text=prompt_text)]
+                parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return
             except Exception as e:
@@ -719,7 +725,7 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @ignore_if_processing
 async def voice_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    modes =['auto', 'always', 'never']
+    modes = ['auto', 'always', 'never']
     current = context.chat_data.get('voice_mode', 'auto')
     next_mode = modes[(modes.index(current) + 1) % 3]
     context.chat_data['voice_mode'] = next_mode
@@ -739,7 +745,7 @@ async def util_cmd(update, context, prompt):
         return await msg.reply_text("⚠️ Ответьте на сообщение с файлом.")
     reply = msg.reply_to_message
     media = reply.audio or reply.voice or reply.video or reply.video_note or (reply.photo[-1] if reply.photo else None) or reply.document
-    parts =[]
+    parts = []
     client = context.bot_data['gemini_client']
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
@@ -803,20 +809,20 @@ async def main():
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
-    # ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ КНОПКИ "МЕНЮ" В TELEGRAM
-    commands =[
-        BotCommand("start", "Перезапуск и справка"),
-        BotCommand("text", "Расшифровать следующее аудио/фото"),
-        BotCommand("voice", "Настройка голосовых ответов (Авто/Вкл/Выкл)"),
-        BotCommand("summarize", "Сделать конспект файла (ответом)"),
-        BotCommand("clear", "Очистить память диалога"),
-        BotCommand("status", "Статистика API")
+    # ОБНОВЛЕНИЕ МЕНЮ
+    commands = [
+        BotCommand("start", "Справка"),
+        BotCommand("text", "Расшифровать следующее"),
+        BotCommand("voice", "Режим голоса (Авто/Вкл/Выкл)"),
+        BotCommand("summarize", "Конспект"),
+        BotCommand("clear", "Сброс памяти"),
+        BotCommand("status", "Статистика")
     ]
     await app.bot.set_my_commands(commands)
     logger.info("✅ Меню команд Telegram обновлено.")
 
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v65 - UI Sync & 2.0 Voice Routing)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v66 - Audio Fix via Experimental)") 
         except: pass
 
     stop = asyncio.Event()
