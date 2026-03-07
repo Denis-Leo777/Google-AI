@@ -1,4 +1,4 @@
-# Версия 62 (Feature: Auto-Voice for Voice Notes, Smart /text Command & Clean Cascade)
+# Версия 63 (Feature: 3-State Voice Toggle, Cleaned Image Gen & Fallback Cascade)
 
 import logging
 import os
@@ -68,8 +68,7 @@ if missing:
     logger.critical(f"Не заданы обязательные переменные окружения: {', '.join(missing)}")
     exit(1)
 
-# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (ОЧИЩЕНА НА БАЗЕ ЛОГОВ) ---
-# Оставили только те, которые реально работают без 404 и 429 ошибок, чтобы бот не "тупил"
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
 MODEL_CASCADE =[
     {
         "id": "gemini-2.5-flash", 
@@ -78,24 +77,18 @@ MODEL_CASCADE =[
         "supports_audio": True
     },
     {
-        "id": "gemini-2.0-flash", 
-        "display": "2.0 Flash",
+        "id": "gemini-2.5-flash-lite", 
+        "display": "2.5 Flash Lite",
         "config_type": "none",
-        "supports_audio": True
+        "supports_audio": False # Lite версия обычно не умеет генерировать звук
     }
 ]
-
-IMAGE_MODEL_CONFIG = {
-    "id": "gemini-2.5-flash-image", # Если лимиты исчерпаны, бот напишет об этом
-    "display": "Nano Banana 🍌",
-    "response_modalities":["IMAGE"]
-}
 
 # Глобальные переменные
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-REQUEST_DELAY = 15 # Задержка уменьшена, так как мы используем стабильные модели
+REQUEST_DELAY = 15 
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
@@ -383,7 +376,7 @@ async def upload_file(client, b, mime, name):
         raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
 
 # --- ЯДРО ГЕНЕРАЦИИ ---
-async def generate(client, contents, context, current_tools, force_model=None, force_voice=False):
+async def generate(client, contents, context, current_tools, force_voice=False):
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
@@ -399,39 +392,34 @@ async def generate(client, contents, context, current_tools, force_model=None, f
             await asyncio.sleep(wait_time)
         LAST_REQUEST_TIME = time.time()
 
-    target_models =[force_model] if force_model else MODEL_CASCADE
-
-    for model_config in target_models:
+    for model_config in MODEL_CASCADE:
         model_id = model_config['id']
         
+        # Если нужен голос, а модель его не поддерживает (например, Lite) — пропускаем её
         if force_voice and not model_config.get('supports_audio', True):
+            logger.info(f"⏭ Пропуск {model_id}: нужен голос, а модель его не поддерживает.")
             continue
 
         max_attempts_per_model = 2 
         
         for attempt in range(max_attempts_per_model):
             t_config = None
-            response_modalities = model_config.get('response_modalities', None)
-            
-            if not response_modalities:
-                if "thinking_level" in model_config:
-                    t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_level'])
-                elif "thinking_budget" in model_config:
-                    t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_budget'])
+            if "thinking_level" in model_config:
+                t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_level'])
+            elif "thinking_budget" in model_config:
+                t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_budget'])
 
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
-                "tools": current_tools if not response_modalities else None,
-                "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]) if not response_modalities else None,
+                "tools": current_tools,
+                "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
                 "temperature": 1.0, 
             }
             if t_config: gen_config_args["thinking_config"] = t_config
-            if response_modalities: 
-                gen_config_args["response_modalities"] = response_modalities
-            elif force_voice:
+            if force_voice:
                 gen_config_args["response_modalities"] = ["AUDIO"]
 
-            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1})[Img: {bool(response_modalities)}, Audio: {force_voice}]")
+            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1})[Audio: {force_voice}]")
 
             try:
                 config = types.GenerateContentConfig(**gen_config_args)
@@ -443,11 +431,6 @@ async def generate(client, contents, context, current_tools, force_model=None, f
                     
                     if parts:
                         audio_part = next((p for p in parts if p.inline_data and p.inline_data.mime_type.startswith("audio/")), None)
-                        image_part = next((p for p in parts if p.inline_data and p.inline_data.mime_type.startswith("image/")), None)
-                        
-                        if image_part:
-                            return {"type": "image", "data": image_part.inline_data.data, "mime": image_part.inline_data.mime_type}, model_config['display']
-                        
                         if audio_part:
                             text_part = next((p for p in parts if p.text), None)
                             text_content = text_part.text if text_part else "🎙 Голосовой ответ."
@@ -469,7 +452,7 @@ async def generate(client, contents, context, current_tools, force_model=None, f
                     continue
                 elif "404" in err_str or "not found" in err_str:
                     logger.warning(f"⚠️ Модель {model_id} недоступна (404/403).")
-                    break # Не пытаемся снова, если модели нет
+                    break 
                 logger.error(f"❌ API Error on {model_id}: {e}")
                 break
             except Exception as e:
@@ -481,7 +464,7 @@ async def generate(client, contents, context, current_tools, force_model=None, f
 def format_response(response_data):
     try:
         if response_data['type'] == 'error': return response_data['msg']
-        if response_data['type'] in['image', 'audio']: return "[MEDIA_DATA]"
+        if response_data['type'] == 'audio': return "[MEDIA_DATA]"
         
         response = response_data['obj']
         cand = response.candidates[0]
@@ -506,29 +489,36 @@ async def send_smart(msg, text, hint=False):
     except BadRequest as e:
         logger.error(f"Ошибка ParseMode.HTML: {e}. Отправка в чистом тексте.")
         plain = re.sub(r'<[^>]*>', '', text)
-        for ch in [plain[i:i+4096] for i in range(0, len(plain), 4096)]:
+        for ch in[plain[i:i+4096] for i in range(0, len(plain), 4096)]:
             sent = await msg.reply_text(ch)
     return sent
 
-async def process_request(update, context, parts, force_image=False, text_only=False):
+async def process_request(update, context, parts, text_only=False):
     msg, client = update.message, context.bot_data['gemini_client']
     
-    # АВТО-ГОЛОС: Включается, если включен режим /voice ИЛИ если пользователь сам прислал аудио/голосовое
+    # ЛОГИКА АУДИО ОТВЕТОВ (3 состояния)
+    v_mode = context.chat_data.get('voice_mode', 'auto')
     user_sent_voice = bool(msg.voice or msg.audio)
-    force_voice = (context.chat_data.get('voice_mode', False) or user_sent_voice) and not force_image and not text_only
     
-    action = ChatAction.UPLOAD_PHOTO if force_image else (ChatAction.RECORD_VOICE if force_voice else ChatAction.TYPING)
+    if v_mode == 'always': force_voice = True
+    elif v_mode == 'never': force_voice = False
+    else: force_voice = user_sent_voice # auto режим
+    
+    if text_only: 
+        force_voice = False # Если запрошена текстовая транскрипция, отменяем голос
+    
+    action = ChatAction.RECORD_VOICE if force_voice else ChatAction.TYPING
     typer = TypingWorker(context.bot, msg.chat_id, action)
     typer.start()
     
     try:
         txt = next((p.text for p in parts if p.text), None)
-        if txt and DATE_TIME_REGEX.search(txt) and not force_image:
+        if txt and DATE_TIME_REGEX.search(txt):
             await send_smart(msg, get_current_time_str())
             return
 
         is_media_request = any(p.file_data for p in parts)
-        history =[] if (force_image or text_only) else build_history(context.chat_data.get("history",[]))
+        history =[] if text_only else build_history(context.chat_data.get("history",[]))
         
         user_name = msg.from_user.first_name
         
@@ -536,23 +526,15 @@ async def process_request(update, context, parts, force_image=False, text_only=F
         prompt_txt = next((p.text for p in parts if p.text), "")
         final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
         
-        if not force_image and not text_only:
+        if not text_only:
              if not is_media_request and not URL_REGEX.search(prompt_txt):
                  final_prompt = f"Используй Grounding with Google Search. Актуальная дата: {get_current_time_str()}.\n" + final_prompt
         
         parts_final.append(types.Part(text=final_prompt))
         
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
-        force_model = IMAGE_MODEL_CONFIG if force_image else None
 
-        res_data, used_model_display = await generate(client, history +[types.Content(parts=parts_final, role="user")], context, current_tools, force_model=force_model, force_voice=force_voice)
-        
-        # --- ОБРАБОТКА ИЗОБРАЖЕНИЙ ---
-        if res_data.get('type') == 'image':
-            image_bytes = res_data['data']
-            if isinstance(image_bytes, str): image_bytes = base64.b64decode(image_bytes)
-            await msg.reply_photo(photo=io.BytesIO(image_bytes), caption=f"🎨 <i>Создано: {used_model_display}</i>", parse_mode=ParseMode.HTML)
-            return
+        res_data, used_model_display = await generate(client, history +[types.Content(parts=parts_final, role="user")], context, current_tools, force_voice=force_voice)
             
         # --- ОБРАБОТКА АУДИО ---
         if res_data.get('type') == 'audio':
@@ -593,7 +575,7 @@ async def process_request(update, context, parts, force_image=False, text_only=F
 
         sent = await send_smart(msg, reply_to_send, hint=(is_media_request and not text_only))
         
-        if sent and not force_image and not text_only:
+        if sent and not text_only:
             hist_item = {"role": "user", "parts":[part_to_dict(p) for p in parts], "user_id": msg.from_user.id, "user_name": user_name}
             context.chat_data.setdefault("history",[]).append(hist_item)
             bot_item = {"role": "model", "parts":[{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]}
@@ -691,11 +673,9 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text: parts.append(types.Part(text=text))
     if parts: await process_request(update, context, parts)
 
-# Умная команда /text (работает и как флаг, и как мгновенный ответ на реплай)
 @ignore_if_processing
 async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    # Если ответили на сообщение с файлом/аудио — расшифровываем моментально
     if msg.reply_to_message:
         reply = msg.reply_to_message
         media = reply.audio or reply.voice or reply.video or reply.video_note or (reply.photo[-1] if reply.photo else None) or reply.document
@@ -716,7 +696,7 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     prompt_text = "Опиши это изображение подробно и извлеки весь видимый текст (OCR). Выведи только результат, без вступлений."
                 
-                parts = [media_part, types.Part(text=prompt_text)]
+                parts =[media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return
             except Exception as e:
@@ -724,26 +704,25 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             return await msg.reply_text("⚠️ Ответьте этой командой на сообщение с аудио или картинкой.")
             
-    # Если реплая нет — ставим флаг для следующего сообщения
     context.chat_data['next_media_is_text'] = True
     await update.message.reply_text("Ок, пришли следующим сообщением аудио или картинку — расшифрую в текст.")
 
 @ignore_if_processing
-async def draw_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    prompt = " ".join(context.args)
-    if not prompt:
-        return await msg.reply_text("🎨 Используй: <code>/draw описание картинки</code>\n<i>(Доступно ~500 картинок в день)</i>", parse_mode=ParseMode.HTML)
-    
-    parts = [types.Part(text=prompt)]
-    await process_request(update, context, parts, force_image=True)
-
-@ignore_if_processing
 async def voice_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    current = context.chat_data.get('voice_mode', False)
-    context.chat_data['voice_mode'] = not current
-    state = "ВКЛЮЧЕНЫ 🎙\n<i>(Бот будет отвечать голосом на всё)</i>" if not current else "ВЫКЛЮЧЕНЫ 📝\n<i>(Голос только в ответ на твои голосовые)</i>"
-    await update.message.reply_html(f"Принудительные голосовые ответы {state}")
+    # Трехрежимный переключатель: auto -> always -> never
+    modes = ['auto', 'always', 'never']
+    current = context.chat_data.get('voice_mode', 'auto')
+    next_mode = modes[(modes.index(current) + 1) % 3]
+    context.chat_data['voice_mode'] = next_mode
+    
+    if next_mode == 'auto':
+        state = "АВТО 🤖\n<i>(Голос на голосовые, текст на текстовые)</i>"
+    elif next_mode == 'always':
+        state = "ВСЕГДА 🎙\n<i>(Отвечаю голосом на всё)</i>"
+    else:
+        state = "НИКОГДА 📝\n<i>(Только текстовые ответы)</i>"
+        
+    await update.message.reply_html(f"Режим ответов: <b>{state}</b>")
 
 async def util_cmd(update, context, prompt):
     msg = update.message
@@ -780,8 +759,7 @@ async def start_c(u, c):
         "👋 <b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\n\n"
         "<b>Что я умею:</b>\n"
         "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю и проанализирую.\n"
-        "🎨 <b>Картинки (Nano Banana 🍌):</b> <code>/draw описание</code>\n"
-        "🎙 <b>Умный голос:</b> Просто отправь мне голосовое, и я отвечу тебе голосом! (Или используй <code>/voice</code> чтобы я всегда так делал).\n"
+        "🎙 <b>Умный голос:</b> Автоматически отвечаю голосом на твои голосовые сообщения! Управление режимами: <code>/voice</code>\n"
         "🔤 <b>Транскрибация:</b> Напиши <code>/text</code> в ответ на аудио/фото (или просто <code>/text</code> и кидай файл) — выдам чистый текст без лишних слов.\n\n"
         "<i>Работаю на базе быстрого и стабильного Gemini 2.5 Flash.</i>"
     )
@@ -796,7 +774,7 @@ async def clear_c(u, c):
 
 @ignore_if_processing
 async def status_c(u, c):
-    stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE + [IMAGE_MODEL_CONFIG]])
+    stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE])
     await u.message.reply_html(f"📊 <b>Статистика успешных запросов:</b>\n{stats}")
 
 # --- MAIN ---
@@ -804,10 +782,8 @@ async def main():
     pers = PostgresPersistence(DATABASE_URL)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
 
-    # Команды расставлены в логичном порядке (на первом месте самые частые)
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("text", text_cmd)) 
-    app.add_handler(CommandHandler("draw", draw_c)) 
     app.add_handler(CommandHandler("voice", voice_c)) 
     app.add_handler(CommandHandler("summarize", lambda u, c: util_cmd(u, c, "Сделай подробный конспект (summary) этого материала.")))
     app.add_handler(CommandHandler("clear", clear_c))
@@ -819,7 +795,7 @@ async def main():
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v62 - AutoVoice & Smart /text & Clean Models)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v63 - 3-State Voice & Fallback Cascade)") 
         except: pass
 
     stop = asyncio.Event()
