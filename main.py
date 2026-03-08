@@ -1,4 +1,4 @@
-# Версия 69 (All 18 Fixes Applied)
+# Версия 71 (deepcopy fix — PersistenceInput(bot_data=False))
 
 import logging
 import os
@@ -20,7 +20,7 @@ from functools import wraps
 import aiohttp.web
 from telegram import Update, BotCommand
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, BasePersistence
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, BasePersistence, PersistenceInput
 from telegram.error import BadRequest
 
 from google import genai
@@ -68,7 +68,6 @@ if missing:
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
-# Fix #16: Убран неиспользуемый config_type
 MODEL_CASCADE = [
     {
         "id": "gemini-2.5-flash",
@@ -82,28 +81,25 @@ MODEL_CASCADE = [
 
 # Глобальные переменные
 DAILY_REQUEST_COUNTS = defaultdict(int)
-DAILY_REQUEST_DATE = None  # Fix #3: отслеживание даты для ежедневного сброса
+DAILY_REQUEST_DATE = None
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
 REQUEST_DELAY = 10
-CHAT_LOCKS = {}  # Fix #13: per-chat locks для записи в историю
-GEMINI_CLIENT = None  # Fix #19: вынесен из bot_data (не сериализуется)
-PROCESSING_MESSAGES = set()  # Fix #19: вынесен из bot_data
+CHAT_LOCKS = {}
+GEMINI_CLIENT = None
+PROCESSING_MESSAGES = set()
 
 # --- REGEX ---
-YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
-URL_REGEX = re.compile(r'https?:\/\/[^\s/$.?#].[^\s]*')
-DATE_TIME_REGEX = re.compile(r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE)
+YOUTUBE_REGEX = re.compile(r'(?:https?:\\/\\/)?(?:www\\.|m\\.)?(?:youtube\\.com\\/(?:watch\\?v=|embed\\/|v\\/|shorts\\/)|youtu\\.be\\/|youtube-nocookie\\.com\\/embed\\/)([a-zA-Z0-9_-]{11})')
+URL_REGEX = re.compile(r'https?:\\/\\/[^\\s/$.?#].[^\\s]*')
+DATE_TIME_REGEX = re.compile(r'^\\s*(какой\\s+)?(день|дата|число|время|который\\s+час)\\??\\s*$', re.IGNORECASE)
 HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler|blockquote)>', re.IGNORECASE)
-RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
+RE_CLEAN_NAMES = re.compile(r'\\[\\d+;\\s*Name:\\s*.*?\\]:\\s*')
 
 MAX_CONTEXT_CHARS = 50000
 MAX_HISTORY_RESPONSE_LEN = 4000
 MAX_HISTORY_ITEMS = 100
 MAX_MEDIA_CONTEXTS = 100
-# Fix #15: Магическое число 47 → именованная константа с комментарием
-# Google Files API хранит загруженные файлы 48 часов.
-# Используем 47 часов как TTL с запасом в 1 час.
 FILE_TTL_HOURS = 47
 MEDIA_CONTEXT_TTL_SECONDS = FILE_TTL_HOURS * 3600
 TELEGRAM_FILE_LIMIT_MB = 20
@@ -166,7 +162,7 @@ class TypingWorker:
 # --- PERSISTENCE ---
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
-        super().__init__()
+        super().__init__(store_data=PersistenceInput(bot_data=False, callback_data=False))
         self.db_pool = None
         self.dsn = database_url
         self._connect_with_retry()
@@ -193,9 +189,6 @@ class PostgresPersistence(BasePersistence):
         dsn = f"{dsn}&{opts}" if "?" in dsn else f"{dsn}?{opts}"
         self.db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, dsn=dsn)
 
-    # Fix #1: conn = None после putconn(close=True) — нет двойного возврата
-    # Fix #2: bare except → except Exception
-    # Fix: реконнект пула перед последней попыткой
     def _execute(self, query: str, params: tuple = None, fetch: str = None, retries=3):
         last_ex = None
         for attempt in range(retries):
@@ -222,8 +215,7 @@ class PostgresPersistence(BasePersistence):
                         self.db_pool.putconn(conn, close=True)
                     except Exception:
                         pass
-                    conn = None  # Fix #1: обнуляем, чтобы finally не сделал двойной putconn
-                # Реконнект пула перед последней попыткой
+                    conn = None
                 if attempt == retries - 2:
                     try:
                         self._connect()
@@ -241,7 +233,7 @@ class PostgresPersistence(BasePersistence):
                         self.db_pool.putconn(conn, close=True)
                     except Exception:
                         pass
-                    conn = None  # Fix #1: обнуляем
+                    conn = None
                 raise e
             finally:
                 if conn:
@@ -262,19 +254,24 @@ class PostgresPersistence(BasePersistence):
             (key, pickled, pickled)
         )
 
-    # Fix #5: Реализованы get/update/refresh bot_data (для media_contexts)
+    # bot_data НЕ персистится через PTB (store_data=PersistenceInput(bot_data=False))
     async def get_bot_data(self):
-        data = await asyncio.to_thread(self._get_pickled, "bot_data")
-        return data if isinstance(data, dict) else {}
+        return {}
 
     async def update_bot_data(self, data):
-        await asyncio.to_thread(self._set_pickled, "bot_data", data)
+        pass
 
     async def refresh_bot_data(self, bot_data):
-        data = await asyncio.to_thread(self._get_pickled, "bot_data") or {}
-        bot_data.update(data)
+        pass
 
-    # Fix #4: removeprefix вместо split('_')[-1]
+    # --- Ручное сохранение media_contexts ---
+    async def load_media_contexts(self):
+        data = await asyncio.to_thread(self._get_pickled, "media_contexts")
+        return data if isinstance(data, dict) else {}
+
+    async def save_media_contexts(self, data):
+        await asyncio.to_thread(self._set_pickled, "media_contexts", data)
+
     async def get_chat_data(self):
         all_data = await asyncio.to_thread(
             self._execute,
@@ -343,82 +340,55 @@ def get_current_time_str(timezone="Europe/Moscow"):
 
 
 def convert_markdown_to_html(text: str) -> str:
-    """Конвертирует Markdown от Gemini в Telegram HTML.
-    
-    Порядок обработки критичен:
-    1. Извлекаем блоки кода и ссылки (защита от ложных срабатываний)
-    2. html.escape() для безопасности
-    3. Заголовки
-    4. Блок-цитаты (> text)
-    5. Bold-italic (***) — ДО bold и italic отдельно
-    6. Bold (**)
-    7. Italic (*) и (_)
-    8. Strikethrough, spoiler
-    9. Восстанавливаем код и ссылки
-    """
     if not text:
         return text
 
-    # --- Шаг 1: Извлекаем код и ссылки в плейсхолдеры ---
     code_blocks = {}
 
     def store_code(match):
-        key = f"\x00CODE{len(code_blocks)}\x00"
+        key = f"\\x00CODE{len(code_blocks)}\\x00"
         content = html.escape(match.group(1))
-        tag = "pre" if match.group(0).startswith("```") else "code"
+        tag = "pre" if match.group(0).startswith("\`\`\`") else "code"
         code_blocks[key] = f"<{tag}>{content}</{tag}>"
         return key
 
-    text = re.sub(r'```[ \w-]*\n?(.*?)```', store_code, text, flags=re.DOTALL)
-    text = re.sub(r'`([^`]+)`', store_code, text)
+    text = re.sub(r'\`\`\`[ \\w-]*\\n?(.*?)\`\`\`', store_code, text, flags=re.DOTALL)
+    text = re.sub(r'\`([^\`]+)\`', store_code, text)
 
     links = {}
 
     def store_link(match):
-        key = f"\x00LINK{len(links)}\x00"
+        key = f"\\x00LINK{len(links)}\\x00"
         url = html.escape(match.group(2), quote=True)
         link_text = html.escape(match.group(1), quote=False)
         links[key] = f'<a href="{url}">{link_text}</a>'
         return key
 
-    text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', store_link, text)
+    text = re.sub(r'\\[([^\\]]+)\\]\\((https?://[^\\)]+)\\)', store_link, text)
 
-    # --- Шаг 2: Экранируем HTML-спецсимволы ---
     text = html.escape(text, quote=False)
 
-    # --- Шаг 3: Заголовки ---
-    text = re.sub(r'^(#{1,6})\s+(.+)$', r'<b>\2</b>', text, flags=re.MULTILINE)
+    text = re.sub(r'^(#{1,6})\\s+(.+)$', r'<b>\\2</b>', text, flags=re.MULTILINE)
 
-    # --- Шаг 4: Блок-цитаты (> text) → <blockquote> ---
     def convert_blockquote(match):
-        lines = match.group(0).strip().split('\n')
-        content = '\n'.join(re.sub(r'^>\s?', '', line) for line in lines)
+        lines = match.group(0).strip().split('\\n')
+        content = '\\n'.join(re.sub(r'^>\\s?', '', line) for line in lines)
         return f'<blockquote>{content}</blockquote>'
 
-    text = re.sub(r'(?:^>.*$\n?)+', convert_blockquote, text, flags=re.MULTILINE)
+    text = re.sub(r'(?:^>.*$\\n?)+', convert_blockquote, text, flags=re.MULTILINE)
 
-    # --- Шаг 5: Bold-Italic (***text*** / ___text___) — ПЕРЕД bold и italic ---
-    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
-    text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
+    text = re.sub(r'\\*\\*\\*(.+?)\\*\\*\\*', r'<b><i>\\1</i></b>', text, flags=re.DOTALL)
+    text = re.sub(r'___(.+?)___', r'<b><i>\\1</i></b>', text, flags=re.DOTALL)
 
-    # --- Шаг 6: Bold (**text** / __text__) ---
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
-    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
+    text = re.sub(r'\\*\\*(.+?)\\*\\*', r'<b>\\1</b>', text, flags=re.DOTALL)
+    text = re.sub(r'__(.+?)__', r'<b>\\1</b>', text, flags=re.DOTALL)
 
-    # --- Шаг 7: Italic (*text* / _text_) ---
-    # re.DOTALL включён для многострочного курсива.
-    # Защита от ложных срабатываний на списках (* item):
-    #   (?!\s) — после открывающей * не должно быть пробела
-    #   (?<!\s) — перед закрывающей * не должно быть пробела
-    text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
-    # _italic_ — только на границах слов (не внутри переменных вроде my_var_name)
-    text = re.sub(r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]"]|$)', r'<i>\1</i>', text, flags=re.DOTALL | re.MULTILINE)
+    text = re.sub(r'(?<!\\*)\\*(?!\\s)(.+?)(?<!\\s)\\*(?!\\*)', r'<i>\\1</i>', text, flags=re.DOTALL)
+    text = re.sub(r'(?:^|(?<=\\s))_(?!\\s)(.+?)(?<!\\s)_(?=\\s|[.,;:!?\\)\\]"]|$)', r'<i>\\1</i>', text, flags=re.DOTALL | re.MULTILINE)
 
-    # --- Шаг 8: Strikethrough & Spoiler ---
-    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
-    text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL)
+    text = re.sub(r'~~(.+?)~~', r'<s>\\1</s>', text, flags=re.DOTALL)
+    text = re.sub(r'\\|\\|(.+?)\\|\\|', r'<tg-spoiler>\\1</tg-spoiler>', text, flags=re.DOTALL)
 
-    # --- Шаг 9: Восстанавливаем плейсхолдеры ---
     for key, val in code_blocks.items():
         text = text.replace(key, val)
     for key, val in links.items():
@@ -427,19 +397,17 @@ def convert_markdown_to_html(text: str) -> str:
     return text
 
 
-# Fix #7: Полностью переписан html_safe_chunker с корректным трекингом тегов
 def html_safe_chunker(text: str, size=4096):
     chunks = []
-    stack = []  # Теги, открытые и унаследованные из предыдущих чанков
+    stack = []
 
     while len(text) > size:
-        split = text.rfind('\n', 0, size)
+        split = text.rfind('\\n', 0, size)
         if split == -1:
             split = size
 
         chunk = text[:split]
 
-        # Трекинг тегов: начинаем с унаследованного стека
         chunk_stack = list(stack)
         for m in HTML_TAG_REGEX.finditer(chunk):
             tag = m.group(2).lower()
@@ -447,15 +415,12 @@ def html_safe_chunker(text: str, size=4096):
             if is_closing:
                 if chunk_stack and chunk_stack[-1] == tag:
                     chunk_stack.pop()
-                # else: несовпадающий закрывающий тег — игнорируем
             else:
                 chunk_stack.append(tag)
 
-        # Закрываем все незакрытые теги в конце чанка
         chunk += ''.join(f'</{t}>' for t in reversed(chunk_stack))
         chunks.append(chunk)
 
-        # Следующий чанк открывает унаследованные теги
         stack = chunk_stack
         text = ''.join(f'<{t}>' for t in stack) + text[split:].lstrip()
 
@@ -499,7 +464,6 @@ def dict_to_part(d):
     return None, False
 
 
-# Fix #8: prefix добавляется только к первому текстовому part
 def build_history(history):
     valid, chars = [], 0
     for entry in reversed(history):
@@ -562,12 +526,9 @@ async def upload_file(client, b, mime, name):
 
 
 # --- ЯДРО ГЕНЕРАЦИИ ---
-# Fix #3: ежедневный сброс счётчика
-# Fix #10: GLOBAL_LOCK освобождается ДО sleep
 async def generate(client, contents, context, current_tools):
     global LAST_REQUEST_TIME, DAILY_REQUEST_DATE
 
-    # Fix #3: Сброс счётчика при смене дня
     today = datetime.date.today()
     if DAILY_REQUEST_DATE != today:
         DAILY_REQUEST_COUNTS.clear()
@@ -577,7 +538,6 @@ async def generate(client, contents, context, current_tools):
     if "{current_time}" in sys_prompt:
         sys_prompt = sys_prompt.format(current_time=get_current_time_str())
 
-    # Fix #10: Лок отпускается до sleep — не блокирует других
     async with GLOBAL_LOCK:
         now = time.time()
         elapsed = now - LAST_REQUEST_TIME
@@ -666,7 +626,7 @@ def format_response(response_data):
 async def send_smart(msg, text, hint=False):
     chunks = html_safe_chunker(text)
     if hint:
-        h = "\n\n<i>💡 Ответьте на это сообщение для вопроса по файлу.</i>"
+        h = "\\n\\n<i>💡 Ответьте на это сообщение для вопроса по файлу.</i>"
         if len(chunks[-1]) + len(h) <= 4096:
             chunks[-1] += h
 
@@ -685,7 +645,6 @@ async def send_smart(msg, text, hint=False):
     return sent
 
 
-# Fix #13: per-chat lock для безопасной записи истории
 def get_chat_lock(chat_id: int) -> asyncio.Lock:
     global CHAT_LOCKS
     if chat_id not in CHAT_LOCKS:
@@ -728,11 +687,10 @@ async def process_request(update, context, parts, text_only=False):
         reply_to_send = clean_reply
 
         if not text_only and used_model_display != "none":
-            reply_to_send += f"\n\n<i>{used_model_display}</i>"
+            reply_to_send += f"\\n\\n<i>{used_model_display}</i>"
 
         sent = await send_smart(msg, reply_to_send, hint=(is_media_request and not text_only))
 
-        # Fix #13: Запись в историю под per-chat lock
         if sent and not text_only:
             lock = get_chat_lock(msg.chat_id)
             async with lock:
@@ -765,6 +723,9 @@ async def process_request(update, context, parts, text_only=False):
                         m_store[msg.message_id] = part_to_dict(m_part)
                         if len(m_store) > MAX_MEDIA_CONTEXTS:
                             m_store.popitem(last=False)
+                        await context.application.persistence.save_media_contexts(
+                            context.application.bot_data.get('media_contexts', {})
+                        )
 
                 await context.application.persistence.update_chat_data(msg.chat_id, context.chat_data)
 
@@ -787,7 +748,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = GEMINI_CLIENT
     text = msg.caption or msg.text or ""
 
-    media = msg.audio or msg.voice or msg.video or msg.video_note or \
+    media = msg.audio or msg.voice or msg.video or msg.video_note or \\
             (msg.photo[-1] if msg.photo else None) or msg.document
 
     # ЛОГИКА STICKY TRANSCRIPTION MODE
@@ -806,7 +767,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         getattr(media, 'mime_type', 'application/octet-stream'))
                 media_part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
 
-                if msg.voice or msg.audio or msg.video or msg.video_note or \
+                if msg.voice or msg.audio or msg.video or msg.video_note or \\
                    (msg.document and 'audio' in mime):
                     prompt_text = "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words."
                 else:
@@ -819,7 +780,6 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(f"❌ Загрузка: {e}")
                 return
             finally:
-                # Fix #11: Всегда удаляем статус-сообщение
                 if st:
                     try:
                         await st.delete()
@@ -827,9 +787,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
 
         elif text and not text.startswith('/'):
-            # Fix #9: Текст в режиме расшифровки → тихо выключаем и обрабатываем как обычный запрос
             context.chat_data.pop('next_media_is_text', None)
-            # Код продолжит выполнение ниже — текст будет обработан как обычный запрос
 
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
@@ -849,7 +807,6 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(f"❌ Загрузка: {e}")
                 return
             finally:
-                # Fix #11: Всегда удаляем статус-сообщение
                 if st:
                     try:
                         await st.delete()
@@ -876,15 +833,13 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_request(update, context, parts)
 
 
-# Fix #9: /text работает как toggle
 @ignore_if_processing
 async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
 
-    # Режим «ответ на сообщение» (разовый)
     if msg.reply_to_message:
         reply = msg.reply_to_message
-        media = reply.audio or reply.voice or reply.video or reply.video_note or \
+        media = reply.audio or reply.voice or reply.video or reply.video_note or \\
                 (reply.photo[-1] if reply.photo else None) or reply.document
         if media:
             if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
@@ -901,7 +856,7 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         getattr(media, 'mime_type', 'application/octet-stream'))
                 media_part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
 
-                if reply.voice or reply.audio or reply.video or reply.video_note or \
+                if reply.voice or reply.audio or reply.video or reply.video_note or \\
                    (reply.document and 'audio' in mime):
                     prompt_text = "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words."
                 else:
@@ -913,7 +868,6 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 return await msg.reply_text(f"❌ Ошибка: {e}")
             finally:
-                # Fix #11: Всегда удаляем статус-сообщение
                 if st:
                     try:
                         await st.delete()
@@ -922,27 +876,25 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             return await msg.reply_text("⚠️ Ответьте этой командой на сообщение с аудио или картинкой.")
 
-    # Режим «потоковый» — toggle
     if context.chat_data.get('next_media_is_text', False):
         context.chat_data.pop('next_media_is_text', None)
         await msg.reply_html("⏹ <b>Режим расшифровки выключен.</b>")
     else:
         context.chat_data['next_media_is_text'] = True
         await msg.reply_html(
-            "🔄 <b>Включен режим потоковой расшифровки.</b>\n"
-            "Кидай аудио, видео или фото — я буду сразу присылать текст.\n\n"
+            "🔄 <b>Включен режим потоковой расшифровки.</b>\\n"
+            "Кидай аудио, видео или фото — я буду сразу присылать текст.\\n\\n"
             "<i>Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.</i>"
         )
 
 
-# Fix #12, #14: util_cmd с индикатором загрузки и typing
 async def util_cmd(update, context, prompt):
     msg = update.message
     if not msg.reply_to_message:
         return await msg.reply_text("⚠️ Ответьте на сообщение с файлом.")
 
     reply = msg.reply_to_message
-    media = reply.audio or reply.voice or reply.video or reply.video_note or \
+    media = reply.audio or reply.voice or reply.video or reply.video_note or \\
             (reply.photo[-1] if reply.photo else None) or reply.document
     parts = []
     client = GEMINI_CLIENT
@@ -963,7 +915,6 @@ async def util_cmd(update, context, prompt):
         except Exception as e:
             return await msg.reply_text(f"❌ Ошибка загрузки: {e}")
         finally:
-            # Fix #11: Всегда удаляем статус-сообщение
             if st:
                 try:
                     await st.delete()
@@ -992,10 +943,10 @@ async def util_cmd(update, context, prompt):
 @ignore_if_processing
 async def start_c(u, c):
     start_text = (
-        "👋 <b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\n\n"
-        "<b>Что я умею:</b>\n"
-        "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю, проанализирую и отвечу текстом.\n"
-        "🔤 <b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти в режим расшифровки. Кидай сколько угодно файлов — я переведу их в текст. Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.\n\n"
+        "👋 <b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\\n\\n"
+        "<b>Что я умею:</b>\\n"
+        "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю, проанализирую и отвечу текстом.\\n"
+        "🔤 <b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти в режим расшифровки. Кидай сколько угодно файлов — я переведу их в текст. Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.\\n\\n"
         "<i>Работаю на базе быстрого и стабильного Gemini 2.5 Flash.</i>"
     )
     await u.message.reply_html(start_text)
@@ -1012,11 +963,10 @@ async def clear_c(u, c):
 @ignore_if_processing
 async def status_c(u, c):
     date_str = DAILY_REQUEST_DATE.isoformat() if DAILY_REQUEST_DATE else "N/A"
-    stats = "\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE])
-    await u.message.reply_html(f"📊 <b>Статистика за {date_str}:</b>\n{stats}")
+    stats = "\\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE])
+    await u.message.reply_html(f"📊 <b>Статистика за {date_str}:</b>\\n{stats}")
 
 
-# Fix #12: Именованная функция с декоратором для /summarize
 @ignore_if_processing
 async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await util_cmd(update, context, "Сделай подробный конспект (summary) этого материала.")
@@ -1029,7 +979,7 @@ async def main():
 
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("text", text_cmd))
-    app.add_handler(CommandHandler("summarize", summarize_cmd))  # Fix #12
+    app.add_handler(CommandHandler("summarize", summarize_cmd))
     app.add_handler(CommandHandler("clear", clear_c))
     app.add_handler(CommandHandler("status", status_c))
 
@@ -1040,6 +990,9 @@ async def main():
 
     global GEMINI_CLIENT
     GEMINI_CLIENT = genai.Client(api_key=GOOGLE_API_KEY)
+
+    # Загружаем media_contexts из БД при старте
+    app.bot_data['media_contexts'] = await pers.load_media_contexts()
 
     commands = [
         BotCommand("start", "Справка"),
@@ -1053,7 +1006,7 @@ async def main():
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v70 - Serialization Fix)")
+            await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v71)")
         except Exception:
             pass
 
@@ -1065,7 +1018,6 @@ async def main():
     except NotImplementedError:
         logger.warning("Обработчики сигналов не поддерживаются.")
 
-    # Fix #22: Единая переменная для пути
     clean_path = GEMINI_WEBHOOK_PATH.strip('/')
     webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/{clean_path}"
     await app.bot.set_webhook(url=webhook_url, secret_token=TELEGRAM_SECRET_TOKEN)
@@ -1094,7 +1046,6 @@ async def main():
     logger.info("🚀 Ready.")
     await stop.wait()
 
-    # Fix #17: Корректное завершение
     await app.stop()
     await app.shutdown()
     await runner.cleanup()
