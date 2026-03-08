@@ -1,4 +1,4 @@
-# Версия 67 (Feature: Text Only - Max Stability & Speed, No Audio Generation)
+# Версия 68 (Feature: Sticky Transcription Mode - Multiple Files Support)
 
 import logging
 import os
@@ -69,7 +69,6 @@ if missing:
     exit(1)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
-# Оставляем только самые быстрые текстовые модели
 MODEL_CASCADE = [
     {
         "id": "gemini-2.5-flash", 
@@ -87,7 +86,7 @@ MODEL_CASCADE = [
 DAILY_REQUEST_COUNTS = defaultdict(int)
 GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
-REQUEST_DELAY = 10 # Минимальная задержка для текстовых моделей
+REQUEST_DELAY = 10 
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
@@ -255,7 +254,6 @@ def get_current_time_str(timezone="Europe/Moscow"):
 
 def convert_markdown_to_html(text: str) -> str:
     if not text: return text
-    
     code_blocks = {}
     def store_code(match):
         key = f"__CODE_{len(code_blocks)}__"
@@ -287,7 +285,6 @@ def convert_markdown_to_html(text: str) -> str:
 
     for key, val in links.items(): text = text.replace(key, val)
     for key, val in code_blocks.items(): text = text.replace(key, val)
-        
     return text
 
 def html_safe_chunker(text: str, size=4096):
@@ -336,9 +333,7 @@ def build_history(history):
     for entry in reversed(history):
         if not entry.get("parts"): continue
         api_parts, text_len = [], 0
-        
         prefix = f"[{entry.get('user_id', 'Unknown')}; Name: {entry.get('user_name', 'User')}]: " if entry['role'] == 'user' else ""
-        
         has_text = False
         for p in entry["parts"]:
             if p.get('type') == 'text':
@@ -351,10 +346,8 @@ def build_history(history):
                 if part and not is_stale:
                     api_parts.append(part)
                     text_len += 1000
-        
         if api_parts and not has_text and entry['role'] == 'user':
             api_parts.append(types.Part(text=prefix.strip()))
-        
         if not api_parts: continue
         if chars + text_len > MAX_CONTEXT_CHARS: break
         valid.append(types.Content(role=entry["role"], parts=api_parts))
@@ -478,7 +471,6 @@ async def send_smart(msg, text, hint=False):
 async def process_request(update, context, parts, text_only=False):
     msg, client = update.message, context.bot_data['gemini_client']
     
-    # Только текст, никаких голосовых
     typer = TypingWorker(context.bot, msg.chat_id, ChatAction.TYPING)
     typer.start()
     
@@ -553,9 +545,10 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     media = msg.audio or msg.voice or msg.video or msg.video_note or (msg.photo[-1] if msg.photo else None) or msg.document
     
-    next_media_is_text = context.chat_data.get('next_media_is_text', False)
-    if next_media_is_text:
-        context.chat_data.pop('next_media_is_text', None) 
+    # ЛОГИКА STICKY TRANSCRIPTION MODE
+    transcription_mode = context.chat_data.get('next_media_is_text', False)
+    
+    if transcription_mode:
         if media:
             try:
                 st = await msg.reply_text("📥")
@@ -573,10 +566,13 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return 
-                
             except Exception as e:
                 await msg.reply_text(f"❌ Загрузка: {e}")
                 return
+        elif text and not text.startswith('/'): # Если пришел текст (и это не команда) -> выключаем режим
+            context.chat_data.pop('next_media_is_text', None)
+            await msg.reply_text("⏹ Режим расшифровки выключен. Отвечаю на ваш текст...")
+            # Дальше код пойдет вниз и обработает этот текст как обычный запрос
 
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
@@ -612,6 +608,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @ignore_if_processing
 async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    # Режим "Ответ на сообщение" (разовый)
     if msg.reply_to_message:
         reply = msg.reply_to_message
         media = reply.audio or reply.voice or reply.video or reply.video_note or (reply.photo[-1] if reply.photo else None) or reply.document
@@ -640,8 +637,9 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             return await msg.reply_text("⚠️ Ответьте этой командой на сообщение с аудио или картинкой.")
             
+    # Режим "Потоковый" (постоянный)
     context.chat_data['next_media_is_text'] = True
-    await update.message.reply_text("Ок, пришли следующим сообщением аудио или картинку — расшифрую в текст.")
+    await update.message.reply_html("🔄 <b>Включен режим потоковой расшифровки.</b>\nКидай аудио, видео или фото — я буду сразу присылать текст.\n\n<i>Чтобы выйти, просто напиши любое текстовое сообщение.</i>")
 
 async def util_cmd(update, context, prompt):
     msg = update.message
@@ -678,7 +676,7 @@ async def start_c(u, c):
         "👋 <b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\n\n"
         "<b>Что я умею:</b>\n"
         "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю, проанализирую и отвечу текстом.\n"
-        "🔤 <b>Транскрибация:</b> Напиши <code>/text</code> в ответ на аудио/фото (или просто <code>/text</code> и кидай файл) — выдам чистый текст без лишних слов.\n\n"
+        "🔤 <b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти в режим расшифровки. Кидай сколько угодно файлов — я переведу их в текст. Чтобы выйти, просто напиши мне сообщение.\n\n"
         "<i>Работаю на базе быстрого и стабильного Gemini 2.5 Flash.</i>"
     )
     await u.message.reply_html(start_text)
@@ -711,19 +709,19 @@ async def main():
     await app.initialize()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
     
-    # ОБНОВЛЕНИЕ МЕНЮ (Чистое, без Voice)
+    # ОБНОВЛЕНИЕ МЕНЮ
     commands = [
         BotCommand("start", "Справка"),
-        BotCommand("text", "Расшифровать следующее"),
+        BotCommand("text", "Режим расшифровки файлов"),
         BotCommand("summarize", "Конспект"),
         BotCommand("clear", "Сброс памяти"),
         BotCommand("status", "Статистика")
     ]
     await app.bot.set_my_commands(commands)
-    logger.info("✅ Меню команд Telegram обновлено (Voice removed).")
+    logger.info("✅ Меню команд Telegram обновлено (Text-only).")
 
     if ADMIN_ID: 
-        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v67 - Text Only Stable)") 
+        try: await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v68 - Sticky Text Mode)") 
         except: pass
 
     stop = asyncio.Event()
