@@ -456,8 +456,8 @@ def html_safe_chunker(text: str, size=4096):
 
         chunk = text[:split]
 
-        # Парсим теги в текущем чанке, обновляя стек
-        current_stack = list(open_tags)
+        # Парсим теги в текущем чанке с нуля (reopening-теги уже в тексте)
+        current_stack = []
         for m in HTML_TAG_REGEX.finditer(chunk):
             tag = m.group(2).lower()
             is_closing = bool(m.group(1))
