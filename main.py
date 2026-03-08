@@ -87,6 +87,8 @@ GLOBAL_LOCK = asyncio.Lock()
 LAST_REQUEST_TIME = 0
 REQUEST_DELAY = 10
 CHAT_LOCKS = {}  # Fix #13: per-chat locks для записи в историю
+GEMINI_CLIENT = None  # Fix #19: вынесен из bot_data (не сериализуется)
+PROCESSING_MESSAGES = set()  # Fix #19: вынесен из bot_data
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([a-zA-Z0-9_-]{11})')
@@ -467,14 +469,13 @@ def ignore_if_processing(func):
         if not update.effective_message:
             return
         key = f"{update.effective_chat.id}_{update.effective_message.message_id}"
-        processing = context.application.bot_data.setdefault('processing_messages', set())
-        if key in processing:
+        if key in PROCESSING_MESSAGES:
             return
-        processing.add(key)
+        PROCESSING_MESSAGES.add(key)
         try:
             await func(update, context, *args, **kwargs)
         finally:
-            processing.discard(key)
+            PROCESSING_MESSAGES.discard(key)
     return wrapper
 
 
@@ -693,7 +694,7 @@ def get_chat_lock(chat_id: int) -> asyncio.Lock:
 
 
 async def process_request(update, context, parts, text_only=False):
-    msg, client = update.message, context.bot_data['gemini_client']
+    msg, client = update.message, GEMINI_CLIENT
 
     typer = TypingWorker(context.bot, msg.chat_id, ChatAction.TYPING)
     typer.start()
@@ -783,7 +784,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['id'] = msg.chat_id
 
     parts = []
-    client = context.bot_data['gemini_client']
+    client = GEMINI_CLIENT
     text = msg.caption or msg.text or ""
 
     media = msg.audio or msg.voice or msg.video or msg.video_note or \
@@ -891,7 +892,7 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             st = None
             try:
                 st = await msg.reply_text("📥")
-                client = context.bot_data['gemini_client']
+                client = GEMINI_CLIENT
                 f = await media.get_file()
                 b = await f.download_as_bytearray()
                 mime = ('image/jpeg' if reply.photo else
@@ -944,7 +945,7 @@ async def util_cmd(update, context, prompt):
     media = reply.audio or reply.voice or reply.video or reply.video_note or \
             (reply.photo[-1] if reply.photo else None) or reply.document
     parts = []
-    client = context.bot_data['gemini_client']
+    client = GEMINI_CLIENT
 
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
@@ -1036,7 +1037,9 @@ async def main():
 
     await app.initialize()
     await app.start()
-    app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
+
+    global GEMINI_CLIENT
+    GEMINI_CLIENT = genai.Client(api_key=GOOGLE_API_KEY)
 
     commands = [
         BotCommand("start", "Справка"),
@@ -1050,7 +1053,7 @@ async def main():
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v69 - All Fixes)")
+            await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v70 - Serialization Fix)")
         except Exception:
             pass
 
