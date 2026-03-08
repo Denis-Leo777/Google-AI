@@ -1,4 +1,4 @@
-# Версия 71 (deepcopy fix — PersistenceInput(bot_data=False))
+# Версия 72 (All Fixes Applied - Clean)
 
 import logging
 import os
@@ -20,7 +20,10 @@ from functools import wraps
 import aiohttp.web
 from telegram import Update, BotCommand
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, BasePersistence, PersistenceInput
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    ContextTypes, filters, BasePersistence, PersistenceInput
+)
 from telegram.error import BadRequest
 
 from google import genai
@@ -90,11 +93,17 @@ GEMINI_CLIENT = None
 PROCESSING_MESSAGES = set()
 
 # --- REGEX ---
-YOUTUBE_REGEX = re.compile(r'(?:https?:\\/\\/)?(?:www\\.|m\\.)?(?:youtube\\.com\\/(?:watch\\?v=|embed\\/|v\\/|shorts\\/)|youtu\\.be\\/|youtube-nocookie\\.com\\/embed\\/)([a-zA-Z0-9_-]{11})')
-URL_REGEX = re.compile(r'https?:\\/\\/[^\\s/$.?#].[^\\s]*')
-DATE_TIME_REGEX = re.compile(r'^\\s*(какой\\s+)?(день|дата|число|время|который\\s+час)\\??\\s*$', re.IGNORECASE)
-HTML_TAG_REGEX = re.compile(r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler|blockquote)>', re.IGNORECASE)
-RE_CLEAN_NAMES = re.compile(r'\\[\\d+;\\s*Name:\\s*.*?\\]:\\s*')
+YOUTUBE_REGEX = re.compile(
+    r'(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/(?:watch\?v=|embed/|v/|shorts/)|youtu\.be/|youtube-nocookie\.com/embed/)([a-zA-Z0-9_-]{11})'
+)
+URL_REGEX = re.compile(r'https?://[^\s/$.?#].[^\s]*')
+DATE_TIME_REGEX = re.compile(
+    r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE
+)
+HTML_TAG_REGEX = re.compile(
+    r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler|blockquote)>', re.IGNORECASE
+)
+RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
 
 MAX_CONTEXT_CHARS = 50000
 MAX_HISTORY_RESPONSE_LEN = 4000
@@ -118,8 +127,12 @@ MEDIA_TOOLS = [types.Tool(
 
 SAFETY_SETTINGS = [
     types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
-    for c in (types.HarmCategory.HARM_CATEGORY_HARASSMENT, types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-              types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT)
+    for c in (
+        types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+        types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+    )
 ]
 
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
@@ -138,8 +151,11 @@ except FileNotFoundError:
 # --- TYPING WORKER ---
 class TypingWorker:
     def __init__(self, bot, chat_id, action=ChatAction.TYPING):
-        self.bot, self.chat_id, self.action = bot, chat_id, action
-        self.running, self.task = False, None
+        self.bot = bot
+        self.chat_id = chat_id
+        self.action = action
+        self.running = False
+        self.task = None
 
     async def _worker(self):
         while self.running:
@@ -162,7 +178,9 @@ class TypingWorker:
 # --- PERSISTENCE ---
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
-        super().__init__(store_data=PersistenceInput(bot_data=False, callback_data=False))
+        super().__init__(
+            store_data=PersistenceInput(bot_data=False, callback_data=False)
+        )
         self.db_pool = None
         self.dsn = database_url
         self._connect_with_retry()
@@ -172,10 +190,10 @@ class PostgresPersistence(BasePersistence):
             try:
                 self._connect()
                 self._initialize_db()
-                logger.info("✅ DB Connected.")
+                logger.info("DB Connected.")
                 return
             except psycopg2.Error as e:
-                logger.error(f"DB Connect Error ({attempt+1}): {e}")
+                logger.error(f"DB Connect Error ({attempt + 1}): {e}")
                 if attempt < retries - 1:
                     time.sleep(delay)
                 else:
@@ -199,12 +217,17 @@ class PostgresPersistence(BasePersistence):
                     conn.rollback()
                 with conn.cursor() as cur:
                     cur.execute(query, params)
-                    res = cur.fetchone() if fetch == "one" else cur.fetchall() if fetch == "all" else True
+                    if fetch == "one":
+                        res = cur.fetchone()
+                    elif fetch == "all":
+                        res = cur.fetchall()
+                    else:
+                        res = True
                     conn.commit()
                     return res
             except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
                 if "SSL connection has been closed" not in str(e):
-                    logger.warning(f"DB Error ({attempt+1}): {e}")
+                    logger.warning(f"DB Error ({attempt + 1}): {e}")
                 last_ex = e
                 if conn:
                     try:
@@ -241,7 +264,9 @@ class PostgresPersistence(BasePersistence):
         raise last_ex
 
     def _initialize_db(self):
-        self._execute("CREATE TABLE IF NOT EXISTS persistence_data (key TEXT PRIMARY KEY, data BYTEA NOT NULL);")
+        self._execute(
+            "CREATE TABLE IF NOT EXISTS persistence_data (key TEXT PRIMARY KEY, data BYTEA NOT NULL);"
+        )
 
     def _get_pickled(self, key: str):
         res = self._execute("SELECT data FROM persistence_data WHERE key = %s;", (key,), fetch="one")
@@ -250,11 +275,11 @@ class PostgresPersistence(BasePersistence):
     def _set_pickled(self, key: str, data: object):
         pickled = pickle.dumps(data)
         self._execute(
-            "INSERT INTO persistence_data (key, data) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET data = %s;",
-            (key, pickled, pickled)
+            "INSERT INTO persistence_data (key, data) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET data = %s;",
+            (key, pickled, pickled),
         )
 
-    # bot_data НЕ персистится через PTB (store_data=PersistenceInput(bot_data=False))
     async def get_bot_data(self):
         return {}
 
@@ -264,7 +289,6 @@ class PostgresPersistence(BasePersistence):
     async def refresh_bot_data(self, bot_data):
         pass
 
-    # --- Ручное сохранение media_contexts ---
     async def load_media_contexts(self):
         data = await asyncio.to_thread(self._get_pickled, "media_contexts")
         return data if isinstance(data, dict) else {}
@@ -276,7 +300,7 @@ class PostgresPersistence(BasePersistence):
         all_data = await asyncio.to_thread(
             self._execute,
             "SELECT key, data FROM persistence_data WHERE key LIKE 'chat_data_%';",
-            fetch="all"
+            fetch="all",
         )
         chat_data = defaultdict(dict)
         if all_data:
@@ -293,7 +317,11 @@ class PostgresPersistence(BasePersistence):
         await asyncio.to_thread(self._set_pickled, f"chat_data_{chat_id}", data)
 
     async def drop_chat_data(self, chat_id):
-        await asyncio.to_thread(self._execute, "DELETE FROM persistence_data WHERE key = %s;", (f"chat_data_{chat_id}",))
+        await asyncio.to_thread(
+            self._execute,
+            "DELETE FROM persistence_data WHERE key = %s;",
+            (f"chat_data_{chat_id}",),
+        )
 
     async def refresh_chat_data(self, chat_id, chat_data):
         data = await asyncio.to_thread(self._get_pickled, f"chat_data_{chat_id}") or {}
@@ -335,8 +363,14 @@ class PostgresPersistence(BasePersistence):
 def get_current_time_str(timezone="Europe/Moscow"):
     now = datetime.datetime.now(pytz.timezone(timezone))
     days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-    months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-    return f"Сегодня {days[now.weekday()]}, {now.day} {months[now.month-1]} {now.year} года, время {now.strftime('%H:%M')} (MSK)."
+    months = [
+        "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    ]
+    return (
+        f"Сегодня {days[now.weekday()]}, {now.day} {months[now.month - 1]} "
+        f"{now.year} года, время {now.strftime('%H:%M')} (MSK)."
+    )
 
 
 def convert_markdown_to_html(text: str) -> str:
@@ -346,48 +380,53 @@ def convert_markdown_to_html(text: str) -> str:
     code_blocks = {}
 
     def store_code(match):
-        key = f"\\x00CODE{len(code_blocks)}\\x00"
+        key = f"\x00CODE{len(code_blocks)}\x00"
         content = html.escape(match.group(1))
-        tag = "pre" if match.group(0).startswith("\`\`\`") else "code"
+        tag = "pre" if match.group(0).startswith("``" + "`") else "code"
         code_blocks[key] = f"<{tag}>{content}</{tag}>"
         return key
 
-    text = re.sub(r'\`\`\`[ \\w-]*\\n?(.*?)\`\`\`', store_code, text, flags=re.DOTALL)
-    text = re.sub(r'\`([^\`]+)\`', store_code, text)
+    text = re.sub(r'```[ \w-]*\n?(.*?)```', store_code, text, flags=re.DOTALL)
+    text = re.sub(r'`([^`]+)`', store_code, text)
 
     links = {}
 
     def store_link(match):
-        key = f"\\x00LINK{len(links)}\\x00"
+        key = f"\x00LINK{len(links)}\x00"
         url = html.escape(match.group(2), quote=True)
         link_text = html.escape(match.group(1), quote=False)
         links[key] = f'<a href="{url}">{link_text}</a>'
         return key
 
-    text = re.sub(r'\\[([^\\]]+)\\]\\((https?://[^\\)]+)\\)', store_link, text)
+    text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', store_link, text)
 
     text = html.escape(text, quote=False)
 
-    text = re.sub(r'^(#{1,6})\\s+(.+)$', r'<b>\\2</b>', text, flags=re.MULTILINE)
+    text = re.sub(r'^(#{1,6})\s+(.+)$', r'<b>\2</b>', text, flags=re.MULTILINE)
 
     def convert_blockquote(match):
-        lines = match.group(0).strip().split('\\n')
-        content = '\\n'.join(re.sub(r'^>\\s?', '', line) for line in lines)
+        lines = match.group(0).strip().split('\n')
+        content = '\n'.join(re.sub(r'^>\s?', '', line) for line in lines)
         return f'<blockquote>{content}</blockquote>'
 
-    text = re.sub(r'(?:^>.*$\\n?)+', convert_blockquote, text, flags=re.MULTILINE)
+    text = re.sub(r'(?:^>.*$\n?)+', convert_blockquote, text, flags=re.MULTILINE)
 
-    text = re.sub(r'\\*\\*\\*(.+?)\\*\\*\\*', r'<b><i>\\1</i></b>', text, flags=re.DOTALL)
-    text = re.sub(r'___(.+?)___', r'<b><i>\\1</i></b>', text, flags=re.DOTALL)
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
+    text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
 
-    text = re.sub(r'\\*\\*(.+?)\\*\\*', r'<b>\\1</b>', text, flags=re.DOTALL)
-    text = re.sub(r'__(.+?)__', r'<b>\\1</b>', text, flags=re.DOTALL)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
+    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
 
-    text = re.sub(r'(?<!\\*)\\*(?!\\s)(.+?)(?<!\\s)\\*(?!\\*)', r'<i>\\1</i>', text, flags=re.DOTALL)
-    text = re.sub(r'(?:^|(?<=\\s))_(?!\\s)(.+?)(?<!\\s)_(?=\\s|[.,;:!?\\)\\]"]|$)', r'<i>\\1</i>', text, flags=re.DOTALL | re.MULTILINE)
+    text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
+    text = re.sub(
+        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]"]|$)',
+        r'<i>\1</i>',
+        text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
 
-    text = re.sub(r'~~(.+?)~~', r'<s>\\1</s>', text, flags=re.DOTALL)
-    text = re.sub(r'\\|\\|(.+?)\\|\\|', r'<tg-spoiler>\\1</tg-spoiler>', text, flags=re.DOTALL)
+    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
+    text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL)
 
     for key, val in code_blocks.items():
         text = text.replace(key, val)
@@ -402,7 +441,7 @@ def html_safe_chunker(text: str, size=4096):
     stack = []
 
     while len(text) > size:
-        split = text.rfind('\\n', 0, size)
+        split = text.rfind('\n', 0, size)
         if split == -1:
             split = size
 
@@ -448,7 +487,12 @@ def part_to_dict(part):
     if part.text:
         return {'type': 'text', 'content': part.text}
     if part.file_data:
-        return {'type': 'file', 'uri': part.file_data.file_uri, 'mime': part.file_data.mime_type, 'timestamp': time.time()}
+        return {
+            'type': 'file',
+            'uri': part.file_data.file_uri,
+            'mime': part.file_data.mime_type,
+            'timestamp': time.time(),
+        }
     return {}
 
 
@@ -471,7 +515,10 @@ def build_history(history):
             continue
         api_parts = []
         text_len = 0
-        prefix = f"[{entry.get('user_id', 'Unknown')}; Name: {entry.get('user_name', 'User')}]: " if entry['role'] == 'user' else ""
+        prefix = (
+            f"[{entry.get('user_id', 'Unknown')}; Name: {entry.get('user_name', 'User')}]: "
+            if entry['role'] == 'user' else ""
+        )
         has_text = False
         prefix_added = False
 
@@ -506,11 +553,11 @@ def build_history(history):
 
 
 async def upload_file(client, b, mime, name):
-    logger.info(f"⬆️ Uploading: {name}")
+    logger.info(f"Uploading: {name}")
     try:
         up = await client.aio.files.upload(
             file=io.BytesIO(b),
-            config=types.UploadFileConfig(mime_type=mime, display_name=name)
+            config=types.UploadFileConfig(mime_type=mime, display_name=name),
         )
         for _ in range(15):
             f = await client.aio.files.get(name=up.name)
@@ -549,7 +596,7 @@ async def generate(client, contents, context, current_tools):
             LAST_REQUEST_TIME = now
 
     if wait_time > 0:
-        logger.info(f"⏳ Queue: Waiting {wait_time:.1f}s...")
+        logger.info(f"Queue: Waiting {wait_time:.1f}s...")
         await asyncio.sleep(wait_time)
 
     for model_config in MODEL_CASCADE:
@@ -559,9 +606,15 @@ async def generate(client, contents, context, current_tools):
         for attempt in range(max_attempts_per_model):
             t_config = None
             if "thinking_level" in model_config:
-                t_config = types.ThinkingConfig(include_thoughts=False, thinking_level=model_config['thinking_level'])
+                t_config = types.ThinkingConfig(
+                    include_thoughts=False,
+                    thinking_level=model_config['thinking_level'],
+                )
             elif "thinking_budget" in model_config:
-                t_config = types.ThinkingConfig(include_thoughts=False, thinking_budget=model_config['thinking_budget'])
+                t_config = types.ThinkingConfig(
+                    include_thoughts=False,
+                    thinking_budget=model_config['thinking_budget'],
+                )
 
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
@@ -572,21 +625,23 @@ async def generate(client, contents, context, current_tools):
             if t_config:
                 gen_config_args["thinking_config"] = t_config
 
-            logger.info(f"👉 Sending to: {model_id} (Attempt {attempt+1})")
+            logger.info(f"Sending to: {model_id} (Attempt {attempt + 1})")
 
             try:
                 config = types.GenerateContentConfig(**gen_config_args)
-                res = await client.aio.models.generate_content(model=model_id, contents=contents, config=config)
+                res = await client.aio.models.generate_content(
+                    model=model_id, contents=contents, config=config
+                )
 
                 if res and res.candidates and res.candidates[0].content:
                     DAILY_REQUEST_COUNTS[model_id] += 1
-                    logger.info(f"✅ Success: {model_config['display']}")
+                    logger.info(f"Success: {model_config['display']}")
                     return {"type": "text", "obj": res}, model_config['display']
 
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
                 if "429" in err_str or "resource_exhausted" in err_str:
-                    logger.warning(f"⚠️ Limit Hit on {model_config['display']}.")
+                    logger.warning(f"Limit Hit on {model_config['display']}.")
                     if attempt < max_attempts_per_model - 1:
                         await asyncio.sleep(5)
                         continue
@@ -595,15 +650,18 @@ async def generate(client, contents, context, current_tools):
                     await asyncio.sleep(5)
                     continue
                 elif "404" in err_str or "not found" in err_str:
-                    logger.warning(f"⚠️ Модель {model_id} недоступна (404/403).")
+                    logger.warning(f"Model {model_id} unavailable (404).")
                     break
-                logger.error(f"❌ API Error on {model_id}: {e}")
+                logger.error(f"API Error on {model_id}: {e}")
                 break
             except Exception as e:
-                logger.error(f"❌ General Error on {model_id}: {e}", exc_info=True)
+                logger.error(f"General Error on {model_id}: {e}", exc_info=True)
                 break
 
-    return {"type": "error", "msg": "🚫 Ошибка генерации или исчерпаны лимиты бесплатного API."}, "none"
+    return {
+        "type": "error",
+        "msg": "Ошибка генерации или исчерпаны лимиты бесплатного API.",
+    }, "none"
 
 
 def format_response(response_data):
@@ -626,7 +684,7 @@ def format_response(response_data):
 async def send_smart(msg, text, hint=False):
     chunks = html_safe_chunker(text)
     if hint:
-        h = "\\n\\n<i>💡 Ответьте на это сообщение для вопроса по файлу.</i>"
+        h = "\n\n<i>Ответьте на это сообщение для вопроса по файлу.</i>"
         if len(chunks[-1]) + len(h) <= 4096:
             chunks[-1] += h
 
@@ -636,24 +694,62 @@ async def send_smart(msg, text, hint=False):
             if i == 0:
                 sent = await msg.reply_html(ch)
             else:
-                sent = await msg.get_bot().send_message(msg.chat_id, ch, parse_mode=ParseMode.HTML)
+                sent = await msg.get_bot().send_message(
+                    msg.chat_id, ch, parse_mode=ParseMode.HTML
+                )
     except BadRequest as e:
-        logger.error(f"Ошибка ParseMode.HTML: {e}. Отправка в чистом тексте.")
+        logger.error(f"HTML parse error: {e}. Sending as plain text.")
         plain = re.sub(r'<[^>]*>', '', text)
-        for ch in [plain[i:i+4096] for i in range(0, len(plain), 4096)]:
+        for ch in [plain[i:i + 4096] for i in range(0, len(plain), 4096)]:
             sent = await msg.reply_text(ch)
     return sent
 
 
 def get_chat_lock(chat_id: int) -> asyncio.Lock:
-    global CHAT_LOCKS
     if chat_id not in CHAT_LOCKS:
         CHAT_LOCKS[chat_id] = asyncio.Lock()
     return CHAT_LOCKS[chat_id]
 
 
+def get_mime(msg, media):
+    if msg.photo:
+        return 'image/jpeg'
+    if msg.voice:
+        return 'audio/ogg'
+    if msg.video_note:
+        return 'video/mp4'
+    return getattr(media, 'mime_type', 'application/octet-stream')
+
+
+async def download_and_upload(msg, media, client, reply_msg=None):
+    """Download media from Telegram and upload to Google. Returns (Part, status_msg)."""
+    source = reply_msg or msg
+    mime = get_mime(source, media)
+    st = await msg.reply_text("📥")
+    try:
+        f = await media.get_file()
+        b = await f.download_as_bytearray()
+        part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
+        return part, st
+    except Exception:
+        try:
+            await st.delete()
+        except Exception:
+            pass
+        raise
+
+
+async def safe_delete(msg):
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
+
 async def process_request(update, context, parts, text_only=False):
-    msg, client = update.message, GEMINI_CLIENT
+    msg = update.message
+    client = GEMINI_CLIENT
 
     typer = TypingWorker(context.bot, msg.chat_id, ChatAction.TYPING)
     typer.start()
@@ -680,14 +776,14 @@ async def process_request(update, context, parts, text_only=False):
             client,
             history + [types.Content(parts=parts_final, role="user")],
             context,
-            current_tools
+            current_tools,
         )
 
         clean_reply = format_response(res_data)
         reply_to_send = clean_reply
 
         if not text_only and used_model_display != "none":
-            reply_to_send += f"\\n\\n<i>{used_model_display}</i>"
+            reply_to_send += f"\n\n<i>{used_model_display}</i>"
 
         sent = await send_smart(msg, reply_to_send, hint=(is_media_request and not text_only))
 
@@ -698,12 +794,12 @@ async def process_request(update, context, parts, text_only=False):
                     "role": "user",
                     "parts": [part_to_dict(p) for p in parts],
                     "user_id": msg.from_user.id,
-                    "user_name": user_name
+                    "user_name": user_name,
                 }
                 context.chat_data.setdefault("history", []).append(hist_item)
                 bot_item = {
                     "role": "model",
-                    "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}]
+                    "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}],
                 }
                 context.chat_data["history"].append(bot_item)
 
@@ -719,7 +815,11 @@ async def process_request(update, context, parts, text_only=False):
                 if is_media_request:
                     m_part = next((p for p in parts if p.file_data), None)
                     if m_part:
-                        m_store = context.application.bot_data.setdefault('media_contexts', {}).setdefault(msg.chat_id, OrderedDict())
+                        m_store = (
+                            context.application.bot_data
+                            .setdefault('media_contexts', {})
+                            .setdefault(msg.chat_id, OrderedDict())
+                        )
                         m_store[msg.message_id] = part_to_dict(m_part)
                         if len(m_store) > MAX_MEDIA_CONTEXTS:
                             m_store.popitem(last=False)
@@ -727,16 +827,26 @@ async def process_request(update, context, parts, text_only=False):
                             context.application.bot_data.get('media_contexts', {})
                         )
 
-                await context.application.persistence.update_chat_data(msg.chat_id, context.chat_data)
+                await context.application.persistence.update_chat_data(
+                    msg.chat_id, context.chat_data
+                )
 
     except Exception as e:
         logger.error(f"Proc Error: {e}", exc_info=True)
-        await msg.reply_text("❌ Внутренняя ошибка.")
+        await msg.reply_text("Внутренняя ошибка.")
     finally:
         typer.stop()
 
 
 # --- HANDLERS ---
+def get_media(msg):
+    return (
+        msg.audio or msg.voice or msg.video or msg.video_note
+        or (msg.photo[-1] if msg.photo else None)
+        or msg.document
+    )
+
+
 @ignore_if_processing
 async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -748,8 +858,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = GEMINI_CLIENT
     text = msg.caption or msg.text or ""
 
-    media = msg.audio or msg.voice or msg.video or msg.video_note or \\
-            (msg.photo[-1] if msg.photo else None) or msg.document
+    media = get_media(msg)
 
     # ЛОГИКА STICKY TRANSCRIPTION MODE
     transcription_mode = context.chat_data.get('next_media_is_text', False)
@@ -758,70 +867,65 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if media:
             st = None
             try:
-                st = await msg.reply_text("📥")
-                f = await media.get_file()
-                b = await f.download_as_bytearray()
-                mime = ('image/jpeg' if msg.photo else
-                        'audio/ogg' if msg.voice else
-                        'video/mp4' if msg.video_note else
-                        getattr(media, 'mime_type', 'application/octet-stream'))
-                media_part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
+                media_part, st = await download_and_upload(msg, media, client)
+                mime = get_mime(msg, media)
 
-                if msg.voice or msg.audio or msg.video or msg.video_note or \\
-                   (msg.document and 'audio' in mime):
-                    prompt_text = "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words."
+                if (msg.voice or msg.audio or msg.video or msg.video_note
+                        or (msg.document and 'audio' in mime)):
+                    prompt_text = (
+                        "Transcribe this audio file verbatim. "
+                        "Output ONLY the raw text, no introductory words."
+                    )
                 else:
-                    prompt_text = "Extract all visible text from this image (OCR). Output ONLY the raw extracted text, nothing else. No descriptions, no introductory words, no commentary."
+                    prompt_text = (
+                        "Extract all visible text from this image (OCR). "
+                        "Output ONLY the raw extracted text, nothing else. "
+                        "No descriptions, no introductory words, no commentary."
+                    )
 
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return
             except Exception as e:
-                await msg.reply_text(f"❌ Загрузка: {e}")
+                await msg.reply_text(f"Загрузка: {e}")
                 return
             finally:
-                if st:
-                    try:
-                        await st.delete()
-                    except Exception:
-                        pass
+                await safe_delete(st)
 
         elif text and not text.startswith('/'):
             context.chat_data.pop('next_media_is_text', None)
+            # Код продолжит выполнение ниже — текст обработается как обычный запрос
 
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-            await msg.reply_text("📂 Файл >20MB. Читаю только текст.")
+            await msg.reply_text("Файл >20MB. Читаю только текст.")
         else:
             st = None
             try:
-                st = await msg.reply_text("📥")
-                f = await media.get_file()
-                b = await f.download_as_bytearray()
-                mime = ('image/jpeg' if msg.photo else
-                        'audio/ogg' if msg.voice else
-                        'video/mp4' if msg.video_note else
-                        getattr(media, 'mime_type', 'application/octet-stream'))
-                parts.append(await upload_file(client, b, mime, getattr(media, 'file_name', 'file')))
+                media_part, st = await download_and_upload(msg, media, client)
+                parts.append(media_part)
             except Exception as e:
-                await msg.reply_text(f"❌ Загрузка: {e}")
+                await msg.reply_text(f"Загрузка: {e}")
                 return
             finally:
-                if st:
-                    try:
-                        await st.delete()
-                    except Exception:
-                        pass
+                await safe_delete(st)
 
     yt = YOUTUBE_REGEX.search(text)
     if not media and yt:
-        parts.append(types.Part(file_data=types.FileData(mime_type="video/youtube", file_uri=yt.group(0))))
+        parts.append(types.Part(
+            file_data=types.FileData(mime_type="video/youtube", file_uri=yt.group(0))
+        ))
         text = text.replace(yt.group(0), '').strip()
 
     if not media and msg.reply_to_message:
         orig = context.chat_data.get('reply_map', {}).get(msg.reply_to_message.message_id)
         if orig:
-            ctx = context.application.bot_data.get('media_contexts', {}).get(msg.chat_id, {}).get(orig)
+            ctx = (
+                context.application.bot_data
+                .get('media_contexts', {})
+                .get(msg.chat_id, {})
+                .get(orig)
+            )
             if ctx:
                 p, stale = dict_to_part(ctx)
                 if p:
@@ -837,53 +941,53 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
 
+    # Режим «ответ на сообщение» (разовый)
     if msg.reply_to_message:
         reply = msg.reply_to_message
-        media = reply.audio or reply.voice or reply.video or reply.video_note or \\
-                (reply.photo[-1] if reply.photo else None) or reply.document
+        media = get_media(reply)
         if media:
             if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-                return await msg.reply_text("❌ Файл слишком велик.")
+                return await msg.reply_text("Файл слишком велик.")
             st = None
             try:
-                st = await msg.reply_text("📥")
                 client = GEMINI_CLIENT
-                f = await media.get_file()
-                b = await f.download_as_bytearray()
-                mime = ('image/jpeg' if reply.photo else
-                        'audio/ogg' if reply.voice else
-                        'video/mp4' if reply.video_note else
-                        getattr(media, 'mime_type', 'application/octet-stream'))
-                media_part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
+                media_part, st = await download_and_upload(msg, media, client, reply_msg=reply)
+                mime = get_mime(reply, media)
 
-                if reply.voice or reply.audio or reply.video or reply.video_note or \\
-                   (reply.document and 'audio' in mime):
-                    prompt_text = "Transcribe this audio file verbatim. Output ONLY the raw text, no introductory words."
+                if (reply.voice or reply.audio or reply.video or reply.video_note
+                        or (reply.document and 'audio' in mime)):
+                    prompt_text = (
+                        "Transcribe this audio file verbatim. "
+                        "Output ONLY the raw text, no introductory words."
+                    )
                 else:
-                    prompt_text = "Extract all visible text from this image (OCR). Output ONLY the raw extracted text, nothing else. No descriptions, no introductory words, no commentary."
+                    prompt_text = (
+                        "Extract all visible text from this image (OCR). "
+                        "Output ONLY the raw extracted text, nothing else. "
+                        "No descriptions, no introductory words, no commentary."
+                    )
 
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return
             except Exception as e:
-                return await msg.reply_text(f"❌ Ошибка: {e}")
+                return await msg.reply_text(f"Ошибка: {e}")
             finally:
-                if st:
-                    try:
-                        await st.delete()
-                    except Exception:
-                        pass
+                await safe_delete(st)
         else:
-            return await msg.reply_text("⚠️ Ответьте этой командой на сообщение с аудио или картинкой.")
+            return await msg.reply_text(
+                "Ответьте этой командой на сообщение с аудио или картинкой."
+            )
 
+    # Режим «потоковый» — toggle
     if context.chat_data.get('next_media_is_text', False):
         context.chat_data.pop('next_media_is_text', None)
-        await msg.reply_html("⏹ <b>Режим расшифровки выключен.</b>")
+        await msg.reply_html("<b>Режим расшифровки выключен.</b>")
     else:
         context.chat_data['next_media_is_text'] = True
         await msg.reply_html(
-            "🔄 <b>Включен режим потоковой расшифровки.</b>\\n"
-            "Кидай аудио, видео или фото — я буду сразу присылать текст.\\n\\n"
+            "<b>Включен режим потоковой расшифровки.</b>\n"
+            "Кидай аудио, видео или фото — я буду сразу присылать текст.\n\n"
             "<i>Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.</i>"
         )
 
@@ -891,50 +995,44 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def util_cmd(update, context, prompt):
     msg = update.message
     if not msg.reply_to_message:
-        return await msg.reply_text("⚠️ Ответьте на сообщение с файлом.")
+        return await msg.reply_text("Ответьте на сообщение с файлом.")
 
     reply = msg.reply_to_message
-    media = reply.audio or reply.voice or reply.video or reply.video_note or \\
-            (reply.photo[-1] if reply.photo else None) or reply.document
+    media = get_media(reply)
     parts = []
     client = GEMINI_CLIENT
 
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-            return await msg.reply_text("❌ Файл велик.")
+            return await msg.reply_text("Файл велик.")
         st = None
         try:
-            st = await msg.reply_text("📥")
-            f = await media.get_file()
-            b = await f.download_as_bytearray()
-            mime = ('image/jpeg' if reply.photo else
-                    'audio/ogg' if reply.voice else
-                    'video/mp4' if reply.video_note else
-                    getattr(media, 'mime_type', 'application/octet-stream'))
-            parts.append(await upload_file(client, b, mime, 'temp_util_file'))
+            media_part, st = await download_and_upload(msg, media, client, reply_msg=reply)
+            parts.append(media_part)
         except Exception as e:
-            return await msg.reply_text(f"❌ Ошибка загрузки: {e}")
+            return await msg.reply_text(f"Ошибка загрузки: {e}")
         finally:
-            if st:
-                try:
-                    await st.delete()
-                except Exception:
-                    pass
+            await safe_delete(st)
     elif reply.text and YOUTUBE_REGEX.search(reply.text):
         parts.append(types.Part(file_data=types.FileData(
             mime_type="video/youtube",
-            file_uri=YOUTUBE_REGEX.search(reply.text).group(0)
+            file_uri=YOUTUBE_REGEX.search(reply.text).group(0),
         )))
     elif context.chat_data.get('reply_map', {}).get(reply.message_id):
         orig = context.chat_data['reply_map'][reply.message_id]
-        ctx = context.application.bot_data.get('media_contexts', {}).get(msg.chat_id, {}).get(orig)
+        ctx = (
+            context.application.bot_data
+            .get('media_contexts', {})
+            .get(msg.chat_id, {})
+            .get(orig)
+        )
         if ctx:
             p, _ = dict_to_part(ctx)
             if p:
                 parts.append(p)
 
     if not parts:
-        return await msg.reply_text("❌ Нет медиа.")
+        return await msg.reply_text("Нет медиа.")
 
     parts.append(types.Part(text=prompt))
     await process_request(update, context, parts)
@@ -943,10 +1041,13 @@ async def util_cmd(update, context, prompt):
 @ignore_if_processing
 async def start_c(u, c):
     start_text = (
-        "👋 <b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\\n\\n"
-        "<b>Что я умею:</b>\\n"
-        "📝 <b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео — я всё прочитаю, проанализирую и отвечу текстом.\\n"
-        "🔤 <b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти в режим расшифровки. Кидай сколько угодно файлов — я переведу их в текст. Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.\\n\\n"
+        "<b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\n\n"
+        "<b>Что я умею:</b>\n"
+        "<b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео "
+        "— я всё прочитаю, проанализирую и отвечу текстом.\n"
+        "<b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти в режим расшифровки. "
+        "Кидай сколько угодно файлов — я переведу их в текст. "
+        "Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.\n\n"
         "<i>Работаю на базе быстрого и стабильного Gemini 2.5 Flash.</i>"
     )
     await u.message.reply_html(start_text)
@@ -957,14 +1058,16 @@ async def clear_c(u, c):
     c.chat_data.clear()
     if "media_contexts" in c.application.bot_data:
         c.application.bot_data["media_contexts"].pop(u.effective_chat.id, None)
-    await u.message.reply_text("🧹 Память очищена.")
+    await u.message.reply_text("Память очищена.")
 
 
 @ignore_if_processing
 async def status_c(u, c):
     date_str = DAILY_REQUEST_DATE.isoformat() if DAILY_REQUEST_DATE else "N/A"
-    stats = "\\n".join([f"• {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE])
-    await u.message.reply_html(f"📊 <b>Статистика за {date_str}:</b>\\n{stats}")
+    stats = "\n".join(
+        [f"  {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE]
+    )
+    await u.message.reply_html(f"<b>Статистика за {date_str}:</b>\n{stats}")
 
 
 @ignore_if_processing
@@ -974,6 +1077,8 @@ async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- MAIN ---
 async def main():
+    global GEMINI_CLIENT
+
     pers = PostgresPersistence(DATABASE_URL)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
 
@@ -982,16 +1087,13 @@ async def main():
     app.add_handler(CommandHandler("summarize", summarize_cmd))
     app.add_handler(CommandHandler("clear", clear_c))
     app.add_handler(CommandHandler("status", status_c))
-
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
 
     await app.initialize()
     await app.start()
 
-    global GEMINI_CLIENT
     GEMINI_CLIENT = genai.Client(api_key=GOOGLE_API_KEY)
 
-    # Загружаем media_contexts из БД при старте
     app.bot_data['media_contexts'] = await pers.load_media_contexts()
 
     commands = [
@@ -999,24 +1101,24 @@ async def main():
         BotCommand("text", "Режим расшифровки файлов"),
         BotCommand("summarize", "Конспект"),
         BotCommand("clear", "Сброс памяти"),
-        BotCommand("status", "Статистика")
+        BotCommand("status", "Статистика"),
     ]
     await app.bot.set_my_commands(commands)
-    logger.info("✅ Меню команд Telegram обновлено.")
+    logger.info("Menu commands updated.")
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "🟢 Bot Started (v71)")
+            await app.bot.send_message(ADMIN_ID, "Bot Started (v72)")
         except Exception:
             pass
 
-    stop = asyncio.Event()
+    stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     try:
         for s in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(s, stop.set)
+            loop.add_signal_handler(s, stop_event.set)
     except NotImplementedError:
-        logger.warning("Обработчики сигналов не поддерживаются.")
+        logger.warning("Signal handlers not supported on this platform.")
 
     clean_path = GEMINI_WEBHOOK_PATH.strip('/')
     webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/{clean_path}"
@@ -1033,7 +1135,7 @@ async def main():
             await app.process_update(Update.de_json(data, app.bot))
             return aiohttp.web.Response(text='OK')
         except Exception as e:
-            logger.error(f"Ошибка вебхука: {e}", exc_info=True)
+            logger.error(f"Webhook error: {e}", exc_info=True)
             return aiohttp.web.Response(status=500)
 
     server.router.add_post(f"/{clean_path}", wh)
@@ -1043,8 +1145,8 @@ async def main():
     await runner.setup()
     await aiohttp.web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 10000))).start()
 
-    logger.info("🚀 Ready.")
-    await stop.wait()
+    logger.info("Ready.")
+    await stop_event.wait()
 
     await app.stop()
     await app.shutdown()
