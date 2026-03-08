@@ -340,11 +340,24 @@ def get_current_time_str(timezone="Europe/Moscow"):
     return f"Сегодня {days[now.weekday()]}, {now.day} {months[now.month-1]} {now.year} года, время {now.strftime('%H:%M')} (MSK)."
 
 
-# Fix #6: Плейсхолдеры \x00CODE0\x00 вместо __CODE_0__ — не ловятся regex __(.+?)__
 def convert_markdown_to_html(text: str) -> str:
+    """Конвертирует Markdown от Gemini в Telegram HTML.
+    
+    Порядок обработки критичен:
+    1. Извлекаем блоки кода и ссылки (защита от ложных срабатываний)
+    2. html.escape() для безопасности
+    3. Заголовки
+    4. Блок-цитаты (> text)
+    5. Bold-italic (***) — ДО bold и italic отдельно
+    6. Bold (**)
+    7. Italic (*) и (_)
+    8. Strikethrough, spoiler
+    9. Восстанавливаем код и ссылки
+    """
     if not text:
         return text
 
+    # --- Шаг 1: Извлекаем код и ссылки в плейсхолдеры ---
     code_blocks = {}
 
     def store_code(match):
@@ -368,20 +381,47 @@ def convert_markdown_to_html(text: str) -> str:
 
     text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', store_link, text)
 
+    # --- Шаг 2: Экранируем HTML-спецсимволы ---
     text = html.escape(text, quote=False)
 
+    # --- Шаг 3: Заголовки ---
     text = re.sub(r'^(#{1,6})\s+(.+)$', r'<b>\2</b>', text, flags=re.MULTILINE)
+
+    # --- Шаг 4: Блок-цитаты (> text) → <blockquote> ---
+    def convert_blockquote(match):
+        lines = match.group(0).strip().split('\n')
+        content = '\n'.join(re.sub(r'^>\s?', '', line) for line in lines)
+        return f'<blockquote>{content}</blockquote>'
+
+    text = re.sub(r'(?:^>.*$\n?)+', convert_blockquote, text, flags=re.MULTILINE)
+
+    # --- Шаг 5: Bold-Italic (***text*** / ___text___) — ПЕРЕД bold и italic ---
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
+    text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
+
+    # --- Шаг 6: Bold (**text** / __text__) ---
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
-    # Fix #18: Убран re.DOTALL для курсива — избегаем ложных многострочных захватов
-    text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text)
+
+    # --- Шаг 7: Italic (*text* / _text_) ---
+    # re.DOTALL включён для многострочного курсива.
+    # Защита от ложных срабатываний на списках (* item):
+    #   (?!\s) — после открывающей * не должно быть пробела
+    #   (?<!\s) — перед закрывающей * не должно быть пробела
+    text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
+    # _italic_ — только на границах слов (не внутри переменных вроде my_var_name)
+    text = re.sub(r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]"]|$)', r'<i>\1</i>', text, flags=re.DOTALL | re.MULTILINE)
+
+    # --- Шаг 8: Strikethrough & Spoiler ---
     text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
     text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL)
 
+    # --- Шаг 9: Восстанавливаем плейсхолдеры ---
     for key, val in code_blocks.items():
         text = text.replace(key, val)
     for key, val in links.items():
         text = text.replace(key, val)
+
     return text
 
 
