@@ -1,4 +1,4 @@
-# Версия 72 (All Fixes Applied - Clean)
+# Версия 74 (Final Review - All Logic Verified)
 
 import logging
 import os
@@ -402,8 +402,10 @@ def convert_markdown_to_html(text: str) -> str:
 
     text = html.escape(text, quote=False)
 
+    # Заголовки
     text = re.sub(r'^(#{1,6})\s+(.+)$', r'<b>\2</b>', text, flags=re.MULTILINE)
 
+    # Блок-цитаты (многострочные)
     def convert_blockquote(match):
         lines = match.group(0).strip().split('\n')
         content = '\n'.join(re.sub(r'^>\s?', '', line) for line in lines)
@@ -411,13 +413,17 @@ def convert_markdown_to_html(text: str) -> str:
 
     text = re.sub(r'(?:^>.*$\n?)+', convert_blockquote, text, flags=re.MULTILINE)
 
+    # Bold-italic (ДО bold и italic)
     text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
     text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
 
+    # Bold
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
 
+    # Italic — *text* (не ловит * item в списках за счёт (?!\s))
     text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
+    # Italic — _text_ (не ловит snake_case за счёт границ)
     text = re.sub(
         r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]"]|$)',
         r'<i>\1</i>',
@@ -425,9 +431,11 @@ def convert_markdown_to_html(text: str) -> str:
         flags=re.DOTALL | re.MULTILINE,
     )
 
+    # Strikethrough и spoiler
     text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
     text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL)
 
+    # Восстановление плейсхолдеров
     for key, val in code_blocks.items():
         text = text.replace(key, val)
     for key, val in links.items():
@@ -437,8 +445,9 @@ def convert_markdown_to_html(text: str) -> str:
 
 
 def html_safe_chunker(text: str, size=4096):
+    """Разбивает HTML-текст на чанки <=size, корректно закрывая/открывая теги."""
     chunks = []
-    stack = []
+    open_tags = []  # Стек открытых тегов, наследуемый между чанками
 
     while len(text) > size:
         split = text.rfind('\n', 0, size)
@@ -447,21 +456,26 @@ def html_safe_chunker(text: str, size=4096):
 
         chunk = text[:split]
 
-        chunk_stack = list(stack)
+        # Парсим теги в текущем чанке, обновляя стек
+        current_stack = list(open_tags)
         for m in HTML_TAG_REGEX.finditer(chunk):
             tag = m.group(2).lower()
             is_closing = bool(m.group(1))
             if is_closing:
-                if chunk_stack and chunk_stack[-1] == tag:
-                    chunk_stack.pop()
+                if current_stack and current_stack[-1] == tag:
+                    current_stack.pop()
             else:
-                chunk_stack.append(tag)
+                current_stack.append(tag)
 
-        chunk += ''.join(f'</{t}>' for t in reversed(chunk_stack))
+        # Закрываем все теги, которые остались открытыми в этом чанке
+        if current_stack:
+            chunk += ''.join(f'</{t}>' for t in reversed(current_stack))
+
         chunks.append(chunk)
 
-        stack = chunk_stack
-        text = ''.join(f'<{t}>' for t in stack) + text[split:].lstrip()
+        # Следующий чанк начинается с переоткрытия этих тегов
+        open_tags = current_stack
+        text = ''.join(f'<{t}>' for t in open_tags) + text[split:].lstrip()
 
     chunks.append(text)
     return chunks
@@ -509,7 +523,8 @@ def dict_to_part(d):
 
 
 def build_history(history):
-    valid, chars = [], 0
+    valid = []
+    chars = 0
     for entry in reversed(history):
         if not entry.get("parts"):
             continue
@@ -569,11 +584,11 @@ async def upload_file(client, b, mime, name):
         raise asyncio.TimeoutError("Upload Timeout")
     except Exception as e:
         logger.error(f"Upload Fail: {e}")
-        raise IOError(f"Ошибка загрузки файла {name} (Client Error: {e})")
+        raise IOError(f"Ошибка загрузки файла {name}: {e}")
 
 
 # --- ЯДРО ГЕНЕРАЦИИ ---
-async def generate(client, contents, context, current_tools):
+async def generate(client, contents, current_tools):
     global LAST_REQUEST_TIME, DAILY_REQUEST_DATE
 
     today = datetime.date.today()
@@ -671,8 +686,14 @@ def format_response(response_data):
 
         response = response_data['obj']
         cand = response.candidates[0]
-        if cand.finish_reason.name == "SAFETY":
+
+        # Проверка finish_reason с защитой от None
+        if cand.finish_reason and cand.finish_reason.name == "SAFETY":
             return "Скрыто фильтром безопасности."
+
+        if not cand.content or not cand.content.parts:
+            return "Пустой ответ от модели."
+
         text = "".join([p.text for p in cand.content.parts if p.text])
         text = RE_CLEAN_NAMES.sub('', text)
         return convert_markdown_to_html(text.strip())
@@ -711,7 +732,17 @@ def get_chat_lock(chat_id: int) -> asyncio.Lock:
     return CHAT_LOCKS[chat_id]
 
 
+def get_media(msg):
+    """Извлекает медиа-объект из сообщения."""
+    return (
+        msg.audio or msg.voice or msg.video or msg.video_note
+        or (msg.photo[-1] if msg.photo else None)
+        or msg.document
+    )
+
+
 def get_mime(msg, media):
+    """Определяет MIME-тип на основе типа сообщения."""
     if msg.photo:
         return 'image/jpeg'
     if msg.voice:
@@ -721,9 +752,19 @@ def get_mime(msg, media):
     return getattr(media, 'mime_type', 'application/octet-stream')
 
 
-async def download_and_upload(msg, media, client, reply_msg=None):
-    """Download media from Telegram and upload to Google. Returns (Part, status_msg)."""
-    source = reply_msg or msg
+async def download_and_upload(msg, media, client, source_msg=None):
+    """Скачивает медиа из Telegram и загружает в Google.
+    
+    Args:
+        msg: Сообщение, куда отправить статус "📥"
+        media: Медиа-объект для скачивания
+        client: Gemini клиент
+        source_msg: Сообщение-источник для определения MIME (если отличается от msg)
+    
+    Returns:
+        (Part, status_message)
+    """
+    source = source_msg or msg
     mime = get_mime(source, media)
     st = await msg.reply_text("📥")
     try:
@@ -732,19 +773,37 @@ async def download_and_upload(msg, media, client, reply_msg=None):
         part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
         return part, st
     except Exception:
-        try:
-            await st.delete()
-        except Exception:
-            pass
+        await safe_delete(st)
         raise
 
 
 async def safe_delete(msg):
+    """Безопасно удаляет сообщение, игнорируя ошибки."""
     if msg:
         try:
             await msg.delete()
         except Exception:
             pass
+
+
+def is_audio_type(msg, mime):
+    """Проверяет, является ли медиа аудио-типом."""
+    return (
+        msg.voice or msg.audio or msg.video or msg.video_note
+        or (msg.document and mime and 'audio' in mime)
+    )
+
+
+TRANSCRIBE_PROMPT = (
+    "Transcribe this audio file verbatim. "
+    "Output ONLY the raw text, no introductory words."
+)
+
+OCR_PROMPT = (
+    "Extract all visible text from this image (OCR). "
+    "Output ONLY the raw extracted text, nothing else. "
+    "No descriptions, no introductory words, no commentary."
+)
 
 
 async def process_request(update, context, parts, text_only=False):
@@ -775,7 +834,6 @@ async def process_request(update, context, parts, text_only=False):
         res_data, used_model_display = await generate(
             client,
             history + [types.Content(parts=parts_final, role="user")],
-            context,
             current_tools,
         )
 
@@ -839,14 +897,6 @@ async def process_request(update, context, parts, text_only=False):
 
 
 # --- HANDLERS ---
-def get_media(msg):
-    return (
-        msg.audio or msg.voice or msg.video or msg.video_note
-        or (msg.photo[-1] if msg.photo else None)
-        or msg.document
-    )
-
-
 @ignore_if_processing
 async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -870,18 +920,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 media_part, st = await download_and_upload(msg, media, client)
                 mime = get_mime(msg, media)
 
-                if (msg.voice or msg.audio or msg.video or msg.video_note
-                        or (msg.document and 'audio' in mime)):
-                    prompt_text = (
-                        "Transcribe this audio file verbatim. "
-                        "Output ONLY the raw text, no introductory words."
-                    )
-                else:
-                    prompt_text = (
-                        "Extract all visible text from this image (OCR). "
-                        "Output ONLY the raw extracted text, nothing else. "
-                        "No descriptions, no introductory words, no commentary."
-                    )
+                prompt_text = TRANSCRIBE_PROMPT if is_audio_type(msg, mime) else OCR_PROMPT
 
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
@@ -893,8 +932,12 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_delete(st)
 
         elif text and not text.startswith('/'):
+            # Текст выключает sticky-режим, затем обрабатывается как обычный запрос
             context.chat_data.pop('next_media_is_text', None)
-            # Код продолжит выполнение ниже — текст обработается как обычный запрос
+            await context.application.persistence.update_chat_data(
+                msg.chat_id, context.chat_data
+            )
+            # Код продолжит выполнение ниже
 
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
@@ -950,22 +993,10 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await msg.reply_text("Файл слишком велик.")
             st = None
             try:
-                client = GEMINI_CLIENT
-                media_part, st = await download_and_upload(msg, media, client, reply_msg=reply)
+                media_part, st = await download_and_upload(msg, media, client=GEMINI_CLIENT, source_msg=reply)
                 mime = get_mime(reply, media)
 
-                if (reply.voice or reply.audio or reply.video or reply.video_note
-                        or (reply.document and 'audio' in mime)):
-                    prompt_text = (
-                        "Transcribe this audio file verbatim. "
-                        "Output ONLY the raw text, no introductory words."
-                    )
-                else:
-                    prompt_text = (
-                        "Extract all visible text from this image (OCR). "
-                        "Output ONLY the raw extracted text, nothing else. "
-                        "No descriptions, no introductory words, no commentary."
-                    )
+                prompt_text = TRANSCRIBE_PROMPT if is_audio_type(reply, mime) else OCR_PROMPT
 
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
@@ -991,6 +1022,16 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<i>Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.</i>"
         )
 
+    # Сохраняем изменение режима в persistence
+    await context.application.persistence.update_chat_data(
+        msg.chat_id, context.chat_data
+    )
+
+
+@ignore_if_processing
+async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await util_cmd(update, context, "Сделай подробный конспект (summary) этого материала.")
+
 
 async def util_cmd(update, context, prompt):
     msg = update.message
@@ -1007,10 +1048,10 @@ async def util_cmd(update, context, prompt):
             return await msg.reply_text("Файл велик.")
         st = None
         try:
-            media_part, st = await download_and_upload(msg, media, client, reply_msg=reply)
+            media_part, st = await download_and_upload(msg, media, client, source_msg=reply)
             parts.append(media_part)
         except Exception as e:
-            return await msg.reply_text(f"Ошибка загрузки: {e}")
+            return await msg.reply_text(f"❌ {e}")
         finally:
             await safe_delete(st)
     elif reply.text and YOUTUBE_REGEX.search(reply.text):
@@ -1058,6 +1099,10 @@ async def clear_c(u, c):
     c.chat_data.clear()
     if "media_contexts" in c.application.bot_data:
         c.application.bot_data["media_contexts"].pop(u.effective_chat.id, None)
+        await c.application.persistence.save_media_contexts(
+            c.application.bot_data.get('media_contexts', {})
+        )
+    await c.application.persistence.update_chat_data(u.effective_chat.id, c.chat_data)
     await u.message.reply_text("Память очищена.")
 
 
@@ -1068,11 +1113,6 @@ async def status_c(u, c):
         [f"  {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE]
     )
     await u.message.reply_html(f"<b>Статистика за {date_str}:</b>\n{stats}")
-
-
-@ignore_if_processing
-async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await util_cmd(update, context, "Сделай подробный конспект (summary) этого материала.")
 
 
 # --- MAIN ---
@@ -1108,7 +1148,7 @@ async def main():
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "Bot Started (v72)")
+            await app.bot.send_message(ADMIN_ID, "Bot Started (v74)")
         except Exception:
             pass
 
