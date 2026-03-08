@@ -1,4 +1,4 @@
-# Версия 75 (Fix: Handle expired Google Files 403)
+# Версия 78 (Feature: All transcriptions/OCR saved to chat history)
 
 import logging
 import os
@@ -67,19 +67,19 @@ required_env = {
 
 missing = [k for k, v in required_env.items() if not v]
 if missing:
-    logger.critical(f"Не заданы обязательные переменные окружения: {', '.join(missing)}")
+    logger.critical(f"Missing env vars: {', '.join(missing)}")
     exit(1)
 
-# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (8 моделей) ---
 MODEL_CASCADE = [
-    {
-        "id": "gemini-2.5-flash",
-        "display": "2.5 Flash",
-    },
-    {
-        "id": "gemini-2.5-flash-lite",
-        "display": "2.5 Flash Lite",
-    }
+    {"id": "gemini-3-flash-preview", "display": "3 Flash Preview"},
+    {"id": "gemini-flash-latest", "display": "Flash Latest"},
+    {"id": "gemini-2.5-flash-preview-09-2025", "display": "2.5 Flash Preview 09-2025"},
+    {"id": "gemini-2.5-flash", "display": "2.5 Flash"},
+    {"id": "gemini-3.1-flash-lite-preview", "display": "3.1 Flash Lite Preview"},
+    {"id": "gemini-2.5-flash-lite-preview-09-2025", "display": "2.5 Flash Lite Preview 09-2025"},
+    {"id": "gemini-2.5-flash-lite-latest", "display": "2.5 Flash Lite Latest"},
+    {"id": "gemini-2.5-flash-lite", "display": "2.5 Flash Lite"},
 ]
 
 # Глобальные переменные
@@ -94,7 +94,8 @@ PROCESSING_MESSAGES = set()
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(
-    r'(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/(?:watch\?v=|embed/|v/|shorts/)|youtu\.be/|youtube-nocookie\.com/embed/)([a-zA-Z0-9_-]{11})'
+    r'(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/(?:watch\?v=|embed/|v/|shorts/)'
+    r'|youtu\.be/|youtube-nocookie\.com/embed/)([a-zA-Z0-9_-]{11})'
 )
 URL_REGEX = re.compile(r'https?://[^\s/$.?#].[^\s]*')
 DATE_TIME_REGEX = re.compile(
@@ -265,11 +266,14 @@ class PostgresPersistence(BasePersistence):
 
     def _initialize_db(self):
         self._execute(
-            "CREATE TABLE IF NOT EXISTS persistence_data (key TEXT PRIMARY KEY, data BYTEA NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS persistence_data "
+            "(key TEXT PRIMARY KEY, data BYTEA NOT NULL);"
         )
 
     def _get_pickled(self, key: str):
-        res = self._execute("SELECT data FROM persistence_data WHERE key = %s;", (key,), fetch="one")
+        res = self._execute(
+            "SELECT data FROM persistence_data WHERE key = %s;", (key,), fetch="one"
+        )
         return pickle.loads(res[0]) if res and res[0] else None
 
     def _set_pickled(self, key: str, data: object):
@@ -405,7 +409,7 @@ def convert_markdown_to_html(text: str) -> str:
     # Заголовки
     text = re.sub(r'^(#{1,6})\s+(.+)$', r'<b>\2</b>', text, flags=re.MULTILINE)
 
-    # Блок-цитаты (многострочные)
+    # Блок-цитаты
     def convert_blockquote(match):
         lines = match.group(0).strip().split('\n')
         content = '\n'.join(re.sub(r'^>\s?', '', line) for line in lines)
@@ -421,11 +425,10 @@ def convert_markdown_to_html(text: str) -> str:
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
 
-    # Italic — *text* (не ловит * item в списках за счёт (?!\s))
+    # Italic
     text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
-    # Italic — _text_ (не ловит snake_case за счёт границ)
     text = re.sub(
-        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]\"]|$)',
+        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]\""]|$)',
         r'<i>\1</i>',
         text,
         flags=re.DOTALL | re.MULTILINE,
@@ -445,9 +448,9 @@ def convert_markdown_to_html(text: str) -> str:
 
 
 def html_safe_chunker(text: str, size=4096):
-    """Разбивает HTML-текст на чанки <=size, корректно закрывая/открывая теги."""
+    """Разбивает HTML-текст на чанки, корректно закрывая/открывая теги."""
     chunks = []
-    open_tags = []  # Стек открытых тегов, наследуемый между чанками
+    open_tags = []
 
     while len(text) > size:
         split = text.rfind('\n', 0, size)
@@ -456,7 +459,7 @@ def html_safe_chunker(text: str, size=4096):
 
         chunk = text[:split]
 
-        # Парсим теги в текущем чанке с нуля (reopening-теги уже в тексте)
+        # Парсим теги в текущем чанке
         current_stack = []
         for m in HTML_TAG_REGEX.finditer(chunk):
             tag = m.group(2).lower()
@@ -467,13 +470,13 @@ def html_safe_chunker(text: str, size=4096):
             else:
                 current_stack.append(tag)
 
-        # Закрываем все теги, которые остались открытыми в этом чанке
+        # Закрываем незакрытые теги
         if current_stack:
             chunk += ''.join(f'</{t}>' for t in reversed(current_stack))
 
         chunks.append(chunk)
 
-        # Следующий чанк начинается с переоткрытия этих тегов
+        # Переоткрываем теги в следующем чанке
         open_tags = current_stack
         text = ''.join(f'<{t}>' for t in open_tags) + text[split:].lstrip()
 
@@ -498,6 +501,7 @@ def ignore_if_processing(func):
 
 
 def part_to_dict(part):
+    """Конвертирует Part в сериализуемый dict для хранения."""
     if part.text:
         return {'type': 'text', 'content': part.text}
     if part.file_data:
@@ -511,6 +515,7 @@ def part_to_dict(part):
 
 
 def dict_to_part(d):
+    """Конвертирует dict обратно в Part. Возвращает (Part, is_stale)."""
     if not isinstance(d, dict):
         return None, False
     if d.get('type') == 'text':
@@ -518,11 +523,18 @@ def dict_to_part(d):
     if d.get('type') == 'file':
         if time.time() - d.get('timestamp', 0) > MEDIA_CONTEXT_TTL_SECONDS:
             return None, True
-        return types.Part(file_data=types.FileData(file_uri=d['uri'], mime_type=d['mime'])), False
+        return types.Part(
+            file_data=types.FileData(file_uri=d['uri'], mime_type=d['mime'])
+        ), False
     return None, False
 
 
 def build_history(history):
+    """Строит список Content из сохранённой истории.
+
+    Файлы в истории НЕ включаются — вместо них в user-записи уже содержится
+    текстовая пометка '[sent file: type]', а в model-записи — текстовый ответ.
+    """
     valid = []
     chars = 0
     for entry in reversed(history):
@@ -547,11 +559,7 @@ def build_history(history):
                 api_parts.append(types.Part(text=t))
                 text_len += len(t)
                 has_text = True
-            elif p.get('type') == 'file':
-                part, is_stale = dict_to_part(p)
-                if part and not is_stale:
-                    api_parts.append(part)
-                    text_len += 1000
+            # file_data в истории ПРОПУСКАЕТСЯ
 
         if api_parts and not has_text and entry['role'] == 'user':
             api_parts.append(types.Part(text=f"{prefix.strip()} (sent a file)"))
@@ -584,11 +592,11 @@ async def upload_file(client, b, mime, name):
         raise asyncio.TimeoutError("Upload Timeout")
     except Exception as e:
         logger.error(f"Upload Fail: {e}")
-        raise IOError(f"Ошибка загрузки файла {name}: {e}")
+        raise IOError(f"Upload error for {name}: {e}")
 
 
 # --- ЯДРО ГЕНЕРАЦИИ ---
-async def generate(client, contents, current_tools):
+async def generate(contents, current_tools):
     global LAST_REQUEST_TIME, DAILY_REQUEST_DATE
 
     today = datetime.date.today()
@@ -616,9 +624,9 @@ async def generate(client, contents, current_tools):
 
     for model_config in MODEL_CASCADE:
         model_id = model_config['id']
-        max_attempts_per_model = 2
+        max_attempts = 2
 
-        for attempt in range(max_attempts_per_model):
+        for attempt in range(max_attempts):
             t_config = None
             if "thinking_level" in model_config:
                 t_config = types.ThinkingConfig(
@@ -644,7 +652,7 @@ async def generate(client, contents, current_tools):
 
             try:
                 config = types.GenerateContentConfig(**gen_config_args)
-                res = await client.aio.models.generate_content(
+                res = await GEMINI_CLIENT.aio.models.generate_content(
                     model=model_id, contents=contents, config=config
                 )
 
@@ -655,18 +663,27 @@ async def generate(client, contents, current_tools):
 
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
+
                 if "429" in err_str or "resource_exhausted" in err_str:
-                    logger.warning(f"Limit Hit on {model_config['display']}.")
-                    if attempt < max_attempts_per_model - 1:
+                    logger.warning(f"Limit on {model_config['display']}.")
+                    if attempt < max_attempts - 1:
                         await asyncio.sleep(5)
                         continue
                     break
+
                 elif "503" in err_str or "overloaded" in err_str:
+                    logger.warning(f"503/Overloaded on {model_config['display']}, retrying...")
                     await asyncio.sleep(5)
                     continue
+
+                elif "400" in err_str and ("mime" in err_str or "not supported" in err_str):
+                    logger.warning(f"MIME incompatible with tools on {model_config['display']}. "
+                                   f"Retrying with MEDIA_TOOLS...")
+                    current_tools = MEDIA_TOOLS
+                    continue
+
                 elif ("403" in err_str or "permission_denied" in err_str) and "file" in err_str:
-                    # Файл истёк на серверах Google — убираем все file_data и повторяем
-                    logger.warning(f"File expired/inaccessible. Stripping file parts and retrying...")
+                    logger.warning("File expired. Stripping file parts and retrying...")
                     cleaned = []
                     for content_item in contents:
                         clean_parts = [
@@ -679,24 +696,27 @@ async def generate(client, contents, current_tools):
                         logger.error("No content left after stripping expired files.")
                         break
                     contents = cleaned
-                    # Переключаем на TEXT_TOOLS т.к. медиа больше нет
                     current_tools = TEXT_TOOLS
                     continue
+
                 elif "404" in err_str or "not found" in err_str:
                     logger.warning(f"Model {model_id} unavailable (404).")
                     break
+
                 elif "403" in err_str:
                     logger.warning(f"Permission denied for {model_id} (non-file).")
                     break
+
                 logger.error(f"API Error on {model_id}: {e}")
                 break
+
             except Exception as e:
                 logger.error(f"General Error on {model_id}: {e}", exc_info=True)
                 break
 
     return {
         "type": "error",
-        "msg": "Ошибка генерации или исчерпаны лимиты бесплатного API.",
+        "msg": "Ошибка генерации или исчерпаны лимиты.",
     }, "none"
 
 
@@ -708,7 +728,6 @@ def format_response(response_data):
         response = response_data['obj']
         cand = response.candidates[0]
 
-        # Проверка finish_reason с защитой от None
         if cand.finish_reason and cand.finish_reason.name == "SAFETY":
             return "Скрыто фильтром безопасности."
 
@@ -773,17 +792,19 @@ def get_mime(msg, media):
     return getattr(media, 'mime_type', 'application/octet-stream')
 
 
-async def download_and_upload(msg, media, client, source_msg=None):
-    """Скачивает медиа из Telegram и загружает в Google.
-    
-    Args:
-        msg: Сообщение, куда отправить статус
-        media: Медиа-объект для скачивания
-        client: Gemini клиент
-        source_msg: Сообщение-источник для определения MIME (если отличается от msg)
-    
-    Returns:
-        (Part, status_message)
+def is_audio_type(msg, mime):
+    """Проверяет, является ли медиа аудио/видео типом."""
+    return bool(
+        msg.voice or msg.audio or msg.video or msg.video_note
+        or (msg.document and mime and 'audio' in mime)
+    )
+
+
+async def download_and_upload(msg, media, source_msg=None):
+    """Скачивает медиа из Telegram и загружает в Google Files API.
+
+    Returns: (media_part, status_message)
+    При ошибке удаляет статус и бросает исключение.
     """
     source = source_msg or msg
     mime = get_mime(source, media)
@@ -791,7 +812,7 @@ async def download_and_upload(msg, media, client, source_msg=None):
     try:
         f = await media.get_file()
         b = await f.download_as_bytearray()
-        part = await upload_file(client, b, mime, getattr(media, 'file_name', 'file'))
+        part = await upload_file(GEMINI_CLIENT, b, mime, getattr(media, 'file_name', 'file'))
         return part, st
     except Exception:
         await safe_delete(st)
@@ -799,20 +820,12 @@ async def download_and_upload(msg, media, client, source_msg=None):
 
 
 async def safe_delete(msg):
-    """Безопасно удаляет сообщение, игнорируя ошибки."""
+    """Безопасно удаляет сообщение."""
     if msg:
         try:
             await msg.delete()
         except Exception:
             pass
-
-
-def is_audio_type(msg, mime):
-    """Проверяет, является ли медиа аудио-типом."""
-    return (
-        msg.voice or msg.audio or msg.video or msg.video_note
-        or (msg.document and mime and 'audio' in mime)
-    )
 
 
 TRANSCRIBE_PROMPT = (
@@ -827,9 +840,23 @@ OCR_PROMPT = (
 )
 
 
+def _describe_media_type(mime: str) -> str:
+    """Возвращает человекочитаемый тип медиа для записи в историю."""
+    if not mime:
+        return "file"
+    if mime.startswith('image'):
+        return "image"
+    if mime.startswith('audio') or mime == 'audio/ogg':
+        return "audio"
+    if mime.startswith('video') or mime == 'video/mp4':
+        return "video"
+    if 'pdf' in mime:
+        return "PDF document"
+    return "file"
+
+
 async def process_request(update, context, parts, text_only=False):
     msg = update.message
-    client = GEMINI_CLIENT
 
     typer = TypingWorker(context.bot, msg.chat_id, ChatAction.TYPING)
     typer.start()
@@ -840,12 +867,15 @@ async def process_request(update, context, parts, text_only=False):
             await send_smart(msg, get_current_time_str())
             return
 
-        is_media_request = any(p.file_data for p in parts)
+        is_media_request = any(
+            hasattr(p, 'file_data') and p.file_data for p in parts
+        )
         history = [] if text_only else build_history(context.chat_data.get("history", []))
 
         user_name = msg.from_user.first_name
 
-        parts_final = [p for p in parts if p.file_data]
+        # Собираем parts для отправки: файлы + текст с prefix
+        parts_final = [p for p in parts if hasattr(p, 'file_data') and p.file_data]
         prompt_txt = next((p.text for p in parts if p.text), "")
         final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
         parts_final.append(types.Part(text=final_prompt))
@@ -853,7 +883,6 @@ async def process_request(update, context, parts, text_only=False):
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
 
         res_data, used_model_display = await generate(
-            client,
             history + [types.Content(parts=parts_final, role="user")],
             current_tools,
         )
@@ -864,18 +893,37 @@ async def process_request(update, context, parts, text_only=False):
         if not text_only and used_model_display != "none":
             reply_to_send += f"\n\n<i>{used_model_display}</i>"
 
-        sent = await send_smart(msg, reply_to_send, hint=(is_media_request and not text_only))
+        sent = await send_smart(
+            msg, reply_to_send, hint=(is_media_request and not text_only)
+        )
 
-        if sent and not text_only:
+        # --- СОХРАНЕНИЕ В ИСТОРИЮ (ВСЕГДА, включая text_only расшифровки) ---
+        if sent:
             lock = get_chat_lock(msg.chat_id)
             async with lock:
+                # Для медиа: сохраняем текстовую пометку о типе файла (НЕ file URI).
+                # Для text_only (расшифровка): в model-part будет транскрипт/OCR-текст.
+                hist_parts = []
+                for p in parts:
+                    if hasattr(p, 'file_data') and p.file_data:
+                        media_type = _describe_media_type(
+                            p.file_data.mime_type if p.file_data else None
+                        )
+                        hist_parts.append({
+                            'type': 'text',
+                            'content': f'[sent {media_type}]'
+                        })
+                    elif p.text:
+                        hist_parts.append({'type': 'text', 'content': p.text})
+
                 hist_item = {
                     "role": "user",
-                    "parts": [part_to_dict(p) for p in parts],
+                    "parts": hist_parts,
                     "user_id": msg.from_user.id,
                     "user_name": user_name,
                 }
                 context.chat_data.setdefault("history", []).append(hist_item)
+
                 bot_item = {
                     "role": "model",
                     "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}],
@@ -885,26 +933,31 @@ async def process_request(update, context, parts, text_only=False):
                 if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
                     context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
 
-                rmap = context.chat_data.setdefault('reply_map', {})
-                rmap[sent.message_id] = msg.message_id
-                if len(rmap) > MAX_HISTORY_ITEMS * 2:
-                    for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]:
-                        del rmap[k]
+                # reply_map и media_contexts — только для обычных запросов (не text_only)
+                if not text_only:
+                    rmap = context.chat_data.setdefault('reply_map', {})
+                    rmap[sent.message_id] = msg.message_id
+                    if len(rmap) > MAX_HISTORY_ITEMS * 2:
+                        for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]:
+                            del rmap[k]
 
-                if is_media_request:
-                    m_part = next((p for p in parts if p.file_data), None)
-                    if m_part:
-                        m_store = (
-                            context.application.bot_data
-                            .setdefault('media_contexts', {})
-                            .setdefault(msg.chat_id, OrderedDict())
+                    if is_media_request:
+                        m_part = next(
+                            (p for p in parts if hasattr(p, 'file_data') and p.file_data),
+                            None
                         )
-                        m_store[msg.message_id] = part_to_dict(m_part)
-                        if len(m_store) > MAX_MEDIA_CONTEXTS:
-                            m_store.popitem(last=False)
-                        await context.application.persistence.save_media_contexts(
-                            context.application.bot_data.get('media_contexts', {})
-                        )
+                        if m_part:
+                            m_store = (
+                                context.application.bot_data
+                                .setdefault('media_contexts', {})
+                                .setdefault(msg.chat_id, OrderedDict())
+                            )
+                            m_store[msg.message_id] = part_to_dict(m_part)
+                            if len(m_store) > MAX_MEDIA_CONTEXTS:
+                                m_store.popitem(last=False)
+                            await context.application.persistence.save_media_contexts(
+                                context.application.bot_data.get('media_contexts', {})
+                            )
 
                 await context.application.persistence.update_chat_data(
                     msg.chat_id, context.chat_data
@@ -926,54 +979,56 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['id'] = msg.chat_id
 
     parts = []
-    client = GEMINI_CLIENT
     text = msg.caption or msg.text or ""
 
     media = get_media(msg)
 
-    # ЛОГИКА STICKY TRANSCRIPTION MODE
+    # --- STICKY TRANSCRIPTION MODE ---
     transcription_mode = context.chat_data.get('next_media_is_text', False)
 
     if transcription_mode:
         if media:
             st = None
             try:
-                media_part, st = await download_and_upload(msg, media, client)
+                media_part, st = await download_and_upload(msg, media)
+                await safe_delete(st)
+                st = None
                 mime = get_mime(msg, media)
-
                 prompt_text = TRANSCRIBE_PROMPT if is_audio_type(msg, mime) else OCR_PROMPT
-
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return
             except Exception as e:
-                await msg.reply_text(f"Загрузка: {e}")
+                await msg.reply_text(f"Ошибка: {e}")
                 return
             finally:
                 await safe_delete(st)
 
         elif text and not text.startswith('/'):
-            # Текст выключает sticky-режим, затем обрабатывается как обычный запрос
+            # Текст выключает sticky-режим, обрабатывается как обычный запрос ниже
             context.chat_data.pop('next_media_is_text', None)
             await context.application.persistence.update_chat_data(
                 msg.chat_id, context.chat_data
             )
-            # Код продолжит выполнение ниже
 
+    # --- ОБЫЧНАЯ ОБРАБОТКА МЕДИА ---
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
             await msg.reply_text("Файл >20MB. Читаю только текст.")
         else:
             st = None
             try:
-                media_part, st = await download_and_upload(msg, media, client)
+                media_part, st = await download_and_upload(msg, media)
+                await safe_delete(st)
+                st = None
                 parts.append(media_part)
             except Exception as e:
-                await msg.reply_text(f"Загрузка: {e}")
+                await msg.reply_text(f"Ошибка: {e}")
                 return
             finally:
                 await safe_delete(st)
 
+    # --- YOUTUBE ---
     yt = YOUTUBE_REGEX.search(text)
     if not media and yt:
         parts.append(types.Part(
@@ -981,6 +1036,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ))
         text = text.replace(yt.group(0), '').strip()
 
+    # --- REPLY НА БОТ-ОТВЕТ (обращение к контексту файла) ---
     if not media and msg.reply_to_message:
         orig = context.chat_data.get('reply_map', {}).get(msg.reply_to_message.message_id)
         if orig:
@@ -1005,7 +1061,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
 
-    # Режим «ответ на сообщение» (разовый)
+    # Режим «ответ на сообщение» — разовая расшифровка
     if msg.reply_to_message:
         reply = msg.reply_to_message
         media = get_media(reply)
@@ -1014,11 +1070,11 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await msg.reply_text("Файл слишком велик.")
             st = None
             try:
-                media_part, st = await download_and_upload(msg, media, client=GEMINI_CLIENT, source_msg=reply)
+                media_part, st = await download_and_upload(msg, media, source_msg=reply)
+                await safe_delete(st)
+                st = None
                 mime = get_mime(reply, media)
-
                 prompt_text = TRANSCRIBE_PROMPT if is_audio_type(reply, mime) else OCR_PROMPT
-
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return
@@ -1043,7 +1099,6 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<i>Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.</i>"
         )
 
-    # Сохраняем изменение режима в persistence
     await context.application.persistence.update_chat_data(
         msg.chat_id, context.chat_data
     )
@@ -1062,17 +1117,18 @@ async def util_cmd(update, context, prompt):
     reply = msg.reply_to_message
     media = get_media(reply)
     parts = []
-    client = GEMINI_CLIENT
 
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
             return await msg.reply_text("Файл велик.")
         st = None
         try:
-            media_part, st = await download_and_upload(msg, media, client, source_msg=reply)
+            media_part, st = await download_and_upload(msg, media, source_msg=reply)
+            await safe_delete(st)
+            st = None
             parts.append(media_part)
         except Exception as e:
-            return await msg.reply_text(f"❌ {e}")
+            return await msg.reply_text(f"Ошибка: {e}")
         finally:
             await safe_delete(st)
     elif reply.text and YOUTUBE_REGEX.search(reply.text):
@@ -1110,7 +1166,7 @@ async def start_c(u, c):
         "<b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти в режим расшифровки. "
         "Кидай сколько угодно файлов — я переведу их в текст. "
         "Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.\n\n"
-        "<i>Работаю на базе быстрого и стабильного Gemini 2.5 Flash.</i>"
+        "<i>Работаю на базе Gemini.</i>"
     )
     await u.message.reply_html(start_text)
 
@@ -1151,11 +1207,12 @@ async def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
 
     await app.initialize()
-    await app.start()
 
+    # Инициализация ДО app.start()
     GEMINI_CLIENT = genai.Client(api_key=GOOGLE_API_KEY)
-
     app.bot_data['media_contexts'] = await pers.load_media_contexts()
+
+    await app.start()
 
     commands = [
         BotCommand("start", "Справка"),
@@ -1169,7 +1226,7 @@ async def main():
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "Bot Started (v75)")
+            await app.bot.send_message(ADMIN_ID, "Bot Started (v78)")
         except Exception:
             pass
 
