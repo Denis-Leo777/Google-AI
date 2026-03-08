@@ -1,4 +1,4 @@
-# Версия 74 (Final Review - All Logic Verified)
+# Версия 75 (Fix: Handle expired Google Files 403)
 
 import logging
 import os
@@ -425,7 +425,7 @@ def convert_markdown_to_html(text: str) -> str:
     text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
     # Italic — _text_ (не ловит snake_case за счёт границ)
     text = re.sub(
-        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]"]|$)',
+        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]\"]|$)',
         r'<i>\1</i>',
         text,
         flags=re.DOTALL | re.MULTILINE,
@@ -664,8 +664,29 @@ async def generate(client, contents, current_tools):
                 elif "503" in err_str or "overloaded" in err_str:
                     await asyncio.sleep(5)
                     continue
+                elif ("403" in err_str or "permission_denied" in err_str) and "file" in err_str:
+                    # Файл истёк на серверах Google — убираем все file_data и повторяем
+                    logger.warning(f"File expired/inaccessible. Stripping file parts and retrying...")
+                    cleaned = []
+                    for content_item in contents:
+                        clean_parts = [
+                            p for p in content_item.parts
+                            if not (hasattr(p, 'file_data') and p.file_data)
+                        ]
+                        if clean_parts:
+                            cleaned.append(types.Content(role=content_item.role, parts=clean_parts))
+                    if not cleaned:
+                        logger.error("No content left after stripping expired files.")
+                        break
+                    contents = cleaned
+                    # Переключаем на TEXT_TOOLS т.к. медиа больше нет
+                    current_tools = TEXT_TOOLS
+                    continue
                 elif "404" in err_str or "not found" in err_str:
                     logger.warning(f"Model {model_id} unavailable (404).")
+                    break
+                elif "403" in err_str:
+                    logger.warning(f"Permission denied for {model_id} (non-file).")
                     break
                 logger.error(f"API Error on {model_id}: {e}")
                 break
@@ -756,7 +777,7 @@ async def download_and_upload(msg, media, client, source_msg=None):
     """Скачивает медиа из Telegram и загружает в Google.
     
     Args:
-        msg: Сообщение, куда отправить статус "📥"
+        msg: Сообщение, куда отправить статус
         media: Медиа-объект для скачивания
         client: Gemini клиент
         source_msg: Сообщение-источник для определения MIME (если отличается от msg)
@@ -1148,7 +1169,7 @@ async def main():
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "Bot Started (v74)")
+            await app.bot.send_message(ADMIN_ID, "Bot Started (v75)")
         except Exception:
             pass
 
