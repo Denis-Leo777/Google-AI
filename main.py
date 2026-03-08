@@ -995,6 +995,7 @@ async def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
 
     await app.initialize()
+    await app.start()
     app.bot_data['gemini_client'] = genai.Client(api_key=GOOGLE_API_KEY)
 
     commands = [
