@@ -1,4 +1,4 @@
-# Версия 81 (Fix: YouTube transcription, HTML in history, format cleanup)
+# Версия 82 (Fix: text_only sends raw prompt without identity wrapper)
 
 import logging
 import os
@@ -241,7 +241,7 @@ class PostgresPersistence(BasePersistence):
         dsn = f"{dsn}&{opts}" if "?" in dsn else f"{dsn}?{opts}"
         self.db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, dsn=dsn)
 
-    def _execute(self, query: str, params: tuple = None, fetch: str = None, retries=3):
+    def _execute(self, query, params=None, fetch=None, retries=3):
         last_ex = None
         for attempt in range(retries):
             conn = None
@@ -304,13 +304,13 @@ class PostgresPersistence(BasePersistence):
             "(key TEXT PRIMARY KEY, data BYTEA NOT NULL);"
         )
 
-    def _get_pickled(self, key: str):
+    def _get_pickled(self, key):
         res = self._execute(
             "SELECT data FROM persistence_data WHERE key = %s;", (key,), fetch="one"
         )
         return pickle.loads(res[0]) if res and res[0] else None
 
-    def _set_pickled(self, key: str, data: object):
+    def _set_pickled(self, key, data):
         pickled = pickle.dumps(data)
         self._execute(
             "INSERT INTO persistence_data (key, data) VALUES (%s, %s) "
@@ -416,7 +416,7 @@ def get_current_time_str(timezone="Europe/Moscow"):
     )
 
 
-def convert_markdown_to_html(text: str) -> str:
+def convert_markdown_to_html(text):
     if not text:
         return text
 
@@ -470,7 +470,7 @@ def convert_markdown_to_html(text: str) -> str:
         r'<i>\1</i>', text, flags=re.DOTALL
     )
     text = re.sub(
-        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]\"]|$)',
+        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]\\"]|$)',
         r'<i>\1</i>', text, flags=re.DOTALL | re.MULTILINE
     )
 
@@ -490,8 +490,7 @@ def convert_markdown_to_html(text: str) -> str:
     return text
 
 
-def html_safe_chunker(text: str, size=4096):
-    """Разбивает HTML-текст на чанки, корректно закрывая/открывая теги."""
+def html_safe_chunker(text, size=4096):
     chunks = []
 
     while len(text) > size:
@@ -538,7 +537,6 @@ def ignore_if_processing(func):
 
 
 def part_to_dict(part):
-    """Конвертирует Part в сериализуемый dict для хранения."""
     if part.text:
         return {'type': 'text', 'content': part.text}
     if part.file_data:
@@ -552,7 +550,6 @@ def part_to_dict(part):
 
 
 def dict_to_part(d):
-    """Конвертирует dict обратно в Part. Возвращает (Part, is_stale)."""
     if not isinstance(d, dict):
         return None, False
     if d.get('type') == 'text':
@@ -567,11 +564,6 @@ def dict_to_part(d):
 
 
 def build_history(history):
-    """Строит список Content из сохранённой истории.
-
-    Медиа хранятся как текстовые пометки (транскрипция/OCR/[sent type]),
-    file_data URI в истории пропускаются (совместимость со старыми записями).
-    """
     valid = []
     chars = 0
     for entry in reversed(history):
@@ -597,7 +589,6 @@ def build_history(history):
                 api_parts.append(types.Part(text=t))
                 text_len += len(t)
                 has_text = True
-            # file_data в истории пропускается — контекст в текстовых частях
 
         if api_parts and not has_text and entry['role'] == 'user':
             api_parts.append(types.Part(text=f"{prefix.strip()} (sent a file)"))
@@ -780,7 +771,6 @@ async def generate(contents, current_tools):
 
 
 def _get_raw_text(response_data):
-    """Извлекает сырой текст из ответа API (до HTML-форматирования)."""
     try:
         if response_data.get('type') != 'text':
             return None
@@ -796,7 +786,6 @@ def _get_raw_text(response_data):
 
 
 def format_response(response_data):
-    """Форматирует ответ API в HTML для отправки пользователю."""
     try:
         if response_data['type'] == 'error':
             return response_data['msg']
@@ -812,7 +801,6 @@ def format_response(response_data):
 
         text = "".join(p.text for p in cand.content.parts if p.text)
         text = RE_CLEAN_NAMES.sub('', text)
-        # Убираем блоки транскрипции из ответа для пользователя
         text = TRANSCRIPTION_BLOCK_RE.sub('', text).strip()
         text = text.lstrip('\n')
         return convert_markdown_to_html(text) if text else "Пустой ответ от модели."
@@ -845,14 +833,13 @@ async def send_smart(msg, text, hint=False):
     return sent
 
 
-def get_chat_lock(chat_id: int) -> asyncio.Lock:
+def get_chat_lock(chat_id):
     if chat_id not in CHAT_LOCKS:
         CHAT_LOCKS[chat_id] = asyncio.Lock()
     return CHAT_LOCKS[chat_id]
 
 
 def get_media(msg):
-    """Извлекает медиа-объект из сообщения."""
     return (
         msg.audio or msg.voice or msg.video or msg.video_note
         or (msg.photo[-1] if msg.photo else None)
@@ -861,7 +848,6 @@ def get_media(msg):
 
 
 def get_mime(msg, media):
-    """Определяет MIME-тип на основе типа сообщения."""
     if msg.photo:
         return 'image/jpeg'
     if msg.voice:
@@ -872,7 +858,6 @@ def get_mime(msg, media):
 
 
 def is_audio_type(msg, mime):
-    """Проверяет, является ли медиа аудио/видео типом."""
     return bool(
         msg.voice or msg.audio or msg.video or msg.video_note
         or (msg.document and mime and 'audio' in mime)
@@ -880,11 +865,6 @@ def is_audio_type(msg, mime):
 
 
 async def download_and_upload(msg, media, source_msg=None):
-    """Скачивает медиа из Telegram и загружает в Google Files API.
-
-    Returns: (media_part, status_message)
-    При ошибке удаляет статус и бросает исключение.
-    """
     source = source_msg or msg
     mime = get_mime(source, media)
     st = await msg.reply_text("📥")
@@ -901,7 +881,6 @@ async def download_and_upload(msg, media, source_msg=None):
 
 
 async def safe_delete(msg):
-    """Безопасно удаляет сообщение."""
     if msg:
         try:
             await msg.delete()
@@ -909,8 +888,7 @@ async def safe_delete(msg):
             pass
 
 
-def _describe_media_type(mime: str) -> str:
-    """Возвращает человекочитаемый тип медиа для записи в историю."""
+def _describe_media_type(mime):
     if not mime:
         return "file"
     if mime == YOUTUBE_MIME:
@@ -926,8 +904,7 @@ def _describe_media_type(mime: str) -> str:
     return "file"
 
 
-def _is_real_av_mime(mime: str) -> bool:
-    """Проверяет, является ли MIME реальным аудио/видео (не YouTube)."""
+def _is_real_av_mime(mime):
     if not mime or mime == YOUTUBE_MIME:
         return False
     return mime.startswith(('audio/', 'video/'))
@@ -957,67 +934,74 @@ async def process_request(update, context, parts, text_only=False):
         user_name = msg.from_user.first_name
 
         # --- Собираем parts для отправки в API ---
-        parts_final = [
-            p for p in parts if hasattr(p, 'file_data') and p.file_data
-        ]
-        prompt_txt = next((p.text for p in parts if p.text), "")
-        final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
-
-        # --- Определяем, нужно ли извлечь транскрипцию для истории ---
-        # Только для обычных запросов с реальным медиа (не text_only, не YouTube)
         extract_transcription = False
-        if not text_only and is_media_request:
-            file_mimes = [
-                p.file_data.mime_type
-                for p in parts
-                if hasattr(p, 'file_data') and p.file_data
-                and p.file_data.mime_type
+
+        if text_only:
+            # Прямая расшифровка: отправляем parts как есть, без обёртки
+            # и без tools — чтобы модель выполнила чистую транскрипцию/OCR
+            parts_final = list(parts)
+            current_tools = []
+        else:
+            # Обычный запрос: оборачиваем в identity prefix
+            parts_final = [
+                p for p in parts if hasattr(p, 'file_data') and p.file_data
             ]
-            # YouTube исключён — транскрибировать часовое видео нецелесообразно
-            has_av = any(_is_real_av_mime(m) for m in file_mimes)
-            has_img = any(m.startswith('image/') for m in file_mimes)
+            prompt_txt = next((p.text for p in parts if p.text), "")
+            final_prompt = (
+                f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
+            )
 
-            if has_av:
-                final_prompt += AUDIO_EXTRACTION_INSTRUCTION
-                extract_transcription = True
-            elif has_img:
-                final_prompt += IMAGE_EXTRACTION_INSTRUCTION
-                extract_transcription = True
+            # Определяем, нужно ли извлечь транскрипцию для истории
+            if is_media_request:
+                file_mimes = [
+                    p.file_data.mime_type
+                    for p in parts
+                    if hasattr(p, 'file_data') and p.file_data
+                    and p.file_data.mime_type
+                ]
+                has_av = any(_is_real_av_mime(m) for m in file_mimes)
+                has_img = any(
+                    m.startswith('image/') for m in file_mimes
+                )
 
-        parts_final.append(types.Part(text=final_prompt))
+                if has_av:
+                    final_prompt += AUDIO_EXTRACTION_INSTRUCTION
+                    extract_transcription = True
+                elif has_img:
+                    final_prompt += IMAGE_EXTRACTION_INSTRUCTION
+                    extract_transcription = True
 
-        current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
+            parts_final.append(types.Part(text=final_prompt))
+            current_tools = (
+                MEDIA_TOOLS if is_media_request else TEXT_TOOLS
+            )
 
         res_data, used_model_display = await generate(
             history + [types.Content(parts=parts_final, role="user")],
             current_tools,
         )
 
-        # --- Извлекаем сырой текст (для истории и парсинга транскрипции) ---
+        # --- Извлекаем сырой текст ---
         raw_text = _get_raw_text(res_data)
         extracted_transcription = None
-        history_model_text = raw_text  # сырой текст для истории (без HTML)
+        history_model_text = raw_text
 
         if extract_transcription and raw_text:
             match = TRANSCRIPTION_BLOCK_RE.search(raw_text)
             if match:
                 extracted_transcription = match.group(1).strip()
-                # Проверяем, не пустая ли транскрипция
                 check = extracted_transcription.lower().strip('[]() ')
                 if check in ('no text', 'нет текста', 'none', ''):
                     extracted_transcription = None
-                # Убираем блок транскрипции из текста для пользователя
                 display_text = TRANSCRIPTION_BLOCK_RE.sub('', raw_text).strip()
                 display_text = display_text.lstrip('\n')
                 if display_text:
                     clean_reply = convert_markdown_to_html(display_text)
                     history_model_text = display_text
                 else:
-                    # Модель дала только транскрипцию без ответа
                     clean_reply = format_response(res_data)
                     history_model_text = raw_text
             else:
-                # Модель не вставила теги — format_response зачистит их на всякий случай
                 clean_reply = format_response(res_data)
         else:
             clean_reply = format_response(res_data)
@@ -1128,7 +1112,7 @@ async def process_request(update, context, parts, text_only=False):
 
 # --- HANDLERS ---
 @ignore_if_processing
-async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def universal_handler(update, context):
     msg = update.message
     if not msg:
         return
@@ -1164,7 +1148,6 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_delete(st)
 
         elif text and not text.startswith('/'):
-            # Текст выключает sticky-режим, обрабатывается ниже
             context.chat_data.pop('next_media_is_text', None)
             await context.application.persistence.update_chat_data(
                 msg.chat_id, context.chat_data
@@ -1222,7 +1205,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @ignore_if_processing
-async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text_cmd(update, context):
     msg = update.message
 
     # Режим «ответ на сообщение» — разовая расшифровка
@@ -1275,7 +1258,7 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @ignore_if_processing
-async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def summarize_cmd(update, context):
     await util_cmd(
         update, context,
         "Сделай подробный конспект (summary) этого материала."
@@ -1415,7 +1398,7 @@ async def main():
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "Bot Started (v81)")
+            await app.bot.send_message(ADMIN_ID, "Bot Started (v82)")
         except Exception:
             pass
 
