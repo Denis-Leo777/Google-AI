@@ -1,4 +1,4 @@
-# Версия 78 (Feature: All transcriptions/OCR saved to chat history)
+# Версия 80 (Feature: Auto-transcription extraction for all media in history)
 
 import logging
 import os
@@ -70,14 +70,11 @@ if missing:
     logger.critical(f"Missing env vars: {', '.join(missing)}")
     exit(1)
 
-# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (8 моделей) ---
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
 MODEL_CASCADE = [
-    {"id": "gemini-3-flash-preview", "display": "3 Flash Preview"},
-    {"id": "gemini-flash-latest", "display": "Flash Latest"},
-    {"id": "gemini-2.5-flash-preview-09-2025", "display": "2.5 Flash Preview 09-2025"},
     {"id": "gemini-2.5-flash", "display": "2.5 Flash"},
     {"id": "gemini-3.1-flash-lite-preview", "display": "3.1 Flash Lite Preview"},
-    {"id": "gemini-2.5-flash-lite-preview-09-2025", "display": "2.5 Flash Lite Preview 09-2025"},
+    {"id": "gemini-2.5-flash-lite-preview-09-2025", "display": "2.5 FL Preview 09-25"},
     {"id": "gemini-2.5-flash-lite-latest", "display": "2.5 Flash Lite Latest"},
     {"id": "gemini-2.5-flash-lite", "display": "2.5 Flash Lite"},
 ]
@@ -105,6 +102,11 @@ HTML_TAG_REGEX = re.compile(
     r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler|blockquote)>', re.IGNORECASE
 )
 RE_CLEAN_NAMES = re.compile(r'\[\d+;\s*Name:\s*.*?\]:\s*')
+
+# Regex для извлечения транскрипции из ответа модели
+TRANSCRIPTION_BLOCK_RE = re.compile(
+    r'\[TRANSCRIPTION\](.*?)\[/TRANSCRIPTION\]', re.DOTALL | re.IGNORECASE
+)
 
 MAX_CONTEXT_CHARS = 50000
 MAX_HISTORY_RESPONSE_LEN = 4000
@@ -148,6 +150,35 @@ try:
         SYSTEM_INSTRUCTION = f.read()
 except FileNotFoundError:
     SYSTEM_INSTRUCTION = DEFAULT_SYSTEM_PROMPT
+
+# --- ПРОМПТЫ ДЛЯ РАСШИФРОВКИ ---
+TRANSCRIBE_PROMPT = (
+    "Transcribe this audio file verbatim. "
+    "Output ONLY the raw text, no introductory words."
+)
+
+OCR_PROMPT = (
+    "Extract all visible text from this image (OCR). "
+    "Output ONLY the raw extracted text, nothing else. "
+    "No descriptions, no introductory words, no commentary."
+)
+
+# Инструкции для скрытого извлечения транскрипции (добавляются к обычным запросам с медиа)
+AUDIO_EXTRACTION_INSTRUCTION = (
+    "\n\n[System: At the very start of your response, provide a verbatim transcription "
+    "of the audio/video content wrapped in [TRANSCRIPTION]...[/TRANSCRIPTION] tags. "
+    "Then write your actual response on a new line after the closing tag. "
+    "The user will NOT see the transcription block — it is extracted automatically.]"
+)
+
+IMAGE_EXTRACTION_INSTRUCTION = (
+    "\n\n[System: At the very start of your response, extract ALL visible text from the image "
+    "and place it inside [TRANSCRIPTION]...[/TRANSCRIPTION] tags. "
+    "If no text is visible, write [TRANSCRIPTION](no text)[/TRANSCRIPTION]. "
+    "Then write your actual response on a new line after the closing tag. "
+    "The user will NOT see the transcription block — it is extracted automatically.]"
+)
+
 
 # --- TYPING WORKER ---
 class TypingWorker:
@@ -226,7 +257,8 @@ class PostgresPersistence(BasePersistence):
                         res = True
                     conn.commit()
                     return res
-            except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
+            except (psycopg2.OperationalError, psycopg2.InterfaceError,
+                    psycopg2.DatabaseError) as e:
                 if "SSL connection has been closed" not in str(e):
                     logger.warning(f"DB Error ({attempt + 1}): {e}")
                 last_ex = e
@@ -328,7 +360,9 @@ class PostgresPersistence(BasePersistence):
         )
 
     async def refresh_chat_data(self, chat_id, chat_data):
-        data = await asyncio.to_thread(self._get_pickled, f"chat_data_{chat_id}") or {}
+        data = await asyncio.to_thread(
+            self._get_pickled, f"chat_data_{chat_id}"
+        ) or {}
         chat_data.update(data)
 
     async def get_user_data(self):
@@ -366,7 +400,10 @@ class PostgresPersistence(BasePersistence):
 # --- UTILS ---
 def get_current_time_str(timezone="Europe/Moscow"):
     now = datetime.datetime.now(pytz.timezone(timezone))
-    days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    days = [
+        "понедельник", "вторник", "среда", "четверг",
+        "пятница", "суббота", "воскресенье"
+    ]
     months = [
         "января", "февраля", "марта", "апреля", "мая", "июня",
         "июля", "августа", "сентября", "октября", "ноября", "декабря",
@@ -426,17 +463,21 @@ def convert_markdown_to_html(text: str) -> str:
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
 
     # Italic
-    text = re.sub(r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
     text = re.sub(
-        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]\""]|$)',
-        r'<i>\1</i>',
-        text,
-        flags=re.DOTALL | re.MULTILINE,
+        r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)',
+        r'<i>\1</i>', text, flags=re.DOTALL
+    )
+    text = re.sub(
+        r'(?:^|(?<=\s))_(?!\s)(.+?)(?<!\s)_(?=\s|[.,;:!?\)\]\"]|$)',
+        r'<i>\1</i>', text, flags=re.DOTALL | re.MULTILINE
     )
 
     # Strikethrough и spoiler
     text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
-    text = re.sub(r'\|\|(.+?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL)
+    text = re.sub(
+        r'\|\|(.+?)\|\|',
+        r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL
+    )
 
     # Восстановление плейсхолдеров
     for key, val in code_blocks.items():
@@ -450,7 +491,6 @@ def convert_markdown_to_html(text: str) -> str:
 def html_safe_chunker(text: str, size=4096):
     """Разбивает HTML-текст на чанки, корректно закрывая/открывая теги."""
     chunks = []
-    open_tags = []
 
     while len(text) > size:
         split = text.rfind('\n', 0, size)
@@ -459,7 +499,6 @@ def html_safe_chunker(text: str, size=4096):
 
         chunk = text[:split]
 
-        # Парсим теги в текущем чанке
         current_stack = []
         for m in HTML_TAG_REGEX.finditer(chunk):
             tag = m.group(2).lower()
@@ -470,15 +509,11 @@ def html_safe_chunker(text: str, size=4096):
             else:
                 current_stack.append(tag)
 
-        # Закрываем незакрытые теги
         if current_stack:
             chunk += ''.join(f'</{t}>' for t in reversed(current_stack))
 
         chunks.append(chunk)
-
-        # Переоткрываем теги в следующем чанке
-        open_tags = current_stack
-        text = ''.join(f'<{t}>' for t in open_tags) + text[split:].lstrip()
+        text = ''.join(f'<{t}>' for t in current_stack) + text[split:].lstrip()
 
     chunks.append(text)
     return chunks
@@ -532,8 +567,8 @@ def dict_to_part(d):
 def build_history(history):
     """Строит список Content из сохранённой истории.
 
-    Файлы в истории НЕ включаются — вместо них в user-записи уже содержится
-    текстовая пометка '[sent file: type]', а в model-записи — текстовый ответ.
+    В истории медиа хранятся как текстовые пометки (транскрипция/OCR/[sent type]),
+    а НЕ как file_data URI. Это позволяет модели помнить контекст без передачи файлов.
     """
     valid = []
     chars = 0
@@ -543,7 +578,8 @@ def build_history(history):
         api_parts = []
         text_len = 0
         prefix = (
-            f"[{entry.get('user_id', 'Unknown')}; Name: {entry.get('user_name', 'User')}]: "
+            f"[{entry.get('user_id', 'Unknown')}; "
+            f"Name: {entry.get('user_name', 'User')}]: "
             if entry['role'] == 'user' else ""
         )
         has_text = False
@@ -559,7 +595,7 @@ def build_history(history):
                 api_parts.append(types.Part(text=t))
                 text_len += len(t)
                 has_text = True
-            # file_data в истории ПРОПУСКАЕТСЯ
+            # file_data в истории ПРОПУСКАЕТСЯ — контекст уже в текстовых частях
 
         if api_parts and not has_text and entry['role'] == 'user':
             api_parts.append(types.Part(text=f"{prefix.strip()} (sent a file)"))
@@ -585,7 +621,9 @@ async def upload_file(client, b, mime, name):
         for _ in range(15):
             f = await client.aio.files.get(name=up.name)
             if f.state.name == 'ACTIVE':
-                return types.Part(file_data=types.FileData(file_uri=f.uri, mime_type=mime))
+                return types.Part(
+                    file_data=types.FileData(file_uri=f.uri, mime_type=mime)
+                )
             if f.state.name == 'FAILED':
                 raise IOError("Google File Error")
             await asyncio.sleep(2)
@@ -642,7 +680,9 @@ async def generate(contents, current_tools):
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
                 "tools": current_tools,
-                "system_instruction": types.Content(parts=[types.Part(text=sys_prompt)]),
+                "system_instruction": types.Content(
+                    parts=[types.Part(text=sys_prompt)]
+                ),
                 "temperature": 1.0,
             }
             if t_config:
@@ -672,18 +712,27 @@ async def generate(contents, current_tools):
                     break
 
                 elif "503" in err_str or "overloaded" in err_str:
-                    logger.warning(f"503/Overloaded on {model_config['display']}, retrying...")
+                    logger.warning(
+                        f"503/Overloaded on {model_config['display']}, retrying..."
+                    )
                     await asyncio.sleep(5)
                     continue
 
-                elif "400" in err_str and ("mime" in err_str or "not supported" in err_str):
-                    logger.warning(f"MIME incompatible with tools on {model_config['display']}. "
-                                   f"Retrying with MEDIA_TOOLS...")
+                elif "400" in err_str and (
+                    "mime" in err_str or "not supported" in err_str
+                ):
+                    logger.warning(
+                        f"MIME incompatible with tools on "
+                        f"{model_config['display']}. Retrying with MEDIA_TOOLS..."
+                    )
                     current_tools = MEDIA_TOOLS
                     continue
 
-                elif ("403" in err_str or "permission_denied" in err_str) and "file" in err_str:
-                    logger.warning("File expired. Stripping file parts and retrying...")
+                elif ("403" in err_str or "permission_denied" in err_str) \
+                        and "file" in err_str:
+                    logger.warning(
+                        "File expired. Stripping file parts and retrying..."
+                    )
                     cleaned = []
                     for content_item in contents:
                         clean_parts = [
@@ -691,9 +740,13 @@ async def generate(contents, current_tools):
                             if not (hasattr(p, 'file_data') and p.file_data)
                         ]
                         if clean_parts:
-                            cleaned.append(types.Content(role=content_item.role, parts=clean_parts))
+                            cleaned.append(types.Content(
+                                role=content_item.role, parts=clean_parts
+                            ))
                     if not cleaned:
-                        logger.error("No content left after stripping expired files.")
+                        logger.error(
+                            "No content left after stripping expired files."
+                        )
                         break
                     contents = cleaned
                     current_tools = TEXT_TOOLS
@@ -704,20 +757,38 @@ async def generate(contents, current_tools):
                     break
 
                 elif "403" in err_str:
-                    logger.warning(f"Permission denied for {model_id} (non-file).")
+                    logger.warning(
+                        f"Permission denied for {model_id} (non-file)."
+                    )
                     break
 
                 logger.error(f"API Error on {model_id}: {e}")
                 break
 
             except Exception as e:
-                logger.error(f"General Error on {model_id}: {e}", exc_info=True)
+                logger.error(
+                    f"General Error on {model_id}: {e}", exc_info=True
+                )
                 break
 
     return {
         "type": "error",
         "msg": "Ошибка генерации или исчерпаны лимиты.",
     }, "none"
+
+
+def _get_raw_text(response_data):
+    """Извлекает сырой текст из ответа API (до HTML-форматирования)."""
+    try:
+        if response_data.get('type') != 'text':
+            return None
+        cand = response_data['obj'].candidates[0]
+        if not cand.content or not cand.content.parts:
+            return None
+        text = "".join(p.text for p in cand.content.parts if p.text)
+        return RE_CLEAN_NAMES.sub('', text).strip() or None
+    except Exception:
+        return None
 
 
 def format_response(response_data):
@@ -734,7 +805,7 @@ def format_response(response_data):
         if not cand.content or not cand.content.parts:
             return "Пустой ответ от модели."
 
-        text = "".join([p.text for p in cand.content.parts if p.text])
+        text = "".join(p.text for p in cand.content.parts if p.text)
         text = RE_CLEAN_NAMES.sub('', text)
         return convert_markdown_to_html(text.strip())
     except Exception as e:
@@ -761,7 +832,7 @@ async def send_smart(msg, text, hint=False):
     except BadRequest as e:
         logger.error(f"HTML parse error: {e}. Sending as plain text.")
         plain = re.sub(r'<[^>]*>', '', text)
-        for ch in [plain[i:i + 4096] for i in range(0, len(plain), 4096)]:
+        for ch in [plain[j:j + 4096] for j in range(0, len(plain), 4096)]:
             sent = await msg.reply_text(ch)
     return sent
 
@@ -812,7 +883,9 @@ async def download_and_upload(msg, media, source_msg=None):
     try:
         f = await media.get_file()
         b = await f.download_as_bytearray()
-        part = await upload_file(GEMINI_CLIENT, b, mime, getattr(media, 'file_name', 'file'))
+        part = await upload_file(
+            GEMINI_CLIENT, b, mime, getattr(media, 'file_name', 'file')
+        )
         return part, st
     except Exception:
         await safe_delete(st)
@@ -826,18 +899,6 @@ async def safe_delete(msg):
             await msg.delete()
         except Exception:
             pass
-
-
-TRANSCRIBE_PROMPT = (
-    "Transcribe this audio file verbatim. "
-    "Output ONLY the raw text, no introductory words."
-)
-
-OCR_PROMPT = (
-    "Extract all visible text from this image (OCR). "
-    "Output ONLY the raw extracted text, nothing else. "
-    "No descriptions, no introductory words, no commentary."
-)
 
 
 def _describe_media_type(mime: str) -> str:
@@ -855,6 +916,7 @@ def _describe_media_type(mime: str) -> str:
     return "file"
 
 
+# --- ОСНОВНАЯ ОБРАБОТКА ЗАПРОСА ---
 async def process_request(update, context, parts, text_only=False):
     msg = update.message
 
@@ -870,14 +932,42 @@ async def process_request(update, context, parts, text_only=False):
         is_media_request = any(
             hasattr(p, 'file_data') and p.file_data for p in parts
         )
-        history = [] if text_only else build_history(context.chat_data.get("history", []))
+        history = (
+            [] if text_only
+            else build_history(context.chat_data.get("history", []))
+        )
 
         user_name = msg.from_user.first_name
 
-        # Собираем parts для отправки: файлы + текст с prefix
-        parts_final = [p for p in parts if hasattr(p, 'file_data') and p.file_data]
+        # --- Собираем parts для отправки в API ---
+        parts_final = [
+            p for p in parts if hasattr(p, 'file_data') and p.file_data
+        ]
         prompt_txt = next((p.text for p in parts if p.text), "")
         final_prompt = f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
+
+        # --- Определяем, нужно ли извлечь транскрипцию для истории ---
+        # Только для обычных запросов с медиа (не text_only, там ответ
+        # модели и ТАК является чистой транскрипцией/OCR)
+        extract_transcription = False
+        if not text_only and is_media_request:
+            file_mimes = [
+                p.file_data.mime_type
+                for p in parts
+                if hasattr(p, 'file_data') and p.file_data and p.file_data.mime_type
+            ]
+            has_av = any(
+                m.startswith(('audio/', 'video/')) for m in file_mimes
+            )
+            has_img = any(m.startswith('image/') for m in file_mimes)
+
+            if has_av:
+                final_prompt += AUDIO_EXTRACTION_INSTRUCTION
+                extract_transcription = True
+            elif has_img:
+                final_prompt += IMAGE_EXTRACTION_INSTRUCTION
+                extract_transcription = True
+
         parts_final.append(types.Part(text=final_prompt))
 
         current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
@@ -887,9 +977,32 @@ async def process_request(update, context, parts, text_only=False):
             current_tools,
         )
 
-        clean_reply = format_response(res_data)
-        reply_to_send = clean_reply
+        # --- Извлекаем транскрипцию из сырого ответа (до HTML) ---
+        extracted_transcription = None
+        raw_text = _get_raw_text(res_data) if extract_transcription else None
 
+        if raw_text:
+            match = TRANSCRIPTION_BLOCK_RE.search(raw_text)
+            if match:
+                extracted_transcription = match.group(1).strip()
+                # Проверяем, не пустая ли транскрипция / "(no text)"
+                check = extracted_transcription.lower().strip('[]() ')
+                if check in ('no text', 'нет текста', 'none', ''):
+                    extracted_transcription = None
+                # Убираем блок транскрипции из текста для пользователя
+                clean_text = TRANSCRIPTION_BLOCK_RE.sub('', raw_text).strip()
+                clean_text = clean_text.lstrip('\n')
+                if clean_text:
+                    clean_reply = convert_markdown_to_html(clean_text)
+                else:
+                    # Модель дала только транскрипцию без ответа
+                    clean_reply = format_response(res_data)
+            else:
+                clean_reply = format_response(res_data)
+        else:
+            clean_reply = format_response(res_data)
+
+        reply_to_send = clean_reply
         if not text_only and used_model_display != "none":
             reply_to_send += f"\n\n<i>{used_model_display}</i>"
 
@@ -897,24 +1010,34 @@ async def process_request(update, context, parts, text_only=False):
             msg, reply_to_send, hint=(is_media_request and not text_only)
         )
 
-        # --- СОХРАНЕНИЕ В ИСТОРИЮ (ВСЕГДА, включая text_only расшифровки) ---
+        # --- СОХРАНЕНИЕ В ИСТОРИЮ (ВСЕГДА, включая text_only) ---
         if sent:
             lock = get_chat_lock(msg.chat_id)
             async with lock:
-                # Для медиа: сохраняем текстовую пометку о типе файла (НЕ file URI).
-                # Для text_only (расшифровка): в model-part будет транскрипт/OCR-текст.
                 hist_parts = []
                 for p in parts:
                     if hasattr(p, 'file_data') and p.file_data:
                         media_type = _describe_media_type(
                             p.file_data.mime_type if p.file_data else None
                         )
-                        hist_parts.append({
-                            'type': 'text',
-                            'content': f'[sent {media_type}]'
-                        })
+                        if extracted_transcription:
+                            # Сохраняем ТРАНСКРИПЦИЮ вместо [sent audio]
+                            t = extracted_transcription[:MAX_HISTORY_RESPONSE_LEN]
+                            hist_parts.append({
+                                'type': 'text',
+                                'content': (
+                                    f'[{media_type} transcription: {t}]'
+                                ),
+                            })
+                        else:
+                            hist_parts.append({
+                                'type': 'text',
+                                'content': f'[sent {media_type}]',
+                            })
                     elif p.text:
-                        hist_parts.append({'type': 'text', 'content': p.text})
+                        hist_parts.append({
+                            'type': 'text', 'content': p.text,
+                        })
 
                 hist_item = {
                     "role": "user",
@@ -926,14 +1049,19 @@ async def process_request(update, context, parts, text_only=False):
 
                 bot_item = {
                     "role": "model",
-                    "parts": [{'type': 'text', 'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN]}],
+                    "parts": [{
+                        'type': 'text',
+                        'content': clean_reply[:MAX_HISTORY_RESPONSE_LEN],
+                    }],
                 }
                 context.chat_data["history"].append(bot_item)
 
                 if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
-                    context.chat_data["history"] = context.chat_data["history"][-MAX_HISTORY_ITEMS:]
+                    context.chat_data["history"] = (
+                        context.chat_data["history"][-MAX_HISTORY_ITEMS:]
+                    )
 
-                # reply_map и media_contexts — только для обычных запросов (не text_only)
+                # reply_map и media_contexts — только для обычных запросов
                 if not text_only:
                     rmap = context.chat_data.setdefault('reply_map', {})
                     rmap[sent.message_id] = msg.message_id
@@ -943,7 +1071,8 @@ async def process_request(update, context, parts, text_only=False):
 
                     if is_media_request:
                         m_part = next(
-                            (p for p in parts if hasattr(p, 'file_data') and p.file_data),
+                            (p for p in parts
+                             if hasattr(p, 'file_data') and p.file_data),
                             None
                         )
                         if m_part:
@@ -955,9 +1084,12 @@ async def process_request(update, context, parts, text_only=False):
                             m_store[msg.message_id] = part_to_dict(m_part)
                             if len(m_store) > MAX_MEDIA_CONTEXTS:
                                 m_store.popitem(last=False)
-                            await context.application.persistence.save_media_contexts(
-                                context.application.bot_data.get('media_contexts', {})
-                            )
+                            await context.application.persistence \
+                                .save_media_contexts(
+                                    context.application.bot_data.get(
+                                        'media_contexts', {}
+                                    )
+                                )
 
                 await context.application.persistence.update_chat_data(
                     msg.chat_id, context.chat_data
@@ -994,7 +1126,10 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_delete(st)
                 st = None
                 mime = get_mime(msg, media)
-                prompt_text = TRANSCRIBE_PROMPT if is_audio_type(msg, mime) else OCR_PROMPT
+                prompt_text = (
+                    TRANSCRIBE_PROMPT if is_audio_type(msg, mime)
+                    else OCR_PROMPT
+                )
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return
@@ -1005,7 +1140,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_delete(st)
 
         elif text and not text.startswith('/'):
-            # Текст выключает sticky-режим, обрабатывается как обычный запрос ниже
+            # Текст выключает sticky-режим, обрабатывается ниже
             context.chat_data.pop('next_media_is_text', None)
             await context.application.persistence.update_chat_data(
                 msg.chat_id, context.chat_data
@@ -1032,13 +1167,18 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     yt = YOUTUBE_REGEX.search(text)
     if not media and yt:
         parts.append(types.Part(
-            file_data=types.FileData(mime_type="video/youtube", file_uri=yt.group(0))
+            file_data=types.FileData(
+                mime_type="video/youtube", file_uri=yt.group(0)
+            )
         ))
         text = text.replace(yt.group(0), '').strip()
 
-    # --- REPLY НА БОТ-ОТВЕТ (обращение к контексту файла) ---
+    # --- REPLY НА БОТ-ОТВЕТ (контекст файла) ---
     if not media and msg.reply_to_message:
-        orig = context.chat_data.get('reply_map', {}).get(msg.reply_to_message.message_id)
+        orig = (
+            context.chat_data.get('reply_map', {})
+            .get(msg.reply_to_message.message_id)
+        )
         if orig:
             ctx = (
                 context.application.bot_data
@@ -1070,11 +1210,16 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await msg.reply_text("Файл слишком велик.")
             st = None
             try:
-                media_part, st = await download_and_upload(msg, media, source_msg=reply)
+                media_part, st = await download_and_upload(
+                    msg, media, source_msg=reply
+                )
                 await safe_delete(st)
                 st = None
                 mime = get_mime(reply, media)
-                prompt_text = TRANSCRIBE_PROMPT if is_audio_type(reply, mime) else OCR_PROMPT
+                prompt_text = (
+                    TRANSCRIBE_PROMPT if is_audio_type(reply, mime)
+                    else OCR_PROMPT
+                )
                 parts = [media_part, types.Part(text=prompt_text)]
                 await process_request(update, context, parts, text_only=True)
                 return
@@ -1096,7 +1241,8 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_html(
             "<b>Включен режим потоковой расшифровки.</b>\n"
             "Кидай аудио, видео или фото — я буду сразу присылать текст.\n\n"
-            "<i>Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.</i>"
+            "<i>Чтобы выйти, напиши /text ещё раз "
+            "или отправь текстовое сообщение.</i>"
         )
 
     await context.application.persistence.update_chat_data(
@@ -1106,7 +1252,10 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @ignore_if_processing
 async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await util_cmd(update, context, "Сделай подробный конспект (summary) этого материала.")
+    await util_cmd(
+        update, context,
+        "Сделай подробный конспект (summary) этого материала."
+    )
 
 
 async def util_cmd(update, context, prompt):
@@ -1123,7 +1272,9 @@ async def util_cmd(update, context, prompt):
             return await msg.reply_text("Файл велик.")
         st = None
         try:
-            media_part, st = await download_and_upload(msg, media, source_msg=reply)
+            media_part, st = await download_and_upload(
+                msg, media, source_msg=reply
+            )
             await safe_delete(st)
             st = None
             parts.append(media_part)
@@ -1161,11 +1312,12 @@ async def start_c(u, c):
     start_text = (
         "<b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\n\n"
         "<b>Что я умею:</b>\n"
-        "<b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио или видео "
-        "— я всё прочитаю, проанализирую и отвечу текстом.\n"
-        "<b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти в режим расшифровки. "
-        "Кидай сколько угодно файлов — я переведу их в текст. "
-        "Чтобы выйти, напиши /text ещё раз или отправь текстовое сообщение.\n\n"
+        "<b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио "
+        "или видео — я всё прочитаю, проанализирую и отвечу текстом.\n"
+        "<b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти "
+        "в режим расшифровки. Кидай сколько угодно файлов — я переведу "
+        "их в текст. Чтобы выйти, напиши /text ещё раз или отправь "
+        "текстовое сообщение.\n\n"
         "<i>Работаю на базе Gemini.</i>"
     )
     await u.message.reply_html(start_text)
@@ -1175,19 +1327,26 @@ async def start_c(u, c):
 async def clear_c(u, c):
     c.chat_data.clear()
     if "media_contexts" in c.application.bot_data:
-        c.application.bot_data["media_contexts"].pop(u.effective_chat.id, None)
+        c.application.bot_data["media_contexts"].pop(
+            u.effective_chat.id, None
+        )
         await c.application.persistence.save_media_contexts(
             c.application.bot_data.get('media_contexts', {})
         )
-    await c.application.persistence.update_chat_data(u.effective_chat.id, c.chat_data)
+    await c.application.persistence.update_chat_data(
+        u.effective_chat.id, c.chat_data
+    )
     await u.message.reply_text("Память очищена.")
 
 
 @ignore_if_processing
 async def status_c(u, c):
-    date_str = DAILY_REQUEST_DATE.isoformat() if DAILY_REQUEST_DATE else "N/A"
+    date_str = (
+        DAILY_REQUEST_DATE.isoformat() if DAILY_REQUEST_DATE else "N/A"
+    )
     stats = "\n".join(
-        [f"  {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}" for m in MODEL_CASCADE]
+        f"  {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}"
+        for m in MODEL_CASCADE
     )
     await u.message.reply_html(f"<b>Статистика за {date_str}:</b>\n{stats}")
 
@@ -1197,18 +1356,24 @@ async def main():
     global GEMINI_CLIENT
 
     pers = PostgresPersistence(DATABASE_URL)
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(pers).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .persistence(pers)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start_c))
     app.add_handler(CommandHandler("text", text_cmd))
     app.add_handler(CommandHandler("summarize", summarize_cmd))
     app.add_handler(CommandHandler("clear", clear_c))
     app.add_handler(CommandHandler("status", status_c))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, universal_handler))
+    app.add_handler(MessageHandler(
+        filters.ALL & ~filters.COMMAND, universal_handler
+    ))
 
     await app.initialize()
 
-    # Инициализация ДО app.start()
     GEMINI_CLIENT = genai.Client(api_key=GOOGLE_API_KEY)
     app.bot_data['media_contexts'] = await pers.load_media_contexts()
 
@@ -1226,7 +1391,7 @@ async def main():
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "Bot Started (v78)")
+            await app.bot.send_message(ADMIN_ID, "Bot Started (v80)")
         except Exception:
             pass
 
@@ -1240,7 +1405,9 @@ async def main():
 
     clean_path = GEMINI_WEBHOOK_PATH.strip('/')
     webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/{clean_path}"
-    await app.bot.set_webhook(url=webhook_url, secret_token=TELEGRAM_SECRET_TOKEN)
+    await app.bot.set_webhook(
+        url=webhook_url, secret_token=TELEGRAM_SECRET_TOKEN
+    )
 
     server = aiohttp.web.Application()
 
@@ -1257,11 +1424,15 @@ async def main():
             return aiohttp.web.Response(status=500)
 
     server.router.add_post(f"/{clean_path}", wh)
-    server.router.add_get('/', lambda r: aiohttp.web.Response(text="Running"))
+    server.router.add_get(
+        '/', lambda r: aiohttp.web.Response(text="Running")
+    )
 
     runner = aiohttp.web.AppRunner(server)
     await runner.setup()
-    await aiohttp.web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 10000))).start()
+    await aiohttp.web.TCPSite(
+        runner, '0.0.0.0', int(os.getenv("PORT", 10000))
+    ).start()
 
     logger.info("Ready.")
     await stop_event.wait()
