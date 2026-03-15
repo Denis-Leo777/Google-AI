@@ -1,4 +1,4 @@
-# Версия 84 (Fix: text_only history cleanup + LaTeX braces)
+# Версия 85 (Fix: auto thinking, safe LaTeX $, upload name None)
 
 import logging
 import os
@@ -32,7 +32,9 @@ from google.genai import errors as genai_errors
 
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s', level=log_level
+)
 logger = logging.getLogger(__name__)
 
 SILENCED_MODULES = [
@@ -45,7 +47,9 @@ for mod in SILENCED_MODULES:
 
 # --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_SECRET_TOKEN = os.getenv('TELEGRAM_SECRET_TOKEN', 'my-secret-token-change-me')
+TELEGRAM_SECRET_TOKEN = os.getenv(
+    'TELEGRAM_SECRET_TOKEN', 'my-secret-token-change-me'
+)
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 DATABASE_URL = os.getenv('DATABASE_URL')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST')
@@ -73,9 +77,6 @@ if missing:
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
 MODEL_CASCADE = [
     {"id": "gemini-2.5-flash", "display": "2.5 Flash"},
-    {"id": "gemini-3.1-flash-lite-preview", "display": "3.1 Flash Lite Preview"},
-    {"id": "gemini-2.5-flash-lite-preview-09-2025", "display": "2.5 FL Preview 09-25"},
-    {"id": "gemini-2.5-flash-lite-latest", "display": "2.5 Flash Lite Latest"},
     {"id": "gemini-2.5-flash-lite", "display": "2.5 Flash Lite"},
 ]
 
@@ -91,11 +92,14 @@ PROCESSING_MESSAGES = set()
 
 # --- REGEX ---
 YOUTUBE_REGEX = re.compile(
-    r'(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/(?:watch\?v=|embed/|v/|shorts/)'
-    r'|youtu\.be/|youtube-nocookie\.com/embed/)([a-zA-Z0-9_-]{11})'
+    r'(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/'
+    r'(?:watch\?v=|embed/|v/|shorts/)'
+    r'|youtu\.be/|youtube-nocookie\.com/embed/)'
+    r'([a-zA-Z0-9_-]{11})'
 )
 DATE_TIME_REGEX = re.compile(
-    r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$', re.IGNORECASE
+    r'^\s*(какой\s+)?(день|дата|число|время|который\s+час)\??\s*$',
+    re.IGNORECASE
 )
 HTML_TAG_REGEX = re.compile(
     r'<(/?)(b|i|u|s|code|pre|a|tg-spoiler|blockquote)>', re.IGNORECASE
@@ -129,7 +133,9 @@ MEDIA_TOOLS = [types.Tool(
 )]
 
 SAFETY_SETTINGS = [
-    types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
+    types.SafetySetting(
+        category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE
+    )
     for c in (
         types.HarmCategory.HARM_CATEGORY_HARASSMENT,
         types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -140,7 +146,7 @@ SAFETY_SETTINGS = [
 
 DEFAULT_SYSTEM_PROMPT = """(System Note: Today is {current_time}.)
 ВАЖНОЕ ТЕХНИЧЕСКОЕ ТРЕБОВАНИЕ:
-Форматируй текст ТОЛЬКО с использованием стандартного Markdown (звездочки для жирного/курсива).
+Форматируй текст ТОЛЬКО с использованием стандартного Markdown.
 СТРОГО ЗАПРЕЩЕНО использовать HTML теги вроде <br> или <b> напрямую.
 Если пользователь задаёт вопрос, требующий актуальных данных — используй Google Search.
 """
@@ -164,18 +170,20 @@ OCR_PROMPT = (
 )
 
 AUDIO_EXTRACTION_INSTRUCTION = (
-    "\n\n[System: At the very start of your response, provide a verbatim transcription "
-    "of the audio/video content wrapped in [TRANSCRIPTION]...[/TRANSCRIPTION] tags. "
+    "\n\n[System: At the very start of your response, provide a verbatim "
+    "transcription of the audio/video content wrapped in "
+    "[TRANSCRIPTION]...[/TRANSCRIPTION] tags. "
     "Then write your actual response on a new line after the closing tag. "
-    "The user will NOT see the transcription block — it is extracted automatically.]"
+    "The user will NOT see the transcription block.]"
 )
 
 IMAGE_EXTRACTION_INSTRUCTION = (
-    "\n\n[System: At the very start of your response, extract ALL visible text from the image "
-    "and place it inside [TRANSCRIPTION]...[/TRANSCRIPTION] tags. "
+    "\n\n[System: At the very start of your response, extract ALL visible "
+    "text from the image and place it inside "
+    "[TRANSCRIPTION]...[/TRANSCRIPTION] tags. "
     "If no text is visible, write [TRANSCRIPTION](no text)[/TRANSCRIPTION]. "
     "Then write your actual response on a new line after the closing tag. "
-    "The user will NOT see the transcription block — it is extracted automatically.]"
+    "The user will NOT see the transcription block.]"
 )
 
 
@@ -191,7 +199,9 @@ class TypingWorker:
     async def _worker(self):
         while self.running:
             try:
-                await self.bot.send_chat_action(chat_id=self.chat_id, action=self.action)
+                await self.bot.send_chat_action(
+                    chat_id=self.chat_id, action=self.action
+                )
                 await asyncio.sleep(4.5)
             except Exception:
                 break
@@ -210,7 +220,9 @@ class TypingWorker:
 class PostgresPersistence(BasePersistence):
     def __init__(self, database_url: str):
         super().__init__(
-            store_data=PersistenceInput(bot_data=False, callback_data=False)
+            store_data=PersistenceInput(
+                bot_data=False, callback_data=False
+            )
         )
         self.db_pool = None
         self.dsn = database_url
@@ -234,11 +246,16 @@ class PostgresPersistence(BasePersistence):
         if self.db_pool and not self.db_pool.closed:
             self.db_pool.closeall()
         dsn = self.dsn
-        opts = "keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
+        opts = (
+            "keepalives=1&keepalives_idle=30"
+            "&keepalives_interval=10&keepalives_count=5"
+        )
         dsn = f"{dsn}&{opts}" if "?" in dsn else f"{dsn}?{opts}"
-        self.db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, dsn=dsn)
+        self.db_pool = psycopg2.pool.ThreadedConnectionPool(
+            1, 20, dsn=dsn
+        )
 
-    def _execute(self, query: str, params: tuple = None, fetch: str = None, retries=3):
+    def _execute(self, query, params=None, fetch=None, retries=3):
         last_ex = None
         for attempt in range(retries):
             conn = None
@@ -256,7 +273,8 @@ class PostgresPersistence(BasePersistence):
                         res = True
                     conn.commit()
                     return res
-            except (psycopg2.OperationalError, psycopg2.InterfaceError,
+            except (psycopg2.OperationalError,
+                    psycopg2.InterfaceError,
                     psycopg2.DatabaseError) as e:
                 if "SSL connection has been closed" not in str(e):
                     logger.warning(f"DB Error ({attempt + 1}): {e}")
@@ -274,8 +292,8 @@ class PostgresPersistence(BasePersistence):
                 if attempt == retries - 2:
                     try:
                         self._connect()
-                    except Exception as reconnect_err:
-                        logger.error(f"Reconnect failed: {reconnect_err}")
+                    except Exception as re_err:
+                        logger.error(f"Reconnect failed: {re_err}")
                 if attempt < retries - 1:
                     time.sleep(0.5 * (attempt + 1))
             except Exception as e:
@@ -301,13 +319,14 @@ class PostgresPersistence(BasePersistence):
             "(key TEXT PRIMARY KEY, data BYTEA NOT NULL);"
         )
 
-    def _get_pickled(self, key: str):
+    def _get_pickled(self, key):
         res = self._execute(
-            "SELECT data FROM persistence_data WHERE key = %s;", (key,), fetch="one"
+            "SELECT data FROM persistence_data WHERE key = %s;",
+            (key,), fetch="one"
         )
         return pickle.loads(res[0]) if res and res[0] else None
 
-    def _set_pickled(self, key: str, data: object):
+    def _set_pickled(self, key, data):
         pickled = pickle.dumps(data)
         self._execute(
             "INSERT INTO persistence_data (key, data) VALUES (%s, %s) "
@@ -325,31 +344,37 @@ class PostgresPersistence(BasePersistence):
         pass
 
     async def load_media_contexts(self):
-        data = await asyncio.to_thread(self._get_pickled, "media_contexts")
+        data = await asyncio.to_thread(
+            self._get_pickled, "media_contexts"
+        )
         return data if isinstance(data, dict) else {}
 
     async def save_media_contexts(self, data):
-        await asyncio.to_thread(self._set_pickled, "media_contexts", data)
+        await asyncio.to_thread(
+            self._set_pickled, "media_contexts", data
+        )
 
     async def get_chat_data(self):
         all_data = await asyncio.to_thread(
             self._execute,
-            "SELECT key, data FROM persistence_data WHERE key LIKE 'chat_data_%';",
+            "SELECT key, data FROM persistence_data "
+            "WHERE key LIKE 'chat_data_%';",
             fetch="all",
         )
         chat_data = defaultdict(dict)
         if all_data:
-            prefix = "chat_data_"
             for k, d in all_data:
                 try:
-                    chat_id = int(k.removeprefix(prefix))
+                    chat_id = int(k.removeprefix("chat_data_"))
                     chat_data[chat_id] = pickle.loads(d)
                 except Exception:
                     pass
         return chat_data
 
     async def update_chat_data(self, chat_id, data):
-        await asyncio.to_thread(self._set_pickled, f"chat_data_{chat_id}", data)
+        await asyncio.to_thread(
+            self._set_pickled, f"chat_data_{chat_id}", data
+        )
 
     async def drop_chat_data(self, chat_id):
         await asyncio.to_thread(
@@ -408,120 +433,141 @@ def get_current_time_str(timezone="Europe/Moscow"):
         "июля", "августа", "сентября", "октября", "ноября", "декабря",
     ]
     return (
-        f"Сегодня {days[now.weekday()]}, {now.day} {months[now.month - 1]} "
-        f"{now.year} года, время {now.strftime('%H:%M')} (MSK)."
+        f"Сегодня {days[now.weekday()]}, {now.day} "
+        f"{months[now.month - 1]} {now.year} года, "
+        f"время {now.strftime('%H:%M')} (MSK)."
     )
 
 
-# --- LaTeX → Unicode КОНВЕРТЕР ---
-def convert_latex_to_unicode(text: str) -> str:
-    """Конвертирует LaTeX-формулы в читаемый Unicode-текст."""
-    if not text or ('\\' not in text and '$' not in text):
+# --- LaTeX -> Unicode ---
+def convert_latex_to_unicode(text):
+    if not text:
+        return text
+    # Быстрая проверка: есть ли вообще LaTeX-маркеры
+    if '\\' not in text and '$$' not in text:
         return text
 
-    SUPERSCRIPT_MAP = str.maketrans(
-        '0123456789+-=()abcdefghijklmnoprstuvwxyzABDEGHIJKLMNOPRTUVW',
-        '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻᴬᴮᴰᴱᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾᴿᵀᵁⱽᵂ'
+    SUPERSCRIPT = str.maketrans(
+        '0123456789+-=()abcdefghijklmnoprstuvwxyz',
+        '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ'
     )
-    SUBSCRIPT_MAP = str.maketrans(
+    SUBSCRIPT = str.maketrans(
         '0123456789+-=()aehijklmnoprstuvx',
         '₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ'
     )
 
     GREEK = {
-        r'\alpha': 'α', r'\beta': 'β', r'\gamma': 'γ', r'\delta': 'δ',
-        r'\epsilon': 'ε', r'\varepsilon': 'ε', r'\zeta': 'ζ', r'\eta': 'η',
-        r'\theta': 'θ', r'\vartheta': 'ϑ', r'\iota': 'ι', r'\kappa': 'κ',
-        r'\lambda': 'λ', r'\mu': 'μ', r'\nu': 'ν', r'\xi': 'ξ',
-        r'\pi': 'π', r'\rho': 'ρ', r'\sigma': 'σ', r'\tau': 'τ',
-        r'\upsilon': 'υ', r'\phi': 'φ', r'\varphi': 'φ', r'\chi': 'χ',
-        r'\psi': 'ψ', r'\omega': 'ω',
-        r'\Gamma': 'Γ', r'\Delta': 'Δ', r'\Theta': 'Θ', r'\Lambda': 'Λ',
-        r'\Xi': 'Ξ', r'\Pi': 'Π', r'\Sigma': 'Σ', r'\Phi': 'Φ',
-        r'\Psi': 'Ψ', r'\Omega': 'Ω',
+        '\\alpha': 'α', '\\beta': 'β', '\\gamma': 'γ',
+        '\\delta': 'δ', '\\epsilon': 'ε', '\\varepsilon': 'ε',
+        '\\zeta': 'ζ', '\\eta': 'η', '\\theta': 'θ',
+        '\\vartheta': 'ϑ', '\\iota': 'ι', '\\kappa': 'κ',
+        '\\lambda': 'λ', '\\mu': 'μ', '\\nu': 'ν',
+        '\\xi': 'ξ', '\\pi': 'π', '\\rho': 'ρ',
+        '\\sigma': 'σ', '\\tau': 'τ', '\\upsilon': 'υ',
+        '\\phi': 'φ', '\\varphi': 'φ', '\\chi': 'χ',
+        '\\psi': 'ψ', '\\omega': 'ω',
+        '\\Gamma': 'Γ', '\\Delta': 'Δ', '\\Theta': 'Θ',
+        '\\Lambda': 'Λ', '\\Xi': 'Ξ', '\\Pi': 'Π',
+        '\\Sigma': 'Σ', '\\Phi': 'Φ', '\\Psi': 'Ψ', '\\Omega': 'Ω',
     }
 
     SYMBOLS = {
-        r'\rightarrow': '→', r'\leftarrow': '←', r'\leftrightarrow': '↔',
-        r'\Rightarrow': '⇒', r'\Leftarrow': '⇐', r'\Leftrightarrow': '⇔',
-        r'\to': '→', r'\gets': '←', r'\implies': '⇒', r'\iff': '⇔',
-        r'\times': '×', r'\div': '÷', r'\cdot': '·', r'\pm': '±', r'\mp': '∓',
-        r'\leq': '≤', r'\geq': '≥', r'\neq': '≠', r'\approx': '≈',
-        r'\equiv': '≡', r'\sim': '∼', r'\propto': '∝',
-        r'\le': '≤', r'\ge': '≥', r'\ne': '≠',
-        r'\infty': '∞', r'\partial': '∂', r'\nabla': '∇',
-        r'\sum': '∑', r'\prod': '∏', r'\int': '∫',
-        r'\in': '∈', r'\notin': '∉', r'\subset': '⊂', r'\supset': '⊃',
-        r'\subseteq': '⊆', r'\supseteq': '⊇',
-        r'\cup': '∪', r'\cap': '∩', r'\emptyset': '∅', r'\varnothing': '∅',
-        r'\forall': '∀', r'\exists': '∃', r'\neg': '¬',
-        r'\land': '∧', r'\lor': '∨',
-        r'\ldots': '…', r'\cdots': '⋯', r'\dots': '…',
-        r'\star': '⋆', r'\circ': '∘', r'\bullet': '•',
-        r'\angle': '∠', r'\degree': '°',
-        r'\quad': '  ', r'\qquad': '    ',
-        r'\,': ' ', r'\;': ' ', r'\!': '',
+        '\\rightarrow': '→', '\\leftarrow': '←',
+        '\\leftrightarrow': '↔', '\\Rightarrow': '⇒',
+        '\\Leftarrow': '⇐', '\\Leftrightarrow': '⇔',
+        '\\to': '→', '\\gets': '←',
+        '\\implies': '⇒', '\\iff': '⇔',
+        '\\times': '×', '\\div': '÷', '\\cdot': '·',
+        '\\pm': '±', '\\mp': '∓',
+        '\\leq': '≤', '\\geq': '≥', '\\neq': '≠',
+        '\\approx': '≈', '\\equiv': '≡', '\\sim': '∼',
+        '\\propto': '∝', '\\le': '≤', '\\ge': '≥', '\\ne': '≠',
+        '\\infty': '∞', '\\partial': '∂', '\\nabla': '∇',
+        '\\sum': '∑', '\\prod': '∏', '\\int': '∫',
+        '\\in': '∈', '\\notin': '∉',
+        '\\subset': '⊂', '\\supset': '⊃',
+        '\\subseteq': '⊆', '\\supseteq': '⊇',
+        '\\cup': '∪', '\\cap': '∩',
+        '\\emptyset': '∅', '\\varnothing': '∅',
+        '\\forall': '∀', '\\exists': '∃', '\\neg': '¬',
+        '\\land': '∧', '\\lor': '∨',
+        '\\ldots': '…', '\\cdots': '⋯', '\\dots': '…',
+        '\\star': '⋆', '\\circ': '∘', '\\bullet': '•',
+        '\\angle': '∠', '\\degree': '°',
+        '\\quad': '  ', '\\qquad': '    ',
+        '\\,': ' ', '\\;': ' ', '\\!': '',
     }
 
-    # \text{...}, \mathrm{...}, \textbf{...}, \textit{...} — убрать обёртки
-    text = re.sub(r'\\(?:text|mathrm|textrm|textup)\{([^}]*)\}', r'\1', text)
+    # \text{...}, \mathrm{...} — убрать обёртки
+    text = re.sub(
+        r'\\(?:text|mathrm|textrm|textup)\{([^}]*)\}', r'\1', text
+    )
     text = re.sub(r'\\textbf\{([^}]*)\}', r'**\1**', text)
     text = re.sub(r'\\textit\{([^}]*)\}', r'*\1*', text)
 
-    # \frac{a}{b} → (a)/(b)
-    text = re.sub(r'\\frac\{([^}]*)\}\{([^}]*)\}', r'(\1)/(\2)', text)
+    # \frac{a}{b} -> (a)/(b)
+    text = re.sub(
+        r'\\frac\{([^}]*)\}\{([^}]*)\}', r'(\1)/(\2)', text
+    )
 
-    # \sqrt[n]{x} → ⁿ√(x),  \sqrt{x} → √(x)
-    text = re.sub(r'\\sqrt\[([^\]]*)\]\{([^}]*)\}', r'\1√(\2)', text)
+    # \sqrt[n]{x} -> n-th root, \sqrt{x} -> square root
+    text = re.sub(
+        r'\\sqrt\[([^\]]*)\]\{([^}]*)\}', r'\1√(\2)', text
+    )
     text = re.sub(r'\\sqrt\{([^}]*)\}', r'√(\1)', text)
 
-    # Греческие буквы (длинные сначала)
-    for latex, uni in sorted(GREEK.items(), key=lambda x: -len(x[0])):
+    # Греческие (длинные сначала)
+    for latex, uni in sorted(
+        GREEK.items(), key=lambda x: -len(x[0])
+    ):
         text = text.replace(latex, uni)
 
     # Символы (длинные сначала)
-    for latex, uni in sorted(SYMBOLS.items(), key=lambda x: -len(x[0])):
+    for latex, uni in sorted(
+        SYMBOLS.items(), key=lambda x: -len(x[0])
+    ):
         text = text.replace(latex, uni)
 
-    # ^{...} → superscript
-    def superscript_repl(m):
-        return m.group(1).translate(SUPERSCRIPT_MAP)
-    text = re.sub(r'\^\{([^}]*)\}', superscript_repl, text)
+    # ^{...} -> superscript
+    def sup_repl(m):
+        return m.group(1).translate(SUPERSCRIPT)
+    text = re.sub(r'\^\{([^}]*)\}', sup_repl, text)
 
-    # ^x (одиночный символ после буквы/цифры/}) → superscript
-    def superscript_single(m):
-        return m.group(1).translate(SUPERSCRIPT_MAP)
-    text = re.sub(r'(?<=[0-9a-zA-Zα-ωΑ-Ω}])\^([0-9a-zA-Z])', superscript_single, text)
+    # ^x (одиночный) -> superscript
+    def sup_single(m):
+        return m.group(1).translate(SUPERSCRIPT)
+    text = re.sub(r'\^([0-9a-zA-Z])', sup_single, text)
 
-    # _{...} → subscript
-    def subscript_repl(m):
-        return m.group(1).translate(SUBSCRIPT_MAP)
-    text = re.sub(r'_\{([^}]*)\}', subscript_repl, text)
+    # _{...} -> subscript
+    def sub_repl(m):
+        return m.group(1).translate(SUBSCRIPT)
+    text = re.sub(r'_\{([^}]*)\}', sub_repl, text)
 
-    # _x (одиночный символ после буквы/цифры/}) → subscript
-    # Lookbehind защищает snake_case: my_variable не тронется
-    def subscript_single(m):
-        return m.group(1).translate(SUBSCRIPT_MAP)
-    text = re.sub(r'(?<=[0-9a-zA-Zα-ωΑ-Ω}])_([0-9a-zA-Z])', subscript_single, text)
+    # _x (одиночный) -> subscript
+    def sub_single(m):
+        return m.group(1).translate(SUBSCRIPT)
+    text = re.sub(r'_([0-9a-zA-Z])', sub_single, text)
 
-    # $$...$$ и $...$ — убрать обёртки
+    # $$...$$ — убрать обёртки (блочная формула)
     text = re.sub(r'\$\$(.*?)\$\$', r'\1', text, flags=re.DOTALL)
-    text = re.sub(r'\$(.+?)\$', r'\1', text)
 
-    # Оставшиеся \команды без аргументов — убрать бэкслеш
+    # $...$ — убрать обёртки (инлайн), но НЕ ловить цены вроде $5
+    # Требуем: внутри $ хотя бы один бэкслеш ИЛИ спец-символ LaTeX
+    text = re.sub(
+        r'\$([^$]*[\\{}_^][^$]*)\$', r'\1', text
+    )
+
+    # Оставшиеся \команды — убрать бэкслеш
     text = re.sub(r'\\([a-zA-Z]+)', r'\1', text)
 
-    # Литеральные LaTeX-скобки \{ \}
-    text = text.replace('\\{', '{').replace('\\}', '}')
-
-    # Убрать пустые фигурные скобки и одиночные
+    # Пустые фигурные скобки
     text = text.replace('{}', '')
     text = re.sub(r'(?<!\\)[{}]', '', text)
 
     return text
 
 
-def convert_markdown_to_html(text: str) -> str:
+def convert_markdown_to_html(text):
     if not text:
         return text
 
@@ -534,7 +580,9 @@ def convert_markdown_to_html(text: str) -> str:
         code_blocks[key] = f"<{tag}>{content}</{tag}>"
         return key
 
-    text = re.sub(r'```[ \w-]*\n?(.*?)```', store_code, text, flags=re.DOTALL)
+    text = re.sub(
+        r'```[ \w-]*\n?(.*?)```', store_code, text, flags=re.DOTALL
+    )
     text = re.sub(r'`([^`]+)`', store_code, text)
 
     links = {}
@@ -546,30 +594,45 @@ def convert_markdown_to_html(text: str) -> str:
         links[key] = f'<a href="{url}">{link_text}</a>'
         return key
 
-    text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', store_link, text)
+    text = re.sub(
+        r'\[([^\]]+)\]\((https?://[^\)]+)\)', store_link, text
+    )
 
-    # LaTeX → Unicode (после извлечения code blocks, до html.escape)
+    # LaTeX -> Unicode (после code blocks, до html.escape)
     text = convert_latex_to_unicode(text)
 
     text = html.escape(text, quote=False)
 
     # Заголовки
-    text = re.sub(r'^(#{1,6})\s+(.+)$', r'<b>\2</b>', text, flags=re.MULTILINE)
+    text = re.sub(
+        r'^(#{1,6})\s+(.+)$', r'<b>\2</b>', text, flags=re.MULTILINE
+    )
 
     # Блок-цитаты
     def convert_blockquote(match):
         lines = match.group(0).strip().split('\n')
-        content = '\n'.join(re.sub(r'^>\s?', '', line) for line in lines)
+        content = '\n'.join(
+            re.sub(r'^>\s?', '', line) for line in lines
+        )
         return f'<blockquote>{content}</blockquote>'
 
-    text = re.sub(r'(?:^>.*$\n?)+', convert_blockquote, text, flags=re.MULTILINE)
+    text = re.sub(
+        r'(?:^>.*$\n?)+', convert_blockquote, text, flags=re.MULTILINE
+    )
 
-    # Bold-italic (ДО bold и italic)
-    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
-    text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text, flags=re.DOTALL)
+    # Bold-italic
+    text = re.sub(
+        r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>',
+        text, flags=re.DOTALL
+    )
+    text = re.sub(
+        r'___(.+?)___', r'<b><i>\1</i></b>', text, flags=re.DOTALL
+    )
 
     # Bold
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
+    text = re.sub(
+        r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL
+    )
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text, flags=re.DOTALL)
 
     # Italic
@@ -582,14 +645,16 @@ def convert_markdown_to_html(text: str) -> str:
         r'<i>\1</i>', text, flags=re.DOTALL | re.MULTILINE
     )
 
-    # Strikethrough и spoiler
-    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
+    # Strikethrough, spoiler
+    text = re.sub(
+        r'~~(.+?)~~', r'<s>\1</s>', text, flags=re.DOTALL
+    )
     text = re.sub(
         r'\|\|(.+?)\|\|',
         r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL
     )
 
-    # Восстановление плейсхолдеров
+    # Восстановление
     for key, val in code_blocks.items():
         text = text.replace(key, val)
     for key, val in links.items():
@@ -598,8 +663,7 @@ def convert_markdown_to_html(text: str) -> str:
     return text
 
 
-def html_safe_chunker(text: str, size=4096):
-    """Разбивает HTML-текст на чанки, корректно закрывая/открывая теги."""
+def html_safe_chunker(text, size=4096):
     chunks = []
 
     while len(text) > size:
@@ -620,10 +684,14 @@ def html_safe_chunker(text: str, size=4096):
                 current_stack.append(tag)
 
         if current_stack:
-            chunk += ''.join(f'</{t}>' for t in reversed(current_stack))
+            chunk += ''.join(
+                f'</{t}>' for t in reversed(current_stack)
+            )
 
         chunks.append(chunk)
-        text = ''.join(f'<{t}>' for t in current_stack) + text[split:].lstrip()
+        text = ''.join(
+            f'<{t}>' for t in current_stack
+        ) + text[split:].lstrip()
 
     chunks.append(text)
     return chunks
@@ -634,7 +702,10 @@ def ignore_if_processing(func):
     async def wrapper(update, context, *args, **kwargs):
         if not update.effective_message:
             return
-        key = f"{update.effective_chat.id}_{update.effective_message.message_id}"
+        key = (
+            f"{update.effective_chat.id}"
+            f"_{update.effective_message.message_id}"
+        )
         if key in PROCESSING_MESSAGES:
             return
         PROCESSING_MESSAGES.add(key)
@@ -646,7 +717,6 @@ def ignore_if_processing(func):
 
 
 def part_to_dict(part):
-    """Конвертирует Part в сериализуемый dict для хранения."""
     if part.text:
         return {'type': 'text', 'content': part.text}
     if part.file_data:
@@ -660,7 +730,6 @@ def part_to_dict(part):
 
 
 def dict_to_part(d):
-    """Конвертирует dict обратно в Part. Возвращает (Part, is_stale)."""
     if not isinstance(d, dict):
         return None, False
     if d.get('type') == 'text':
@@ -669,7 +738,9 @@ def dict_to_part(d):
         if time.time() - d.get('timestamp', 0) > MEDIA_CONTEXT_TTL_SECONDS:
             return None, True
         return types.Part(
-            file_data=types.FileData(file_uri=d['uri'], mime_type=d['mime'])
+            file_data=types.FileData(
+                file_uri=d['uri'], mime_type=d['mime']
+            )
         ), False
     return None, False
 
@@ -683,7 +754,8 @@ def build_history(history):
         api_parts = []
         text_len = 0
         prefix = (
-            f"[{entry.get('user_id', 'Unknown')}; Name: {entry.get('user_name', 'User')}]: "
+            f"[{entry.get('user_id', 'Unknown')}; "
+            f"Name: {entry.get('user_name', 'User')}]: "
             if entry['role'] == 'user' else ""
         )
         has_text = False
@@ -706,37 +778,48 @@ def build_history(history):
                     text_len += 1000
 
         if api_parts and not has_text and entry['role'] == 'user':
-            api_parts.append(types.Part(text=f"{prefix.strip()} (sent a file)"))
+            api_parts.append(
+                types.Part(text=f"{prefix.strip()} (sent a file)")
+            )
 
         if not api_parts:
             continue
         if chars + text_len > MAX_CONTEXT_CHARS:
             break
 
-        valid.append(types.Content(role=entry["role"], parts=api_parts))
+        valid.append(
+            types.Content(role=entry["role"], parts=api_parts)
+        )
         chars += text_len
 
     return valid[::-1]
 
 
 async def upload_file(client, b, mime, name):
+    name = name or 'file'
     logger.info(f"Uploading: {name}")
     try:
         up = await client.aio.files.upload(
             file=io.BytesIO(b),
-            config=types.UploadFileConfig(mime_type=mime, display_name=name),
+            config=types.UploadFileConfig(
+                mime_type=mime, display_name=name
+            ),
         )
         for _ in range(15):
             f = await client.aio.files.get(name=up.name)
             if f.state.name == 'ACTIVE':
-                return types.Part(file_data=types.FileData(file_uri=f.uri, mime_type=mime))
+                return types.Part(
+                    file_data=types.FileData(
+                        file_uri=f.uri, mime_type=mime
+                    )
+                )
             if f.state.name == 'FAILED':
                 raise IOError("Google File Error")
             await asyncio.sleep(2)
         raise asyncio.TimeoutError("Upload Timeout")
     except Exception as e:
         logger.error(f"Upload Fail: {e}")
-        raise IOError(f"Ошибка загрузки файла {name}: {e}")
+        raise IOError(f"Ошибка загрузки: {e}")
 
 
 # --- ЯДРО ГЕНЕРАЦИИ ---
@@ -750,7 +833,9 @@ async def generate(contents, current_tools):
 
     sys_prompt = SYSTEM_INSTRUCTION
     if "{current_time}" in sys_prompt:
-        sys_prompt = sys_prompt.format(current_time=get_current_time_str())
+        sys_prompt = sys_prompt.format(
+            current_time=get_current_time_str()
+        )
 
     async with GLOBAL_LOCK:
         now = time.time()
@@ -768,21 +853,9 @@ async def generate(contents, current_tools):
 
     for model_config in MODEL_CASCADE:
         model_id = model_config['id']
-        max_attempts_per_model = 2
+        max_attempts = 2
 
-        for attempt in range(max_attempts_per_model):
-            t_config = None
-            if "thinking_level" in model_config:
-                t_config = types.ThinkingConfig(
-                    include_thoughts=False,
-                    thinking_level=model_config['thinking_level'],
-                )
-            elif "thinking_budget" in model_config:
-                t_config = types.ThinkingConfig(
-                    include_thoughts=False,
-                    thinking_budget=model_config['thinking_budget'],
-                )
-
+        for attempt in range(max_attempts):
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
                 "tools": current_tools,
@@ -790,72 +863,116 @@ async def generate(contents, current_tools):
                     parts=[types.Part(text=sys_prompt)]
                 ),
                 "temperature": 1.0,
+                "thinking_config": types.ThinkingConfig(
+                    thinking_budget=-1
+                ),
             }
-            if t_config:
-                gen_config_args["thinking_config"] = t_config
 
-            logger.info(f"Sending to: {model_id} (Attempt {attempt + 1})")
+            logger.info(
+                f"Sending to: {model_id} (Attempt {attempt + 1})"
+            )
 
             try:
-                config = types.GenerateContentConfig(**gen_config_args)
+                config = types.GenerateContentConfig(
+                    **gen_config_args
+                )
                 res = await GEMINI_CLIENT.aio.models.generate_content(
-                    model=model_id, contents=contents, config=config
+                    model=model_id,
+                    contents=contents,
+                    config=config
                 )
 
-                if res and res.candidates and res.candidates[0].content:
+                if (res and res.candidates
+                        and res.candidates[0].content):
                     DAILY_REQUEST_COUNTS[model_id] += 1
-                    logger.info(f"Success: {model_config['display']}")
-                    return {"type": "text", "obj": res}, model_config['display']
+                    logger.info(
+                        f"Success: {model_config['display']}"
+                    )
+                    return (
+                        {"type": "text", "obj": res},
+                        model_config['display']
+                    )
 
             except genai_errors.APIError as e:
                 err_str = str(e).lower()
-                if "429" in err_str or "resource_exhausted" in err_str:
-                    logger.warning(f"Limit on {model_config['display']}.")
-                    if attempt < max_attempts_per_model - 1:
+
+                if ("429" in err_str
+                        or "resource_exhausted" in err_str):
+                    logger.warning(
+                        f"Limit on {model_config['display']}."
+                    )
+                    if attempt < max_attempts - 1:
                         await asyncio.sleep(5)
                         continue
                     break
+
                 elif "503" in err_str or "overloaded" in err_str:
                     await asyncio.sleep(5)
                     continue
-                elif ("403" in err_str or "permission_denied" in err_str) and "file" in err_str:
-                    logger.warning("File expired. Stripping file parts and retrying...")
+
+                elif (("403" in err_str
+                       or "permission_denied" in err_str)
+                      and "file" in err_str):
+                    logger.warning(
+                        "File expired. Stripping file parts..."
+                    )
                     cleaned = []
-                    for content_item in contents:
-                        clean_parts = [
-                            p for p in content_item.parts
-                            if not (hasattr(p, 'file_data') and p.file_data)
+                    for ci in contents:
+                        cp = [
+                            p for p in ci.parts
+                            if not (hasattr(p, 'file_data')
+                                    and p.file_data)
                         ]
-                        if clean_parts:
+                        if cp:
                             cleaned.append(types.Content(
-                                role=content_item.role, parts=clean_parts
+                                role=ci.role, parts=cp
                             ))
                     if not cleaned:
-                        logger.error("No content left after stripping expired files.")
                         break
                     contents = cleaned
                     current_tools = TEXT_TOOLS
                     continue
-                elif "400" in err_str and ("mime" in err_str or "not supported" in err_str):
-                    logger.warning(f"MIME type error on {model_id}. Retrying with MEDIA_TOOLS...")
+
+                elif ("400" in err_str
+                      and ("mime" in err_str
+                           or "not supported" in err_str)):
+                    logger.warning(
+                        f"MIME error on {model_id}. "
+                        "Retrying with MEDIA_TOOLS..."
+                    )
                     current_tools = MEDIA_TOOLS
                     continue
-                elif "404" in err_str or "not found" in err_str:
-                    logger.warning(f"Model {model_id} unavailable (404).")
+
+                elif ("404" in err_str
+                      or "not found" in err_str):
+                    logger.warning(
+                        f"Model {model_id} unavailable (404)."
+                    )
                     break
+
                 elif "403" in err_str:
-                    logger.warning(f"Permission denied for {model_id} (non-file).")
+                    logger.warning(
+                        f"Permission denied: {model_id}."
+                    )
                     break
+
                 logger.error(f"API Error on {model_id}: {e}")
                 break
+
             except Exception as e:
-                logger.error(f"General Error on {model_id}: {e}", exc_info=True)
+                logger.error(
+                    f"General Error on {model_id}: {e}",
+                    exc_info=True
+                )
                 break
 
-    return {
-        "type": "error",
-        "msg": "Ошибка генерации или исчерпаны лимиты бесплатного API.",
-    }, "none"
+    return (
+        {
+            "type": "error",
+            "msg": "Ошибка генерации или лимиты API исчерпаны.",
+        },
+        "none"
+    )
 
 
 def format_response(response_data):
@@ -863,22 +980,17 @@ def format_response(response_data):
         if response_data['type'] == 'error':
             return response_data['msg']
 
-        response = response_data['obj']
-        cand = response.candidates[0]
+        cand = response_data['obj'].candidates[0]
 
-        if cand.finish_reason and cand.finish_reason.name == "SAFETY":
+        if (cand.finish_reason
+                and cand.finish_reason.name == "SAFETY"):
             return "Скрыто фильтром безопасности."
 
         if not cand.content or not cand.content.parts:
             return "Пустой ответ от модели."
 
-        text = "".join([p.text for p in cand.content.parts if p.text])
+        text = "".join(p.text for p in cand.content.parts if p.text)
         text = RE_CLEAN_NAMES.sub('', text)
-
-        # Зачистка [TRANSCRIPTION] тегов на случай если они остались
-        text = TRANSCRIPTION_BLOCK_RE.sub('', text).strip()
-        text = text.lstrip('\n')
-
         return convert_markdown_to_html(text.strip())
     except Exception as e:
         logger.error(f"Format Error: {e}")
@@ -886,14 +998,13 @@ def format_response(response_data):
 
 
 def _get_raw_text(res_data):
-    """Извлекает сырой текст из ответа модели (без HTML-конвертации)."""
     if res_data.get('type') != 'text':
         return None
     try:
         cand = res_data['obj'].candidates[0]
         if not cand.content or not cand.content.parts:
             return None
-        text = "".join([p.text for p in cand.content.parts if p.text])
+        text = "".join(p.text for p in cand.content.parts if p.text)
         return RE_CLEAN_NAMES.sub('', text).strip()
     except Exception:
         return None
@@ -916,21 +1027,21 @@ async def send_smart(msg, text, hint=False):
                     msg.chat_id, ch, parse_mode=ParseMode.HTML
                 )
     except BadRequest as e:
-        logger.error(f"HTML parse error: {e}. Sending as plain text.")
+        logger.error(f"HTML error: {e}. Sending plain text.")
         plain = re.sub(r'<[^>]*>', '', text)
-        for ch in [plain[i:i + 4096] for i in range(0, len(plain), 4096)]:
+        for ch in [plain[j:j + 4096]
+                    for j in range(0, len(plain), 4096)]:
             sent = await msg.reply_text(ch)
     return sent
 
 
-def get_chat_lock(chat_id: int) -> asyncio.Lock:
+def get_chat_lock(chat_id):
     if chat_id not in CHAT_LOCKS:
         CHAT_LOCKS[chat_id] = asyncio.Lock()
     return CHAT_LOCKS[chat_id]
 
 
 def get_media(msg):
-    """Извлекает медиа-объект из сообщения."""
     return (
         msg.audio or msg.voice or msg.video or msg.video_note
         or (msg.photo[-1] if msg.photo else None)
@@ -939,7 +1050,6 @@ def get_media(msg):
 
 
 def get_mime(msg, media):
-    """Определяет MIME-тип на основе типа сообщения."""
     if msg.photo:
         return 'image/jpeg'
     if msg.voice:
@@ -949,15 +1059,20 @@ def get_mime(msg, media):
     return getattr(media, 'mime_type', 'application/octet-stream')
 
 
+def _safe_file_name(media):
+    return getattr(media, 'file_name', None) or 'file'
+
+
 async def download_and_upload(msg, media, source_msg=None):
-    """Скачивает медиа из Telegram и загружает в Google."""
     source = source_msg or msg
     mime = get_mime(source, media)
     st = await msg.reply_text("📥")
     try:
         f = await media.get_file()
         b = await f.download_as_bytearray()
-        part = await upload_file(GEMINI_CLIENT, b, mime, getattr(media, 'file_name', 'file'))
+        part = await upload_file(
+            GEMINI_CLIENT, b, mime, _safe_file_name(media)
+        )
         return part, st
     except Exception:
         await safe_delete(st)
@@ -965,7 +1080,6 @@ async def download_and_upload(msg, media, source_msg=None):
 
 
 async def safe_delete(msg):
-    """Безопасно удаляет сообщение, игнорируя ошибки."""
     if msg:
         try:
             await msg.delete()
@@ -974,22 +1088,19 @@ async def safe_delete(msg):
 
 
 def is_audio_type(msg, mime):
-    """Проверяет, является ли медиа аудио-типом."""
     return (
         msg.voice or msg.audio or msg.video or msg.video_note
         or (msg.document and mime and 'audio' in mime)
     )
 
 
-def _is_real_av_mime(mime: str) -> bool:
-    """Проверяет, является ли MIME реальным аудио/видео (не YouTube)."""
+def _is_real_av_mime(mime):
     if not mime or mime == YOUTUBE_MIME:
         return False
     return mime.startswith(('audio/', 'video/'))
 
 
-def _describe_media_type(mime: str) -> str:
-    """Описывает тип медиа для записи в историю."""
+def _describe_media_type(mime):
     if not mime:
         return "file"
     if mime == YOUTUBE_MIME:
@@ -1003,6 +1114,7 @@ def _describe_media_type(mime: str) -> str:
     return "file"
 
 
+# --- ОБРАБОТКА ЗАПРОСА ---
 async def process_request(update, context, parts, text_only=False):
     msg = update.message
 
@@ -1015,42 +1127,46 @@ async def process_request(update, context, parts, text_only=False):
             await send_smart(msg, get_current_time_str())
             return
 
-        is_media_request = any(
+        is_media = any(
             hasattr(p, 'file_data') and p.file_data for p in parts
         )
-        history = [] if text_only else build_history(
-            context.chat_data.get("history", [])
+        history = (
+            [] if text_only
+            else build_history(context.chat_data.get("history", []))
         )
 
         user_name = msg.from_user.first_name
         extract_transcription = False
 
         if text_only:
-            # Для расшифровки: отправляем parts как есть, без обёрток и tools
             parts_final = list(parts)
             current_tools = []
         else:
-            # Обычный запрос: добавляем identity prefix и tools
             parts_final = [
                 p for p in parts
                 if hasattr(p, 'file_data') and p.file_data
             ]
-            prompt_txt = next((p.text for p in parts if p.text), "")
+            prompt_txt = next(
+                (p.text for p in parts if p.text), ""
+            )
             final_prompt = (
-                f"[{msg.from_user.id}; Name: {user_name}]: {prompt_txt}"
+                f"[{msg.from_user.id}; Name: {user_name}]: "
+                f"{prompt_txt}"
             )
 
-            # Для реальных аудио/видео/изображений — добавляем инструкцию
-            # извлечения транскрипции/OCR в историю
-            if is_media_request:
+            if is_media:
                 file_mimes = [
                     p.file_data.mime_type
                     for p in parts
-                    if hasattr(p, 'file_data') and p.file_data
-                    and p.file_data.mime_type
+                    if (hasattr(p, 'file_data') and p.file_data
+                        and p.file_data.mime_type)
                 ]
-                has_av = any(_is_real_av_mime(m) for m in file_mimes)
-                has_img = any(m.startswith('image/') for m in file_mimes)
+                has_av = any(
+                    _is_real_av_mime(m) for m in file_mimes
+                )
+                has_img = any(
+                    m.startswith('image/') for m in file_mimes
+                )
 
                 if has_av:
                     final_prompt += AUDIO_EXTRACTION_INSTRUCTION
@@ -1060,14 +1176,16 @@ async def process_request(update, context, parts, text_only=False):
                     extract_transcription = True
 
             parts_final.append(types.Part(text=final_prompt))
-            current_tools = MEDIA_TOOLS if is_media_request else TEXT_TOOLS
+            current_tools = MEDIA_TOOLS if is_media else TEXT_TOOLS
 
-        res_data, used_model_display = await generate(
-            history + [types.Content(parts=parts_final, role="user")],
+        res_data, used_model = await generate(
+            history + [
+                types.Content(parts=parts_final, role="user")
+            ],
             current_tools,
         )
 
-        # --- Извлекаем сырой текст (для истории и парсинга транскрипции) ---
+        # Извлекаем сырой текст
         raw_text = _get_raw_text(res_data)
         extracted_transcription = None
         history_model_text = raw_text
@@ -1076,63 +1194,77 @@ async def process_request(update, context, parts, text_only=False):
             match = TRANSCRIPTION_BLOCK_RE.search(raw_text)
             if match:
                 extracted_transcription = match.group(1).strip()
-                check = extracted_transcription.lower().strip('[]() ')
-                if check in ('no text', 'нет текста', 'none', ''):
+                check = extracted_transcription.lower().strip(
+                    '[]() '
+                )
+                if check in (
+                    'no text', 'нет текста', 'none', ''
+                ):
                     extracted_transcription = None
-                display_text = TRANSCRIPTION_BLOCK_RE.sub('', raw_text).strip()
-                display_text = RE_CLEAN_NAMES.sub('', display_text).strip()
-                display_text = display_text.lstrip('\n')
+
+                display_text = TRANSCRIPTION_BLOCK_RE.sub(
+                    '', raw_text
+                ).strip().lstrip('\n')
+
                 if display_text:
-                    clean_reply = convert_markdown_to_html(display_text)
+                    clean_reply = convert_markdown_to_html(
+                        display_text
+                    )
                     history_model_text = display_text
+                elif extracted_transcription:
+                    clean_reply = convert_markdown_to_html(
+                        extracted_transcription
+                    )
+                    history_model_text = extracted_transcription
                 else:
                     clean_reply = format_response(res_data)
-                    history_model_text = TRANSCRIPTION_BLOCK_RE.sub('', raw_text).strip() or raw_text
+                    history_model_text = raw_text
             else:
                 clean_reply = format_response(res_data)
         else:
             clean_reply = format_response(res_data)
 
         reply_to_send = clean_reply
-        if not text_only and used_model_display != "none":
-            reply_to_send += f"\n\n<i>{used_model_display}</i>"
+        if not text_only and used_model != "none":
+            reply_to_send += f"\n\n<i>{used_model}</i>"
 
         sent = await send_smart(
-            msg, reply_to_send, hint=(is_media_request and not text_only)
+            msg, reply_to_send,
+            hint=(is_media and not text_only)
         )
 
-        # --- СОХРАНЕНИЕ В ИСТОРИЮ (ВСЕГДА, включая text_only) ---
+        # --- СОХРАНЕНИЕ В ИСТОРИЮ ---
         if sent:
             lock = get_chat_lock(msg.chat_id)
             async with lock:
-                # --- User part ---
+                # User part
                 hist_parts = []
                 for p in parts:
                     if hasattr(p, 'file_data') and p.file_data:
-                        media_type = _describe_media_type(
-                            p.file_data.mime_type if p.file_data else None
+                        mtype = _describe_media_type(
+                            p.file_data.mime_type
+                            if p.file_data else None
                         )
-                        if text_only:
+                        if extracted_transcription:
+                            tr = extracted_transcription[
+                                :MAX_HISTORY_RESPONSE_LEN
+                            ]
                             hist_parts.append({
                                 'type': 'text',
-                                'content': f'[user requested {media_type} transcription]',
-                            })
-                        elif extracted_transcription:
-                            t = extracted_transcription[:MAX_HISTORY_RESPONSE_LEN]
-                            hist_parts.append({
-                                'type': 'text',
-                                'content': f'[{media_type} transcription: {t}]',
+                                'content': (
+                                    f'[{mtype} transcription: '
+                                    f'{tr}]'
+                                ),
                             })
                         else:
                             hist_parts.append({
                                 'type': 'text',
-                                'content': f'[sent {media_type}]',
+                                'content': f'[sent {mtype}]',
                             })
                     elif p.text:
-                        if text_only and p.text in (TRANSCRIBE_PROMPT, OCR_PROMPT):
-                            continue
                         hist_parts.append({
-                            'type': 'text', 'content': p.text,
+                            'type': 'text',
+                            'content': p.text,
                         })
 
                 hist_item = {
@@ -1141,55 +1273,81 @@ async def process_request(update, context, parts, text_only=False):
                     "user_id": msg.from_user.id,
                     "user_name": user_name,
                 }
-                context.chat_data.setdefault("history", []).append(hist_item)
+                context.chat_data.setdefault(
+                    "history", []
+                ).append(hist_item)
 
-                # --- Model part: сохраняем СЫРОЙ текст, не HTML ---
-                bot_text = history_model_text if history_model_text else clean_reply
+                # Model part
+                bot_text = (
+                    history_model_text
+                    if history_model_text else clean_reply
+                )
                 bot_item = {
                     "role": "model",
                     "parts": [{
                         'type': 'text',
-                        'content': bot_text[:MAX_HISTORY_RESPONSE_LEN],
+                        'content': bot_text[
+                            :MAX_HISTORY_RESPONSE_LEN
+                        ],
                     }],
                 }
                 context.chat_data["history"].append(bot_item)
 
-                if len(context.chat_data["history"]) > MAX_HISTORY_ITEMS:
+                if (len(context.chat_data["history"])
+                        > MAX_HISTORY_ITEMS):
                     context.chat_data["history"] = (
-                        context.chat_data["history"][-MAX_HISTORY_ITEMS:]
+                        context.chat_data["history"][
+                            -MAX_HISTORY_ITEMS:
+                        ]
                     )
 
-                # reply_map и media_contexts — только для обычных запросов
+                # reply_map, media_contexts — только обычные
                 if not text_only:
-                    rmap = context.chat_data.setdefault('reply_map', {})
+                    rmap = context.chat_data.setdefault(
+                        'reply_map', {}
+                    )
                     rmap[sent.message_id] = msg.message_id
                     if len(rmap) > MAX_HISTORY_ITEMS * 2:
-                        for k in list(rmap.keys())[:-MAX_HISTORY_ITEMS]:
+                        for k in list(rmap.keys())[
+                            :-MAX_HISTORY_ITEMS
+                        ]:
                             del rmap[k]
 
-                    if is_media_request:
+                    if is_media:
                         m_part = next(
                             (p for p in parts
-                             if hasattr(p, 'file_data') and p.file_data),
+                             if hasattr(p, 'file_data')
+                             and p.file_data),
                             None
                         )
                         if m_part:
                             m_store = (
                                 context.application.bot_data
-                                .setdefault('media_contexts', {})
-                                .setdefault(msg.chat_id, OrderedDict())
+                                .setdefault(
+                                    'media_contexts', {}
+                                )
+                                .setdefault(
+                                    msg.chat_id, OrderedDict()
+                                )
                             )
-                            m_store[msg.message_id] = part_to_dict(m_part)
+                            m_store[msg.message_id] = (
+                                part_to_dict(m_part)
+                            )
                             if len(m_store) > MAX_MEDIA_CONTEXTS:
                                 m_store.popitem(last=False)
-                            await context.application.persistence.save_media_contexts(
-                                context.application.bot_data.get(
-                                    'media_contexts', {}
+                            await (
+                                context.application.persistence
+                                .save_media_contexts(
+                                    context.application.bot_data
+                                    .get('media_contexts', {})
                                 )
                             )
 
-                await context.application.persistence.update_chat_data(
-                    msg.chat_id, context.chat_data
+                await (
+                    context.application.persistence
+                    .update_chat_data(
+                        msg.chat_id, context.chat_data
+                    )
                 )
 
     except Exception as e:
@@ -1201,7 +1359,9 @@ async def process_request(update, context, parts, text_only=False):
 
 # --- HANDLERS ---
 @ignore_if_processing
-async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def universal_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     msg = update.message
     if not msg:
         return
@@ -1213,22 +1373,30 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     media = get_media(msg)
 
     # --- STICKY TRANSCRIPTION MODE ---
-    transcription_mode = context.chat_data.get('next_media_is_text', False)
+    transcription_mode = context.chat_data.get(
+        'next_media_is_text', False
+    )
 
     if transcription_mode:
         if media:
             st = None
             try:
-                media_part, st = await download_and_upload(msg, media)
+                media_part, st = await download_and_upload(
+                    msg, media
+                )
                 await safe_delete(st)
                 st = None
                 mime = get_mime(msg, media)
                 prompt_text = (
-                    TRANSCRIBE_PROMPT if is_audio_type(msg, mime)
-                    else OCR_PROMPT
+                    TRANSCRIBE_PROMPT
+                    if is_audio_type(msg, mime) else OCR_PROMPT
                 )
-                parts = [media_part, types.Part(text=prompt_text)]
-                await process_request(update, context, parts, text_only=True)
+                parts = [
+                    media_part, types.Part(text=prompt_text)
+                ]
+                await process_request(
+                    update, context, parts, text_only=True
+                )
                 return
             except Exception as e:
                 await msg.reply_text(f"Ошибка: {e}")
@@ -1238,18 +1406,21 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif text and not text.startswith('/'):
             context.chat_data.pop('next_media_is_text', None)
-            await context.application.persistence.update_chat_data(
-                msg.chat_id, context.chat_data
+            await (
+                context.application.persistence
+                .update_chat_data(msg.chat_id, context.chat_data)
             )
 
     # --- ОБЫЧНАЯ ОБРАБОТКА МЕДИА ---
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
-            await msg.reply_text("Файл >20MB. Читаю только текст.")
+            await msg.reply_text("Файл >20MB.")
         else:
             st = None
             try:
-                media_part, st = await download_and_upload(msg, media)
+                media_part, st = await download_and_upload(
+                    msg, media
+                )
                 await safe_delete(st)
                 st = None
                 parts.append(media_part)
@@ -1269,7 +1440,7 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ))
         text = text.replace(yt.group(0), '').strip()
 
-    # --- REPLY НА БОТ-ОТВЕТ (контекст файла) ---
+    # --- REPLY НА БОТ-ОТВЕТ ---
     if not media and msg.reply_to_message:
         orig = (
             context.chat_data.get('reply_map', {})
@@ -1294,15 +1465,18 @@ async def universal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @ignore_if_processing
-async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     msg = update.message
 
-    # Режим «ответ на сообщение» — разовая расшифровка
+    # Разовая расшифровка по reply
     if msg.reply_to_message:
         reply = msg.reply_to_message
         media = get_media(reply)
         if media:
-            if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+            if (media.file_size
+                    > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024):
                 return await msg.reply_text("Файл слишком велик.")
             st = None
             try:
@@ -1313,11 +1487,15 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 st = None
                 mime = get_mime(reply, media)
                 prompt_text = (
-                    TRANSCRIBE_PROMPT if is_audio_type(reply, mime)
-                    else OCR_PROMPT
+                    TRANSCRIBE_PROMPT
+                    if is_audio_type(reply, mime) else OCR_PROMPT
                 )
-                parts = [media_part, types.Part(text=prompt_text)]
-                await process_request(update, context, parts, text_only=True)
+                parts = [
+                    media_part, types.Part(text=prompt_text)
+                ]
+                await process_request(
+                    update, context, parts, text_only=True
+                )
                 return
             except Exception as e:
                 return await msg.reply_text(f"Ошибка: {e}")
@@ -1325,29 +1503,35 @@ async def text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_delete(st)
         else:
             return await msg.reply_text(
-                "Ответьте этой командой на сообщение с аудио или картинкой."
+                "Ответьте командой на сообщение с медиа."
             )
 
-    # Режим «потоковый» — toggle
+    # Toggle sticky mode
     if context.chat_data.get('next_media_is_text', False):
         context.chat_data.pop('next_media_is_text', None)
-        await msg.reply_html("<b>Режим расшифровки выключен.</b>")
+        await msg.reply_html(
+            "<b>Режим расшифровки выключен.</b>"
+        )
     else:
         context.chat_data['next_media_is_text'] = True
         await msg.reply_html(
             "<b>Включен режим потоковой расшифровки.</b>\n"
-            "Кидай аудио, видео или фото — я буду сразу присылать текст.\n\n"
+            "Кидай аудио, видео или фото — я буду сразу "
+            "присылать текст.\n\n"
             "<i>Чтобы выйти, напиши /text ещё раз "
             "или отправь текстовое сообщение.</i>"
         )
 
-    await context.application.persistence.update_chat_data(
-        msg.chat_id, context.chat_data
+    await (
+        context.application.persistence
+        .update_chat_data(msg.chat_id, context.chat_data)
     )
 
 
 @ignore_if_processing
-async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def summarize_cmd(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     await util_cmd(
         update, context,
         "Сделай подробный конспект (summary) этого материала."
@@ -1357,14 +1541,17 @@ async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def util_cmd(update, context, prompt):
     msg = update.message
     if not msg.reply_to_message:
-        return await msg.reply_text("Ответьте на сообщение с файлом.")
+        return await msg.reply_text(
+            "Ответьте на сообщение с файлом."
+        )
 
     reply = msg.reply_to_message
     media = get_media(reply)
     parts = []
 
     if media:
-        if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+        if (media.file_size
+                > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024):
             return await msg.reply_text("Файл велик.")
         st = None
         try:
@@ -1383,7 +1570,9 @@ async def util_cmd(update, context, prompt):
             mime_type=YOUTUBE_MIME,
             file_uri=YOUTUBE_REGEX.search(reply.text).group(0),
         )))
-    elif context.chat_data.get('reply_map', {}).get(reply.message_id):
+    elif context.chat_data.get(
+        'reply_map', {}
+    ).get(reply.message_id):
         orig = context.chat_data['reply_map'][reply.message_id]
         ctx = (
             context.application.bot_data
@@ -1405,18 +1594,16 @@ async def util_cmd(update, context, prompt):
 
 @ignore_if_processing
 async def start_c(u, c):
-    start_text = (
+    await u.message.reply_html(
         "<b>Привет! Я Женя — твой умный ИИ-ассистент.</b>\n\n"
         "<b>Что я умею:</b>\n"
-        "<b>Текст и файлы:</b> Пиши запросы, кидай документы, фото, аудио "
-        "или видео — я всё прочитаю, проанализирую и отвечу текстом.\n"
-        "<b>Транскрибация:</b> Напиши <code>/text</code>, чтобы войти "
-        "в режим расшифровки. Кидай сколько угодно файлов — я переведу "
-        "их в текст. Чтобы выйти, напиши /text ещё раз или отправь "
-        "текстовое сообщение.\n\n"
+        "<b>Текст и файлы:</b> Пиши запросы, кидай документы, "
+        "фото, аудио или видео — я всё прочитаю и отвечу.\n"
+        "<b>Транскрибация:</b> Напиши <code>/text</code> для "
+        "режима расшифровки. Кидай файлы — получишь текст. "
+        "Выход: /text или текстовое сообщение.\n\n"
         "<i>Работаю на базе Gemini.</i>"
     )
-    await u.message.reply_html(start_text)
 
 
 @ignore_if_processing
@@ -1438,13 +1625,16 @@ async def clear_c(u, c):
 @ignore_if_processing
 async def status_c(u, c):
     date_str = (
-        DAILY_REQUEST_DATE.isoformat() if DAILY_REQUEST_DATE else "N/A"
+        DAILY_REQUEST_DATE.isoformat()
+        if DAILY_REQUEST_DATE else "N/A"
     )
     stats = "\n".join(
         f"  {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}"
         for m in MODEL_CASCADE
     )
-    await u.message.reply_html(f"<b>Статистика за {date_str}:</b>\n{stats}")
+    await u.message.reply_html(
+        f"<b>Статистика за {date_str}:</b>\n{stats}"
+    )
 
 
 # --- MAIN ---
@@ -1471,7 +1661,9 @@ async def main():
     await app.initialize()
 
     GEMINI_CLIENT = genai.Client(api_key=GOOGLE_API_KEY)
-    app.bot_data['media_contexts'] = await pers.load_media_contexts()
+    app.bot_data['media_contexts'] = (
+        await pers.load_media_contexts()
+    )
 
     await app.start()
 
@@ -1487,7 +1679,9 @@ async def main():
 
     if ADMIN_ID:
         try:
-            await app.bot.send_message(ADMIN_ID, "Bot Started (v84)")
+            await app.bot.send_message(
+                ADMIN_ID, "Bot Started (v85)"
+            )
         except Exception:
             pass
 
@@ -1497,7 +1691,7 @@ async def main():
         for s in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(s, stop_event.set)
     except NotImplementedError:
-        logger.warning("Signal handlers not supported on this platform.")
+        logger.warning("Signal handlers not supported.")
 
     clean_path = GEMINI_WEBHOOK_PATH.strip('/')
     webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/{clean_path}"
@@ -1508,15 +1702,23 @@ async def main():
     server = aiohttp.web.Application()
 
     async def wh(r):
-        token = r.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        token = r.headers.get(
+            "X-Telegram-Bot-Api-Secret-Token"
+        )
         if token != TELEGRAM_SECRET_TOKEN:
-            return aiohttp.web.Response(status=403, text="Forbidden")
+            return aiohttp.web.Response(
+                status=403, text="Forbidden"
+            )
         try:
             data = await r.json()
-            await app.process_update(Update.de_json(data, app.bot))
+            await app.process_update(
+                Update.de_json(data, app.bot)
+            )
             return aiohttp.web.Response(text='OK')
         except Exception as e:
-            logger.error(f"Webhook error: {e}", exc_info=True)
+            logger.error(
+                f"Webhook error: {e}", exc_info=True
+            )
             return aiohttp.web.Response(status=500)
 
     server.router.add_post(f"/{clean_path}", wh)
