@@ -76,7 +76,9 @@ if missing:
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
 MODEL_CASCADE = [
+    {"id": "gemini-3.5-flash", "display": "3.5 Flash"},
     {"id": "gemini-2.5-flash", "display": "2.5 Flash"},
+    {"id": "gemini-3.1-flash-lite", "display": "3.1 Flash lite"},
     {"id": "gemini-2.5-flash-lite", "display": "2.5 Flash Lite"},
 ]
 
