@@ -1,0 +1,9 @@
+{
+  "name": "gemini-telegram-bot",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "python3 main.py",
+    "start": "python3 main.py"
+  }
+}

@@ -1,9 +1,10 @@
-# Версия 85 (Fix: auto thinking, safe LaTeX $, upload name None)
+# Версия 86 (Fix: sys_prompt time, non-blocking webhook, album buffer, model cascade & thinking fallback)
 
 import logging
 import os
 import asyncio
 import signal
+import secrets
 import re
 import pickle
 import io
@@ -11,24 +12,9 @@ import time
 import datetime
 from collections import defaultdict, OrderedDict
 
-import psycopg2
-from psycopg2 import pool, extensions
-import pytz
 import html
+import http.server
 from functools import wraps
-
-import aiohttp.web
-from telegram import Update, BotCommand
-from telegram.constants import ChatAction, ParseMode
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    ContextTypes, filters, BasePersistence, PersistenceInput
-)
-from telegram.error import BadRequest
-
-from google import genai
-from google.genai import types
-from google.genai import errors as genai_errors
 
 # --- КОНФИГУРАЦИЯ ЛОГОВ ---
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -37,18 +23,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SILENCED_MODULES = [
-    'aiohttp.access', 'httpx', 'telegram',
-    'grpc', 'google', 'google.auth', 'google.api_core',
-    'urllib3', 'httpcore', 'google.genai'
-]
-for mod in SILENCED_MODULES:
-    logging.getLogger(mod).setLevel(logging.WARNING)
-
 # --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_SECRET_TOKEN = os.getenv(
-    'TELEGRAM_SECRET_TOKEN', 'my-secret-token-change-me'
+TELEGRAM_SECRET_TOKEN = (
+    os.getenv('TELEGRAM_SECRET_TOKEN') or secrets.token_urlsafe(32)
 )
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -71,24 +49,85 @@ required_env = {
 
 missing = [k for k, v in required_env.items() if not v]
 if missing:
-    logger.critical(f"Missing env vars: {', '.join(missing)}")
-    exit(1)
+    logger.warning(f"Missing env vars: {', '.join(missing)}")
+    if __name__ == '__main__':
+        port = int(os.getenv("PORT", 3000))
+
+        class _PreviewHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def do_GET(self):
+                body = (
+                    "Bot preview server is running (v86).\n"
+                    f"Missing environment variables for Telegram webhook mode: {', '.join(missing)}\n"
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        http.server.ThreadingHTTPServer.allow_reuse_address = True
+        httpd = http.server.ThreadingHTTPServer(("0.0.0.0", port), _PreviewHandler)
+        logger.info(f"Preview server listening on 0.0.0.0:{port}")
+        httpd.serve_forever()
+    exit(0)
+
+import psycopg2
+from psycopg2 import pool, extensions
+import pytz
+
+import aiohttp.web
+from telegram import Update, BotCommand
+from telegram.constants import ChatAction, ParseMode
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    ContextTypes, filters, BasePersistence, PersistenceInput
+)
+from telegram.error import BadRequest
+
+from google import genai
+from google.genai import types
+from google.genai import errors as genai_errors
+
+SILENCED_MODULES = [
+    'aiohttp.access', 'httpx', 'telegram',
+    'grpc', 'google', 'google.auth', 'google.api_core',
+    'urllib3', 'httpcore', 'google.genai'
+]
+for mod in SILENCED_MODULES:
+    logging.getLogger(mod).setLevel(logging.WARNING)
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ ---
 MODEL_CASCADE = [
+    {"id": "gemini-3-flash-preview", "display": "3 Flash Preview"},
     {"id": "gemini-2.5-flash", "display": "2.5 Flash"},
+    {"id": "gemini-3.1-flash-lite-preview", "display": "3.1 Flash lite Preview"},
     {"id": "gemini-2.5-flash-lite", "display": "2.5 Flash lite"},
     {"id": "gemini-3.5-flash-lite", "display": "3.5 Flash lite"},
     {"id": "gemini-3.1-flash-lite", "display": "3.1 Flash lite"},
+]
+
+TEXT_ONLY_CASCADE = [
+    {"id": "gemini-3.1-flash-lite-preview", "display": "3.1 Flash lite Preview"},
+    {"id": "gemini-2.5-flash-lite", "display": "2.5 Flash lite"},
+    {"id": "gemini-3.5-flash-lite", "display": "3.5 Flash lite"},
+    {"id": "gemini-3.1-flash-lite", "display": "3.1 Flash lite"},
+    {"id": "gemini-2.5-flash", "display": "2.5 Flash"},
+    {"id": "gemini-3-flash-preview", "display": "3 Flash Preview"},
 ]
 
 # Глобальные переменные
 DAILY_REQUEST_COUNTS = defaultdict(int)
 DAILY_REQUEST_DATE = None
 GLOBAL_LOCK = asyncio.Lock()
-LAST_REQUEST_TIME = 0
-REQUEST_DELAY = 10
-CHAT_LOCKS = {}
+LAST_MODEL_REQUEST_TIME = defaultdict(float)
+REQUEST_DELAY = 5
+CHAT_LOCKS = OrderedDict()
+MAX_CHAT_LOCKS = 500
+MEDIA_GROUP_BUFFERS = {}
+ALBUM_WAIT_SECONDS = 1.0
 GEMINI_CLIENT = None
 PROCESSING_MESSAGES = set()
 
@@ -345,15 +384,35 @@ class PostgresPersistence(BasePersistence):
     async def refresh_bot_data(self, bot_data):
         pass
 
+    @staticmethod
+    def _prune_expired_media(data):
+        if not isinstance(data, dict):
+            return {}
+        now = time.time()
+        cleaned = {}
+        for chat_id, msg_map in data.items():
+            if not isinstance(msg_map, dict):
+                continue
+            valid_msgs = OrderedDict(
+                (mid, item)
+                for mid, item in msg_map.items()
+                if isinstance(item, dict)
+                and now - item.get("timestamp", 0) <= MEDIA_CONTEXT_TTL_SECONDS
+            )
+            if valid_msgs:
+                cleaned[chat_id] = valid_msgs
+        return cleaned
+
     async def load_media_contexts(self):
         data = await asyncio.to_thread(
             self._get_pickled, "media_contexts"
         )
-        return data if isinstance(data, dict) else {}
+        return self._prune_expired_media(data)
 
     async def save_media_contexts(self, data):
+        cleaned = self._prune_expired_media(data)
         await asyncio.to_thread(
-            self._set_pickled, "media_contexts", data
+            self._set_pickled, "media_contexts", cleaned
         )
 
     async def get_chat_data(self):
@@ -562,9 +621,8 @@ def convert_latex_to_unicode(text):
     # Оставшиеся \команды — убрать бэкслеш
     text = re.sub(r'\\([a-zA-Z]+)', r'\1', text)
 
-    # Пустые фигурные скобки
+    # Пустые фигурные скобки, оставшиеся после LaTeX-команд
     text = text.replace('{}', '')
-    text = re.sub(r'(?<!\\)[{}]', '', text)
 
     return text
 
@@ -825,39 +883,60 @@ async def upload_file(client, b, mime, name):
 
 
 # --- ЯДРО ГЕНЕРАЦИИ ---
-async def generate(contents, current_tools):
-    global LAST_REQUEST_TIME, DAILY_REQUEST_DATE
+def get_quota_date():
+    return datetime.datetime.now(
+        pytz.timezone("America/Los_Angeles")
+    ).date()
 
-    today = datetime.date.today()
+
+async def _wait_model_slot(model_id: str):
+    async with GLOBAL_LOCK:
+        now = time.time()
+        last_time = LAST_MODEL_REQUEST_TIME[model_id]
+        elapsed = now - last_time
+        if elapsed < REQUEST_DELAY:
+            wait_time = REQUEST_DELAY - elapsed
+            LAST_MODEL_REQUEST_TIME[model_id] = now + wait_time
+        else:
+            wait_time = 0
+            LAST_MODEL_REQUEST_TIME[model_id] = now
+
+    if wait_time > 0:
+        logger.info(
+            f"Queue ({model_id}): Waiting {wait_time:.1f}s..."
+        )
+        await asyncio.sleep(wait_time)
+
+
+async def generate(contents, current_tools, text_only=False):
+    global DAILY_REQUEST_DATE
+
+    today = get_quota_date()
     if DAILY_REQUEST_DATE != today:
         DAILY_REQUEST_COUNTS.clear()
         DAILY_REQUEST_DATE = today
 
-    sys_prompt = SYSTEM_INSTRUCTION
-    if "{current_time}" in sys_prompt:
-        sys_prompt = sys_prompt.format(
-            current_time=get_current_time_str()
+    current_time_str = get_current_time_str()
+    if "{current_time}" in SYSTEM_INSTRUCTION:
+        sys_prompt = SYSTEM_INSTRUCTION.replace(
+            "{current_time}", current_time_str
+        )
+    else:
+        sys_prompt = (
+            f"(System Note: {current_time_str})\n"
+            f"{SYSTEM_INSTRUCTION}"
         )
 
-    async with GLOBAL_LOCK:
-        now = time.time()
-        elapsed = now - LAST_REQUEST_TIME
-        if elapsed < REQUEST_DELAY:
-            wait_time = REQUEST_DELAY - elapsed
-            LAST_REQUEST_TIME = now + wait_time
-        else:
-            wait_time = 0
-            LAST_REQUEST_TIME = now
+    cascade = TEXT_ONLY_CASCADE if text_only else MODEL_CASCADE
 
-    if wait_time > 0:
-        logger.info(f"Queue: Waiting {wait_time:.1f}s...")
-        await asyncio.sleep(wait_time)
-
-    for model_config in MODEL_CASCADE:
+    for model_config in cascade:
         model_id = model_config['id']
         max_attempts = 2
+        use_thinking = True
 
         for attempt in range(max_attempts):
+            await _wait_model_slot(model_id)
+
             gen_config_args = {
                 "safety_settings": SAFETY_SETTINGS,
                 "tools": current_tools,
@@ -865,10 +944,11 @@ async def generate(contents, current_tools):
                     parts=[types.Part(text=sys_prompt)]
                 ),
                 "temperature": 1.0,
-                "thinking_config": types.ThinkingConfig(
-                    thinking_budget=-1
-                ),
             }
+            if use_thinking:
+                gen_config_args["thinking_config"] = (
+                    types.ThinkingConfig(thinking_budget=-1)
+                )
 
             logger.info(
                 f"Sending to: {model_id} (Attempt {attempt + 1})"
@@ -933,6 +1013,17 @@ async def generate(contents, current_tools):
                         break
                     contents = cleaned
                     current_tools = TEXT_TOOLS
+                    continue
+
+                elif ("400" in err_str
+                      and ("thinking" in err_str
+                           or "budget" in err_str)
+                      and use_thinking):
+                    logger.warning(
+                        f"Thinking budget unsupported on {model_id}. "
+                        "Retrying without thinking_config..."
+                    )
+                    use_thinking = False
                     continue
 
                 elif ("400" in err_str
@@ -1038,9 +1129,17 @@ async def send_smart(msg, text, hint=False):
 
 
 def get_chat_lock(chat_id):
-    if chat_id not in CHAT_LOCKS:
-        CHAT_LOCKS[chat_id] = asyncio.Lock()
-    return CHAT_LOCKS[chat_id]
+    if chat_id in CHAT_LOCKS:
+        CHAT_LOCKS.move_to_end(chat_id)
+        return CHAT_LOCKS[chat_id]
+    lock = asyncio.Lock()
+    CHAT_LOCKS[chat_id] = lock
+    if len(CHAT_LOCKS) > MAX_CHAT_LOCKS:
+        for old_id in list(CHAT_LOCKS.keys()):
+            if old_id != chat_id and not CHAT_LOCKS[old_id].locked():
+                del CHAT_LOCKS[old_id]
+                break
+    return lock
 
 
 def get_media(msg):
@@ -1132,10 +1231,12 @@ async def process_request(update, context, parts, text_only=False):
         is_media = any(
             hasattr(p, 'file_data') and p.file_data for p in parts
         )
-        history = (
-            [] if text_only
-            else build_history(context.chat_data.get("history", []))
-        )
+        lock = get_chat_lock(msg.chat_id)
+        async with lock:
+            history = (
+                [] if text_only
+                else build_history(context.chat_data.get("history", []))
+            )
 
         user_name = msg.from_user.first_name
         extract_transcription = False
@@ -1185,6 +1286,7 @@ async def process_request(update, context, parts, text_only=False):
                 types.Content(parts=parts_final, role="user")
             ],
             current_tools,
+            text_only=text_only,
         )
 
         # Извлекаем сырой текст
@@ -1237,7 +1339,6 @@ async def process_request(update, context, parts, text_only=False):
 
         # --- СОХРАНЕНИЕ В ИСТОРИЮ ---
         if sent:
-            lock = get_chat_lock(msg.chat_id)
             async with lock:
                 # User part
                 hist_parts = []
@@ -1323,6 +1424,16 @@ async def process_request(update, context, parts, text_only=False):
                             None
                         )
                         if m_part:
+                            m_dict = part_to_dict(m_part)
+                            chat_m_store = (
+                                context.chat_data.setdefault(
+                                    'media_contexts', OrderedDict()
+                                )
+                            )
+                            chat_m_store[msg.message_id] = m_dict
+                            while len(chat_m_store) > MAX_MEDIA_CONTEXTS:
+                                chat_m_store.popitem(last=False)
+
                             m_store = (
                                 context.application.bot_data
                                 .setdefault(
@@ -1332,9 +1443,7 @@ async def process_request(update, context, parts, text_only=False):
                                     msg.chat_id, OrderedDict()
                                 )
                             )
-                            m_store[msg.message_id] = (
-                                part_to_dict(m_part)
-                            )
+                            m_store[msg.message_id] = m_dict
                             if len(m_store) > MAX_MEDIA_CONTEXTS:
                                 m_store.popitem(last=False)
                             await (
@@ -1413,6 +1522,61 @@ async def universal_handler(
                 .update_chat_data(msg.chat_id, context.chat_data)
             )
 
+    # --- БУФЕРИЗАЦИЯ АЛЬБОМОВ (MEDIA GROUP) ---
+    if media and msg.media_group_id:
+        mg_key = f"{msg.chat_id}_{msg.media_group_id}"
+        if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
+            await msg.reply_text("Файл >20MB.")
+            return
+        st = None
+        try:
+            media_part, st = await download_and_upload(msg, media)
+            await safe_delete(st)
+            st = None
+        except Exception as e:
+            await msg.reply_text(f"Ошибка: {e}")
+            return
+        finally:
+            await safe_delete(st)
+
+        buf = MEDIA_GROUP_BUFFERS.get(mg_key)
+        if not buf:
+            buf = {
+                "parts": [],
+                "texts": [],
+                "update": update,
+                "context": context,
+                "first_msg_id": msg.message_id,
+                "leader": True,
+            }
+            MEDIA_GROUP_BUFFERS[mg_key] = buf
+            is_leader = True
+        else:
+            is_leader = False
+            if msg.message_id < buf["first_msg_id"]:
+                buf["first_msg_id"] = msg.message_id
+                buf["update"] = update
+
+        buf["parts"].append(media_part)
+        if text:
+            buf["texts"].append(text)
+
+        if not is_leader:
+            return
+
+        await asyncio.sleep(ALBUM_WAIT_SECONDS)
+        final_buf = MEDIA_GROUP_BUFFERS.pop(mg_key, None)
+        if not final_buf:
+            return
+        album_parts = list(final_buf["parts"])
+        combined_text = "\n".join(final_buf["texts"]).strip()
+        if combined_text:
+            album_parts.append(types.Part(text=combined_text))
+        await process_request(
+            final_buf["update"], final_buf["context"], album_parts
+        )
+        return
+
     # --- ОБЫЧНАЯ ОБРАБОТКА МЕДИА ---
     if media:
         if media.file_size > TELEGRAM_FILE_LIMIT_MB * 1024 * 1024:
@@ -1441,6 +1605,8 @@ async def universal_handler(
             )
         ))
         text = text.replace(yt.group(0), '').strip()
+        if not text:
+            text = "Проанализируй это видео и расскажи главное."
 
     # --- REPLY НА БОТ-ОТВЕТ ---
     if not media and msg.reply_to_message:
@@ -1450,7 +1616,8 @@ async def universal_handler(
         )
         if orig:
             ctx = (
-                context.application.bot_data
+                context.chat_data.get('media_contexts', {}).get(orig)
+                or context.application.bot_data
                 .get('media_contexts', {})
                 .get(msg.chat_id, {})
                 .get(orig)
@@ -1628,20 +1795,61 @@ async def clear_c(u, c):
 async def status_c(u, c):
     date_str = (
         DAILY_REQUEST_DATE.isoformat()
-        if DAILY_REQUEST_DATE else "N/A"
+        if DAILY_REQUEST_DATE else get_quota_date().isoformat()
     )
     stats = "\n".join(
         f"  {m['display']}: {DAILY_REQUEST_COUNTS[m['id']]}"
         for m in MODEL_CASCADE
     )
     await u.message.reply_html(
-        f"<b>Статистика за {date_str}:</b>\n{stats}"
+        f"<b>Статистика за {date_str} (PT):</b>\n{stats}"
     )
+
+
+@ignore_if_processing
+async def models_c(u, c):
+    if ADMIN_ID and u.effective_user.id != ADMIN_ID:
+        return
+    try:
+        models_iter = await GEMINI_CLIENT.aio.models.list()
+        names = []
+        async for m in models_iter:
+            name = getattr(m, "name", "")
+            if "gemini" in name.lower():
+                names.append(name.removeprefix("models/"))
+        names.sort()
+        text = (
+            "<b>Доступные модели Gemini для ключа:</b>\n"
+            + "\n".join(f"• <code>{n}</code>" for n in names[:60])
+        )
+        await send_smart(u.message, text)
+    except Exception as e:
+        await u.message.reply_text(f"Ошибка получения списка моделей: {e}")
 
 
 # --- MAIN ---
 async def main():
     global GEMINI_CLIENT
+
+    if missing:
+        server = aiohttp.web.Application()
+        server.router.add_get(
+            '/',
+            lambda r: aiohttp.web.Response(
+                text=(
+                    f"Bot preview server is running.\n"
+                    f"Missing environment variables for Telegram webhook mode: {', '.join(missing)}"
+                )
+            ),
+        )
+        runner = aiohttp.web.AppRunner(server)
+        await runner.setup()
+        port = int(os.getenv("PORT", 3000))
+        await aiohttp.web.TCPSite(runner, '0.0.0.0', port).start()
+        logger.info(f"Preview server listening on 0.0.0.0:{port}")
+        stop_event = asyncio.Event()
+        await stop_event.wait()
+        return
 
     pers = PostgresPersistence(DATABASE_URL)
     app = (
@@ -1656,6 +1864,7 @@ async def main():
     app.add_handler(CommandHandler("summarize", summarize_cmd))
     app.add_handler(CommandHandler("clear", clear_c))
     app.add_handler(CommandHandler("status", status_c))
+    app.add_handler(CommandHandler("models", models_c))
     app.add_handler(MessageHandler(
         filters.ALL & ~filters.COMMAND, universal_handler
     ))
@@ -1675,6 +1884,7 @@ async def main():
         BotCommand("summarize", "Конспект"),
         BotCommand("clear", "Сброс памяти"),
         BotCommand("status", "Статистика"),
+        BotCommand("models", "Список доступных моделей"),
     ]
     await app.bot.set_my_commands(commands)
     logger.info("Menu commands updated.")
@@ -1682,7 +1892,7 @@ async def main():
     if ADMIN_ID:
         try:
             await app.bot.send_message(
-                ADMIN_ID, "Bot Started (v85)"
+                ADMIN_ID, "Bot Started (v86)"
             )
         except Exception:
             pass
@@ -1713,9 +1923,8 @@ async def main():
             )
         try:
             data = await r.json()
-            await app.process_update(
-                Update.de_json(data, app.bot)
-            )
+            update_obj = Update.de_json(data, app.bot)
+            asyncio.create_task(app.process_update(update_obj))
             return aiohttp.web.Response(text='OK')
         except Exception as e:
             logger.error(
@@ -1731,7 +1940,7 @@ async def main():
     runner = aiohttp.web.AppRunner(server)
     await runner.setup()
     await aiohttp.web.TCPSite(
-        runner, '0.0.0.0', int(os.getenv("PORT", 10000))
+        runner, '0.0.0.0', int(os.getenv("PORT", 3000))
     ).start()
 
     logger.info("Ready.")
